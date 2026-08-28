@@ -1,0 +1,10 @@
+{
+  "description": "Global Exchange offers a user-friendly platform for seamless digital currency exchange, providing competitive rates and secure transactions for users worldwide.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
