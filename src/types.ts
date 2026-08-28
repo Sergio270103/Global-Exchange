@@ -1,4 +1,4 @@
-export type Role = 'public' | 'user' | 'analyst' | 'admin'
+export type Role = 'public' | 'user' | 'analyst' | 'admin' | 'checker'
 
 export type Page =
   | 'landing' | 'login' | 'register' | 'verify'
