@@ -1,6 +1,9 @@
 import { useState } from 'react'
 import { exchangeRates } from '@/data/mockData'
 import { type Page } from '@/types'
+import keycloak from '../keycloak';
+
+console.log('Keycloak:', keycloak);
 
 const faqs = [
   { q: '¿Cómo funciona el proceso de compra?', a: 'Seleccionás la divisa que deseás comprar, ingresás el monto, confirmás la transacción y el importe se acredita automáticamente en tu billetera digital en minutos.' },
@@ -66,11 +69,11 @@ export default function Landing({ navigate }: LandingProps) {
             ))}
           </nav>
           <div className="ml-auto flex items-center gap-3">
-            <button onClick={() => navigate('login')} className="text-[13px] font-semibold text-slate-700 hover:text-slate-900 transition-colors px-3 py-1.5">
+            <button onClick={() => keycloak.login()} className="text-[13px] font-semibold text-slate-700 hover:text-slate-900 transition-colors px-3 py-1.5">
               Iniciar sesión
             </button>
             <button
-              onClick={() => navigate('register')}
+              onClick={() => keycloak.register()}
               className="text-[13px] font-semibold text-white px-4 py-2 rounded-lg transition-all hover:shadow-md hover:-translate-y-0.5"
               style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}
             >
@@ -105,7 +108,7 @@ export default function Landing({ navigate }: LandingProps) {
             </p>
             <div className="flex flex-wrap gap-3">
               <button
-                onClick={() => navigate('register')}
+                onClick={() => keycloak.register()}
                 className="px-7 py-3.5 rounded-xl text-white font-semibold text-[15px] transition-all hover:-translate-y-0.5 hover:shadow-xl"
                 style={{ background: 'linear-gradient(135deg,#10b981,#059669)' }}
               >
@@ -320,7 +323,7 @@ export default function Landing({ navigate }: LandingProps) {
                     <div className="font-mono font-bold text-emerald-700 text-lg">₲ {simResult.converted.toLocaleString('es', { maximumFractionDigits: 0 })}</div>
                   </div>
                 </div>
-                <button onClick={() => navigate('register')} className="w-full py-2.5 rounded-lg text-white font-semibold text-[14px]" style={{ background: '#10b981' }}>
+                <button onClick={() => keycloak.register()} className="w-full py-2.5 rounded-lg text-white font-semibold text-[14px]" style={{ background: '#10b981' }}>
                   Comprar ahora →
                 </button>
               </div>
@@ -364,10 +367,10 @@ export default function Landing({ navigate }: LandingProps) {
           </h2>
           <p className="text-slate-400 mb-8 text-[15px]">Creá tu cuenta gratis y empezá a cambiar divisas hoy mismo.</p>
           <div className="flex justify-center gap-4 flex-wrap">
-            <button onClick={() => navigate('register')} className="px-8 py-3.5 rounded-xl text-white font-semibold text-[15px] transition-all hover:-translate-y-0.5 hover:shadow-xl" style={{ background: 'linear-gradient(135deg,#10b981,#059669)' }}>
+            <button onClick={() => keycloak.register()} className="px-8 py-3.5 rounded-xl text-white font-semibold text-[15px] transition-all hover:-translate-y-0.5 hover:shadow-xl" style={{ background: 'linear-gradient(135deg,#10b981,#059669)' }}>
               Crear cuenta gratis
             </button>
-            <button onClick={() => navigate('login')} className="px-8 py-3.5 rounded-xl font-semibold text-[15px] border transition-all hover:bg-white/5" style={{ color: '#fff', borderColor: 'rgba(255,255,255,0.25)' }}>
+            <button onClick={() => keycloak.login()} className="px-8 py-3.5 rounded-xl font-semibold text-[15px] border transition-all hover:bg-white/5" style={{ color: '#fff', borderColor: 'rgba(255,255,255,0.25)' }}>
               Ya tengo cuenta
             </button>
           </div>

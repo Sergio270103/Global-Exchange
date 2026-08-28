@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import { type AuthUser, type Page } from './types'
+import { useState, useEffect } from 'react'
+import keycloak, { initKeycloak } from './keycloak'
+import { type AuthUser, type Page, type Role } from './types'
 
 import Layout from './components/Layout'
 import Landing from './pages/Landing'
@@ -22,30 +23,74 @@ import Users from './pages/admin/Users'
 import RolesPermissions from './pages/admin/RolesPermissions'
 import Configuration from './pages/admin/Configuration'
 
+function mapKeycloakUser(tokenParsed: any): AuthUser {
+  const roles: string[] = tokenParsed?.realm_access?.roles ?? []
+
+  const role: Role = roles.includes('admin')
+    ? 'admin'
+    : roles.includes('analyst')
+    ? 'analyst'
+    : roles.includes('checker')
+    ? 'checker'
+    : 'user'
+
+  const name = tokenParsed?.name ?? tokenParsed?.preferred_username ?? 'Usuario'
+
+  return {
+    name,
+    email: tokenParsed?.email ?? '',
+    role,
+    avatar: tokenParsed?.picture ?? `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=0f3460&color=fff`,
+  }
+}
+
+
 export default function App() {
+  const [keycloakReady, setKeycloakReady] = useState(false)
   const [auth, setAuth] = useState<AuthUser | null>(null)
   const [page, setPage] = useState<Page>('landing')
   const [currentClient, setCurrentClient] = useState('Carlos Martínez')
 
   const navigate = (p: Page) => setPage(p)
 
-  const onLogin = (user: AuthUser) => {
+  /*const onLogin = (user: AuthUser) => {
     setAuth(user)
     setPage('dashboard')
-  }
+  }*/
 
-  const onLogout = () => {
+  /*const onLogout = () => {
     setAuth(null)
     setPage('landing')
+  }*/
+
+  const onLogout = () => {
+    keycloak.logout({
+      redirectUri: window.location.origin,
+    })
+  }
+
+  useEffect(() => {
+    initKeycloak()
+      .then((authenticated) => {
+
+        if (authenticated) {
+          setAuth(mapKeycloakUser(keycloak.tokenParsed))
+          setPage('dashboard')
+        }
+      })
+      .catch(err => console.error('Error inicializando Keycloak', err))
+      .finally(() => setKeycloakReady(true))
+  }, [])
+
+  if (!keycloakReady) {
+    return <div>Cargando...</div>
   }
 
   // Public pages
   if (!auth) {
-    if (page === 'login') return <Login navigate={navigate} onLogin={onLogin}/>
-    if (page === 'register') return <Register navigate={navigate}/>
-    return <Landing navigate={navigate}/>
+  return <Landing navigate={navigate} />;
   }
-
+  
   // Authenticated layout
   const renderPage = () => {
     switch (page) {
