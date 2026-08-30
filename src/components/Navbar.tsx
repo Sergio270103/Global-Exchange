@@ -4,6 +4,7 @@ import { notifications as mockNotifications, demoClients } from '@/data/mockData
 
 const pageTitles: Record<string, string> = {
   dashboard: 'Dashboard',
+  'cash-count': 'Arqueo de Caja', // 👈 Título para la página de arqueo
   wallets: 'Billeteras Digitales',
   buy: 'Comprar / Vender Divisas',
   sell: 'Vender Divisas',
@@ -42,7 +43,11 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
   const [notifList, setNotifList] = useState(mockNotifications)
 
   const unread = notifList.filter(n => !n.read).length
-  const title = pageTitles[currentPage] || 'Panel'
+
+  // Si está en el dashboard y el rol es cajero, muestra "Cajero" o "Panel Cajero"
+  const title = (currentPage === 'dashboard' && auth.role === 'cashier')
+    ? 'Cajero'
+    : pageTitles[currentPage] || 'Panel'
 
   const markAllRead = () => setNotifList(n => n.map(x => ({ ...x, read: true })))
 
@@ -53,7 +58,16 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
     system: '⚙️',
   }
 
-  const roleLabel = auth.role === 'admin' ? 'Administrador' : auth.role === 'analyst' ? 'Analista' : 'Usuario'
+  // 👈 Se agrega la validación para mostrar 'Cajero' cuando auth.role es 'cashier'
+  const roleLabel =
+    auth.role === 'admin'
+      ? 'Administrador'
+      : auth.role === 'analyst'
+      ? 'Analista'
+      : auth.role === 'cashier'
+      ? 'Cajero'
+      : 'Usuario'
+
   const showClientSelector = auth.role === 'user'
 
   return (

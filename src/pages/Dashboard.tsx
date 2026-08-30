@@ -1,6 +1,7 @@
 import { type AuthUser, type Page } from '@/types'
 import { wallets, transactions, exchangeRates, earningsData } from '@/data/mockData'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import CashierDashboard from './cashier/CashierDashboard'
 
 interface DashboardProps {
   auth: AuthUser
@@ -17,6 +18,10 @@ const statusColor: Record<string, string> = {
 }
 
 export default function Dashboard({ auth, currentClient, navigate }: DashboardProps) {
+  if (auth.role === 'cashier') {
+    return <CashierDashboard auth={auth} currentClient={currentClient} navigate={navigate} />
+  }
+  
   const totalPYG = wallets.reduce((acc, w) => {
     const rate = w.currency === 'PYG' ? 1 : exchangeRates.find(r => r.currency === w.currency)?.sell || 1
     return acc + w.balance * rate

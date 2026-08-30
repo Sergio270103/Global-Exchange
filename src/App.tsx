@@ -14,7 +14,8 @@ import Rates from './pages/Rates'
 import Notifications from './pages/Notifications'
 import Invoices from './pages/Invoices'
 import Payments from './pages/Payments'
-
+import CashierDashboard from './pages/cashier/CashierDashboard'
+import CashCountView from './pages/cashier/CashCountView'
 import RatesManagement from './pages/analyst/RatesManagement'
 import Earnings from './pages/analyst/Earnings'
 
@@ -30,8 +31,8 @@ function mapKeycloakUser(tokenParsed: any): AuthUser {
     ? 'admin'
     : roles.includes('analyst')
     ? 'analyst'
-    : roles.includes('checker')
-    ? 'checker'
+    : roles.includes('cashier')
+    ? 'cashier'
     : 'user'
 
   const name = tokenParsed?.name ?? tokenParsed?.preferred_username ?? 'Usuario'
@@ -44,7 +45,6 @@ function mapKeycloakUser(tokenParsed: any): AuthUser {
   }
 }
 
-
 export default function App() {
   const [keycloakReady, setKeycloakReady] = useState(false)
   const [auth, setAuth] = useState<AuthUser | null>(null)
@@ -52,16 +52,6 @@ export default function App() {
   const [currentClient, setCurrentClient] = useState('Carlos Martínez')
 
   const navigate = (p: Page) => setPage(p)
-
-  /*const onLogin = (user: AuthUser) => {
-    setAuth(user)
-    setPage('dashboard')
-  }*/
-
-  /*const onLogout = () => {
-    setAuth(null)
-    setPage('landing')
-  }*/
 
   const onLogout = () => {
     keycloak.logout({
@@ -72,7 +62,6 @@ export default function App() {
   useEffect(() => {
     initKeycloak()
       .then((authenticated) => {
-
         if (authenticated) {
           setAuth(mapKeycloakUser(keycloak.tokenParsed))
           setPage('dashboard')
@@ -88,32 +77,60 @@ export default function App() {
 
   // Public pages
   if (!auth) {
-  return <Landing navigate={navigate} />;
+    return <Landing navigate={navigate} />
   }
   
   // Authenticated layout
   const renderPage = () => {
     switch (page) {
-      case 'dashboard': return <Dashboard auth={auth} currentClient={currentClient} navigate={navigate}/>
-      case 'wallets': return <Wallets/>
-      case 'buy': case 'sell': return <BuySell auth={auth} currentClient={currentClient}/>
-      case 'transactions': return <Transactions auth={auth} currentClient={currentClient}/>
-      case 'rates': case 'admin-rates': return <Rates/>
-      case 'notifications': return <Notifications/>
-      case 'invoices': return <Invoices/>
-      case 'payments': case 'admin-payments': return <Payments/>
-      case 'banks': return <BankAccountsPlaceholder/>
+      case 'dashboard':
+        return auth.role === 'cashier' ? (
+          <CashierDashboard auth={auth} currentClient={currentClient} navigate={navigate} />
+        ) : (
+          <Dashboard auth={auth} currentClient={currentClient} navigate={navigate} />
+        )
+      case 'cash-count':
+        return <CashCountView /> // 👈 Pestaña de Arqueo y Dinero Recibido
+      case 'wallets':
+        return <Wallets />
+      case 'buy':
+      case 'sell':
+        return <BuySell auth={auth} currentClient={currentClient} />
+      case 'transactions':
+        return <Transactions auth={auth} currentClient={currentClient} />
+      case 'rates':
+      case 'admin-rates':
+        return <Rates />
+      case 'notifications':
+        return <Notifications />
+      case 'invoices':
+        return <Invoices />
+      case 'payments':
+      case 'admin-payments':
+        return <Payments />
+      case 'banks':
+        return <BankAccountsPlaceholder />
       // Analyst
-      case 'analyst-rates': return <RatesManagement/>
-      case 'analyst-earnings': case 'admin-earnings': return <Earnings/>
+      case 'analyst-rates':
+        return <RatesManagement />
+      case 'analyst-earnings':
+      case 'admin-earnings':
+        return <Earnings />
       // Admin
-      case 'admin-clients': return <Clients/>
-      case 'admin-users': return <Users/>
-      case 'admin-roles': return <RolesPermissions/>
-      case 'admin-currencies': return <CurrenciesPlaceholder/>
-      case 'admin-reports': return <ReportsPlaceholder/>
-      case 'admin-config': return <Configuration/>
-      default: return <Dashboard auth={auth} currentClient={currentClient} navigate={navigate}/>
+      case 'admin-clients':
+        return <Clients />
+      case 'admin-users':
+        return <Users />
+      case 'admin-roles':
+        return <RolesPermissions />
+      case 'admin-currencies':
+        return <CurrenciesPlaceholder />
+      case 'admin-reports':
+        return <ReportsPlaceholder />
+      case 'admin-config':
+        return <Configuration />
+      default:
+        return <Dashboard auth={auth} currentClient={currentClient} navigate={navigate} />
     }
   }
 
