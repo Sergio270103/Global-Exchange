@@ -110,8 +110,9 @@ export default function Login({ navigate, onLogin }: LoginProps) {
               </div>
             )}
             <div>
-              <label className="block text-[12px] font-semibold text-slate-600 uppercase tracking-wider mb-2">Correo electrónico</label>
+              <label htmlFor="email" className="block text-[12px] font-semibold text-slate-600 uppercase tracking-wider mb-2">Correo electrónico</label>
               <input
+                id="email"
                 type="email"
                 value={email}
                 onChange={e => setEmail(e.target.value)}
@@ -120,9 +121,10 @@ export default function Login({ navigate, onLogin }: LoginProps) {
               />
             </div>
             <div>
-              <label className="block text-[12px] font-semibold text-slate-600 uppercase tracking-wider mb-2">Contraseña</label>
+              <label htmlFor="password" className="block text-[12px] font-semibold text-slate-600 uppercase tracking-wider mb-2">Contraseña</label>
               <div className="relative">
                 <input
+                  id="password"
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={e => setPassword(e.target.value)}

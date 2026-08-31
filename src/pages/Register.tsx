@@ -5,6 +5,31 @@ interface RegisterProps {
   navigate: (p: Page) => void
 }
 
+interface FieldProps {
+  label: string
+  name: string
+  value: string
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void
+  error?: string
+  type?: string
+  placeholder?: string
+}
+
+const Field = ({ label, name, type = 'text', placeholder, value, onChange, error }: FieldProps) => (
+  <div>
+    <label htmlFor={name} className="block text-[12px] font-semibold text-slate-600 uppercase tracking-wider mb-1.5">{label}</label>
+    <input
+      id={name}
+      type={type}
+      value={value}
+      onChange={onChange}
+      placeholder={placeholder}
+      className={`w-full px-4 py-3 rounded-xl border text-slate-800 text-[14px] bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300 transition-all placeholder:text-slate-300 ${error ? 'border-red-300 bg-red-50/30' : 'border-slate-200'}`}
+    />
+    {error && <p className="text-red-500 text-[11px] mt-1">{error}</p>}
+  </div>
+)
+
 export default function Register({ navigate }: RegisterProps) {
   const [clientType, setClientType] = useState<'fisica' | 'juridica'>('fisica')
   const [form, setForm] = useState({ nombre: '', apellido: '', correo: '', telefono: '', documento: '', password: '', confirm: '', empresa: '' })
@@ -36,20 +61,6 @@ export default function Register({ navigate }: RegisterProps) {
     setLoading(true)
     setTimeout(() => { setLoading(false); setSubmitted(true) }, 1200)
   }
-
-  const Field = ({ label, name, type = 'text', placeholder }: { label: string; name: string; type?: string; placeholder?: string }) => (
-    <div>
-      <label className="block text-[12px] font-semibold text-slate-600 uppercase tracking-wider mb-1.5">{label}</label>
-      <input
-        type={type}
-        value={(form as Record<string, string>)[name]}
-        onChange={e => set(name, e.target.value)}
-        placeholder={placeholder}
-        className={`w-full px-4 py-3 rounded-xl border text-slate-800 text-[14px] bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300 transition-all placeholder:text-slate-300 ${errors[name] ? 'border-red-300 bg-red-50/30' : 'border-slate-200'}`}
-      />
-      {errors[name] && <p className="text-red-500 text-[11px] mt-1">{errors[name]}</p>}
-    </div>
-  )
 
   if (submitted) {
     return (
@@ -95,27 +106,28 @@ export default function Register({ navigate }: RegisterProps) {
             ))}
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-5">
+          <form onSubmit={handleSubmit} noValidate className="space-y-5">
             {clientType === 'juridica' && (
-              <Field label="Razón Social / Empresa" name="empresa" placeholder="Mi Empresa S.A."/>
+              <Field label="Razón Social / Empresa" name="empresa" value={form.empresa} onChange={e => set('empresa', e.target.value)} placeholder="Mi Empresa S.A." error={errors.empresa}/>
             )}
 
             <div className="grid sm:grid-cols-2 gap-5">
-              <Field label={clientType === 'juridica' ? 'Nombre del representante' : 'Nombre'} name="nombre" placeholder="Carlos"/>
-              {clientType === 'fisica' && <Field label="Apellido" name="apellido" placeholder="Martínez"/>}
+              <Field label={clientType === 'juridica' ? 'Nombre del representante' : 'Nombre'} name="nombre" value={form.nombre} onChange={e => set('nombre', e.target.value)} placeholder="Carlos" error={errors.nombre}/>
+              {clientType === 'fisica' && <Field label="Apellido" name="apellido" value={form.apellido} onChange={e => set('apellido', e.target.value)} placeholder="Martínez" error={errors.apellido}/>}
             </div>
 
             <div className="grid sm:grid-cols-2 gap-5">
-              <Field label="Correo electrónico" name="correo" type="email" placeholder="tu@correo.com"/>
-              <Field label="Teléfono" name="telefono" placeholder="+595 981 000 000"/>
+              <Field label="Correo electrónico" name="correo" type="email" value={form.correo} onChange={e => set('correo', e.target.value)} placeholder="tu@correo.com" error={errors.correo}/>
+              <Field label="Teléfono" name="telefono" value={form.telefono} onChange={e => set('telefono', e.target.value)} placeholder="+595 981 000 000" error={errors.telefono}/>
             </div>
 
-            <Field label={clientType === 'juridica' ? 'RUC' : 'Cédula de identidad'} name="documento" placeholder={clientType === 'juridica' ? '80-123456-7' : '1.234.567-8'}/>
+            <Field label={clientType === 'juridica' ? 'RUC' : 'Cédula de identidad'} name="documento" value={form.documento} onChange={e => set('documento', e.target.value)} placeholder={clientType === 'juridica' ? '80-123456-7' : '1.234.567-8'} error={errors.documento}/>
 
             <div className="grid sm:grid-cols-2 gap-5">
               <div>
-                <label className="block text-[12px] font-semibold text-slate-600 uppercase tracking-wider mb-1.5">Contraseña</label>
+                <label htmlFor="password" className="block text-[12px] font-semibold text-slate-600 uppercase tracking-wider mb-1.5">Contraseña</label>
                 <input
+                  id="password"
                   type="password"
                   value={form.password}
                   onChange={e => set('password', e.target.value)}
@@ -133,8 +145,9 @@ export default function Register({ navigate }: RegisterProps) {
                 )}
               </div>
               <div>
-                <label className="block text-[12px] font-semibold text-slate-600 uppercase tracking-wider mb-1.5">Confirmar contraseña</label>
+                <label htmlFor="confirm" className="block text-[12px] font-semibold text-slate-600 uppercase tracking-wider mb-1.5">Confirmar contraseña</label>
                 <input
+                  id="confirm"
                   type="password"
                   value={form.confirm}
                   onChange={e => set('confirm', e.target.value)}

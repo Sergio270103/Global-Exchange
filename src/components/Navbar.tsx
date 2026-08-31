@@ -4,6 +4,7 @@ import { notifications as mockNotifications, demoClients } from '@/data/mockData
 
 const pageTitles: Record<string, string> = {
   dashboard: 'Dashboard',
+  'cash-count': 'Arqueo de Caja', // 👈 Título para la página de arqueo
   wallets: 'Billeteras Digitales',
   buy: 'Comprar / Vender Divisas',
   sell: 'Vender Divisas',
@@ -42,7 +43,11 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
   const [notifList, setNotifList] = useState(mockNotifications)
 
   const unread = notifList.filter(n => !n.read).length
-  const title = pageTitles[currentPage] || 'Panel'
+
+  // Si está en el dashboard y el rol es cajero, muestra "Cajero" o "Panel Cajero"
+  const title = (currentPage === 'dashboard' && auth.role === 'cashier')
+    ? 'Cajero'
+    : pageTitles[currentPage] || 'Panel'
 
   const markAllRead = () => setNotifList(n => n.map(x => ({ ...x, read: true })))
 
@@ -53,7 +58,16 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
     system: '⚙️',
   }
 
-  const roleLabel = auth.role === 'admin' ? 'Administrador' : auth.role === 'analyst' ? 'Analista' : 'Usuario'
+  // 👈 Se agrega la validación para mostrar 'Cajero' cuando auth.role es 'cashier'
+  const roleLabel =
+    auth.role === 'admin'
+      ? 'Administrador'
+      : auth.role === 'analyst'
+      ? 'Analista'
+      : auth.role === 'cashier'
+      ? 'Cajero'
+      : 'Usuario'
+
   const showClientSelector = auth.role === 'user'
 
   return (
@@ -71,8 +85,9 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
       {/* Client selector */}
       {showClientSelector && (
         <div className="relative">
-          <button
-            onClick={() => { setShowClientDropdown(v => !v); setShowNotifications(false); setShowProfile(false) }}
+<button
+          aria-label="Cambiar cliente"
+          onClick={() => { setShowClientDropdown(v => !v); setShowNotifications(false); setShowProfile(false) }}
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 transition-colors text-sm font-medium text-slate-700"
           >
             <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Cliente</span>
@@ -109,6 +124,7 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
       {/* Notifications */}
       <div className="relative">
         <button
+          aria-label="Notificaciones"
           onClick={() => { setShowNotifications(v => !v); setShowProfile(false); setShowClientDropdown(false) }}
           className="relative w-9 h-9 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-colors text-slate-500"
         >
@@ -155,6 +171,7 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
       {/* Profile */}
       <div className="relative">
         <button
+          aria-label="Perfil de usuario"
           onClick={() => { setShowProfile(v => !v); setShowNotifications(false); setShowClientDropdown(false) }}
           className="flex items-center gap-2 hover:bg-slate-100 rounded-lg px-2 py-1.5 transition-colors"
         >

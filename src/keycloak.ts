@@ -13,7 +13,7 @@ export function initKeycloak() {
   if (!initPromise) {
     initPromise = keycloak.init({
       //onLoad: 'check-sso',
-      onLoad: 'login-required',
+      onLoad: 'check-sso',
       pkceMethod: 'S256',
       checkLoginIframe: false,
     });
