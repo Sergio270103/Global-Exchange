@@ -18,6 +18,16 @@ const userMenu: SidebarItem[] = [
   { icon: '🔔', label: 'Notificaciones', page: 'notifications' },
 ]
 
+const cashierMenu: SidebarItem[] = [
+  { icon: '⊞', label: 'Dashboard', page: 'dashboard' },
+  { icon: '↑↓', label: 'Comprar / Vender', page: 'buy' },
+  { icon: '≡', label: 'Transacciones', page: 'transactions' },
+  { icon: '⬜', label: 'Facturas', page: 'invoices' },
+  { icon: '💵', label: 'Arqueo de Caja', page: 'cash-count' },
+  { icon: '%', label: 'Tasas de Cambio', page: 'rates' },
+  { icon: '🔔', label: 'Notificaciones', page: 'notifications' },
+]
+
 const analystMenu: SidebarItem[] = [
   { icon: '⊞', label: 'Dashboard', page: 'dashboard' },
   { icon: '%', label: 'Gestión de Tasas', page: 'analyst-rates' },
@@ -50,10 +60,29 @@ interface SidebarProps {
 }
 
 export default function Sidebar({ auth, currentPage, navigate, onLogout, collapsed, onToggle }: SidebarProps) {
-  const menu = auth.role === 'admin' ? adminMenu : auth.role === 'analyst' ? analystMenu : userMenu
+  const menu = auth.role === 'admin' 
+    ? adminMenu 
+    : auth.role === 'analyst' 
+    ? analystMenu 
+    : auth.role === 'cashier' 
+    ? cashierMenu 
+    : userMenu
 
-  const roleLabel = auth.role === 'admin' ? 'Administrador' : auth.role === 'analyst' ? 'Analista Cambiario' : 'Usuario'
-  const roleBadgeColor = auth.role === 'admin' ? '#f59e0b' : auth.role === 'analyst' ? '#3b82f6' : '#10b981'
+  const roleLabel = auth.role === 'admin' 
+    ? 'Administrador' 
+    : auth.role === 'analyst' 
+    ? 'Analista Cambiario' 
+    : auth.role === 'cashier' 
+    ? 'Cajero Presencial' 
+    : 'Usuario'
+
+  const roleBadgeColor = auth.role === 'admin' 
+    ? '#f59e0b' 
+    : auth.role === 'analyst' 
+    ? '#3b82f6' 
+    : auth.role === 'cashier' 
+    ? '#10b981' 
+    : '#10b981'
 
   return (
     <aside
