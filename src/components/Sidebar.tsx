@@ -77,6 +77,7 @@ export default function Sidebar({ auth, currentPage, navigate, onLogout, collaps
           </div>
         )}
         <button
+          aria-label={collapsed ? 'Expandir menú' : 'Colapsar menú'}
           onClick={onToggle}
           className="ml-auto text-white/30 hover:text-white/70 transition-colors p-1 rounded"
         >

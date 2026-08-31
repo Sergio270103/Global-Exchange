@@ -7,18 +7,55 @@ const roleColor: Record<string, { bg: string; text: string }> = {
   Usuario: { bg: '#f0fdf4', text: '#16a34a' },
 }
 
+type UserForm = { name: string; email: string; role: string; client: string }
+
+const emptyForm: UserForm = { name: '', email: '', role: 'Usuario', client: 'Global Exchange' }
+
 export default function Users() {
   const [users, setUsers] = useState(initial)
   const [search, setSearch] = useState('')
   const [filterRole, setFilterRole] = useState('Todos')
   const [showModal, setShowModal] = useState(false)
   const [editUser, setEditUser] = useState<typeof initial[0] | null>(null)
+  const [form, setForm] = useState<UserForm>(emptyForm)
 
   const filtered = users.filter(u => {
     if (filterRole !== 'Todos' && u.role !== filterRole) return false
     if (search && !u.name.toLowerCase().includes(search.toLowerCase()) && !u.email.toLowerCase().includes(search.toLowerCase())) return false
     return true
   })
+
+  const setField = (key: keyof UserForm, value: string) => setForm(f => ({ ...f, [key]: value }))
+
+  const openCreate = () => {
+    setEditUser(null)
+    setForm(emptyForm)
+    setShowModal(true)
+  }
+
+  const openEdit = (user: typeof initial[0]) => {
+    setEditUser(user)
+    setForm({ name: user.name, email: user.email, role: user.role, client: user.client })
+    setShowModal(true)
+  }
+
+  const saveUser = () => {
+    if (!form.name.trim() || !form.email.trim()) return
+    if (editUser) {
+      setUsers(us => us.map(x => x.id === editUser.id ? { ...x, name: form.name, email: form.email, role: form.role, client: form.client } : x))
+    } else {
+      setUsers(us => [...us, {
+        id: us.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+        name: form.name,
+        email: form.email,
+        role: form.role,
+        client: form.client,
+        status: 'Activo',
+        lastLogin: 'Nunca',
+      }])
+    }
+    setShowModal(false)
+  }
 
   const toggleStatus = (id: number) => setUsers(u => u.map(x => x.id === id ? { ...x, status: x.status === 'Activo' ? 'Suspendido' : 'Activo' } : x))
   const deleteUser = (id: number) => setUsers(u => u.filter(x => x.id !== id))
@@ -50,7 +87,7 @@ export default function Users() {
           <option value="Todos">Todos los roles</option>
           <option>Administrador</option><option>Analista Cambiario</option><option>Usuario</option>
         </select>
-        <button onClick={() => { setEditUser(null); setShowModal(true) }} className="ml-auto flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-[13px] font-semibold transition-all hover:-translate-y-0.5" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
+        <button onClick={openCreate} className="ml-auto flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-[13px] font-semibold transition-all hover:-translate-y-0.5" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
           + Nuevo usuario
         </button>
       </div>
@@ -93,7 +130,7 @@ export default function Users() {
                   <td className="px-5 py-4 text-[12px] text-slate-500">{user.lastLogin}</td>
                   <td className="px-5 py-4">
                     <div className="flex items-center gap-2">
-                      <button onClick={() => { setEditUser(user); setShowModal(true) }} className="text-[12px] font-semibold text-slate-500 hover:text-blue-600 px-2 py-1 rounded hover:bg-blue-50 transition-colors">Editar</button>
+                      <button onClick={() => openEdit(user)} className="text-[12px] font-semibold text-slate-500 hover:text-blue-600 px-2 py-1 rounded hover:bg-blue-50 transition-colors">Editar</button>
                       <button className="text-[12px] font-semibold text-slate-500 hover:text-purple-600 px-2 py-1 rounded hover:bg-purple-50 transition-colors">Asignar</button>
                       <button onClick={() => deleteUser(user.id)} className="text-[12px] font-semibold text-slate-500 hover:text-red-500 px-2 py-1 rounded hover:bg-red-50 transition-colors">Eliminar</button>
                     </div>
@@ -114,37 +151,37 @@ export default function Users() {
             </h2>
             <div className="space-y-4">
               <div>
-                <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Nombre completo</label>
-                <input defaultValue={editUser?.name} placeholder="Nombre Apellido" className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-300"/>
+                <label htmlFor="user-name" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Nombre completo</label>
+                <input id="user-name" value={form.name} onChange={e => setField('name', e.target.value)} placeholder="Nombre Apellido" className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-300"/>
               </div>
               <div>
-                <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Correo electrónico</label>
-                <input defaultValue={editUser?.email} placeholder="usuario@email.com" type="email" className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-300"/>
+                <label htmlFor="user-email" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Correo electrónico</label>
+                <input id="user-email" value={form.email} onChange={e => setField('email', e.target.value)} placeholder="usuario@email.com" type="email" className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-300"/>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Rol</label>
-                  <select defaultValue={editUser?.role || 'Usuario'} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
+                  <label htmlFor="user-role" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Rol</label>
+                  <select id="user-role" value={form.role} onChange={e => setField('role', e.target.value)} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
                     <option>Administrador</option><option>Analista Cambiario</option><option>Usuario</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Cliente</label>
-                  <select defaultValue={editUser?.client} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
+                  <label htmlFor="user-client" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Cliente</label>
+                  <select id="user-client" value={form.client} onChange={e => setField('client', e.target.value)} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
                     <option>Carlos Martínez</option><option>Corporación Atlas S.A.</option><option>Ana López</option><option>Global Exchange</option>
                   </select>
                 </div>
               </div>
               {!editUser && (
                 <div>
-                  <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Contraseña temporal</label>
-                  <input type="password" placeholder="Mínimo 8 caracteres" className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-300"/>
+                  <label htmlFor="user-password" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Contraseña temporal</label>
+                  <input id="user-password" type="password" placeholder="Mínimo 8 caracteres" className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-300"/>
                 </div>
               )}
             </div>
             <div className="flex gap-3 mt-6">
               <button onClick={() => setShowModal(false)} className="flex-1 py-3 rounded-xl border border-slate-200 text-[14px] font-semibold text-slate-700 hover:bg-slate-50">Cancelar</button>
-              <button onClick={() => setShowModal(false)} className="flex-1 py-3 rounded-xl text-white text-[14px] font-semibold" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
+              <button onClick={saveUser} className="flex-1 py-3 rounded-xl text-white text-[14px] font-semibold" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
                 {editUser ? 'Guardar' : 'Crear usuario'}
               </button>
             </div>

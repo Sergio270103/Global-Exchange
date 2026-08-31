@@ -71,8 +71,9 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
       {/* Client selector */}
       {showClientSelector && (
         <div className="relative">
-          <button
-            onClick={() => { setShowClientDropdown(v => !v); setShowNotifications(false); setShowProfile(false) }}
+<button
+          aria-label="Cambiar cliente"
+          onClick={() => { setShowClientDropdown(v => !v); setShowNotifications(false); setShowProfile(false) }}
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 transition-colors text-sm font-medium text-slate-700"
           >
             <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Cliente</span>
@@ -109,6 +110,7 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
       {/* Notifications */}
       <div className="relative">
         <button
+          aria-label="Notificaciones"
           onClick={() => { setShowNotifications(v => !v); setShowProfile(false); setShowClientDropdown(false) }}
           className="relative w-9 h-9 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-colors text-slate-500"
         >
@@ -155,6 +157,7 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
       {/* Profile */}
       <div className="relative">
         <button
+          aria-label="Perfil de usuario"
           onClick={() => { setShowProfile(v => !v); setShowNotifications(false); setShowClientDropdown(false) }}
           className="flex items-center gap-2 hover:bg-slate-100 rounded-lg px-2 py-1.5 transition-colors"
         >

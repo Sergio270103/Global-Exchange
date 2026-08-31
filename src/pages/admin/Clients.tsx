@@ -7,6 +7,10 @@ const categoryColor: Record<string, string> = {
   VIP: 'bg-amber-50 text-amber-700',
 }
 
+type ClientForm = { name: string; email: string; document: string; category: string; status: string }
+
+const emptyForm: ClientForm = { name: '', email: '', document: '', category: 'Minorista', status: 'Activo' }
+
 export default function Clients() {
   const [clients, setClients] = useState(initial)
   const [search, setSearch] = useState('')
@@ -15,6 +19,7 @@ export default function Clients() {
   const [showModal, setShowModal] = useState(false)
   const [editClient, setEditClient] = useState<typeof initial[0] | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null)
+  const [form, setForm] = useState<ClientForm>(emptyForm)
 
   const filtered = clients.filter(c => {
     if (filterCat !== 'Todos' && c.category !== filterCat) return false
@@ -22,6 +27,40 @@ export default function Clients() {
     if (search && !c.name.toLowerCase().includes(search.toLowerCase()) && !c.email.toLowerCase().includes(search.toLowerCase())) return false
     return true
   })
+
+  const setField = (key: keyof ClientForm, value: string) => setForm(f => ({ ...f, [key]: value }))
+
+  const openCreate = () => {
+    setEditClient(null)
+    setForm(emptyForm)
+    setShowModal(true)
+  }
+
+  const openEdit = (client: typeof initial[0]) => {
+    setEditClient(client)
+    setForm({ name: client.name, email: client.email, document: client.document, category: client.category, status: client.status })
+    setShowModal(true)
+  }
+
+  const saveClient = () => {
+    if (!form.name.trim() || !form.email.trim()) return
+    if (editClient) {
+      setClients(cs => cs.map(x => x.id === editClient.id ? { ...x, name: form.name, email: form.email, document: form.document, category: form.category, status: form.status } : x))
+    } else {
+      setClients(cs => [...cs, {
+        id: cs.reduce((m, x) => Math.max(m, x.id), 0) + 1,
+        name: form.name,
+        category: form.category,
+        operations: 0,
+        users: 1,
+        status: form.status,
+        email: form.email,
+        document: form.document,
+        joined: new Date().toLocaleDateString('es', { month: 'short', year: 'numeric' }),
+      }])
+    }
+    setShowModal(false)
+  }
 
   const deleteClient = (id: number) => { setClients(c => c.filter(x => x.id !== id)); setDeleteConfirm(null) }
   const toggleStatus = (id: number) => setClients(c => c.map(x => x.id === id ? { ...x, status: x.status === 'Activo' ? 'Suspendido' : 'Activo' } : x))
@@ -57,7 +96,7 @@ export default function Clients() {
           <option value="Todos">Todos los estados</option>
           <option>Activo</option><option>Suspendido</option>
         </select>
-        <button onClick={() => { setEditClient(null); setShowModal(true) }} className="ml-auto flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-[13px] font-semibold transition-all hover:-translate-y-0.5" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
+        <button onClick={openCreate} className="ml-auto flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-[13px] font-semibold transition-all hover:-translate-y-0.5" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
           + Nuevo cliente
         </button>
       </div>
@@ -109,7 +148,7 @@ export default function Clients() {
                   <td className="px-5 py-4 text-[12px] text-slate-500">{client.joined}</td>
                   <td className="px-5 py-4">
                     <div className="flex items-center gap-2">
-                      <button onClick={() => { setEditClient(client); setShowModal(true) }} className="text-[12px] font-semibold text-slate-500 hover:text-blue-600 px-2 py-1 rounded hover:bg-blue-50 transition-colors">Editar</button>
+                      <button onClick={() => openEdit(client)} className="text-[12px] font-semibold text-slate-500 hover:text-blue-600 px-2 py-1 rounded hover:bg-blue-50 transition-colors">Editar</button>
                       <button className="text-[12px] font-semibold text-slate-500 hover:text-purple-600 px-2 py-1 rounded hover:bg-purple-50 transition-colors">Usuarios</button>
                       <button onClick={() => setDeleteConfirm(client.id)} className="text-[12px] font-semibold text-slate-500 hover:text-red-500 px-2 py-1 rounded hover:bg-red-50 transition-colors">Eliminar</button>
                     </div>
@@ -145,25 +184,25 @@ export default function Clients() {
             </h2>
             <div className="space-y-4">
               {[
-                { label: 'Nombre / Razón Social', placeholder: editClient?.name || 'Nombre del cliente', key: 'name' },
-                { label: 'Correo electrónico', placeholder: editClient?.email || 'cliente@email.com', key: 'email' },
-                { label: 'Documento / RUC', placeholder: editClient?.document || '12.345.678-9', key: 'document' },
+                { label: 'Nombre / Razón Social', placeholder: 'Nombre del cliente', key: 'name' },
+                { label: 'Correo electrónico', placeholder: 'cliente@email.com', key: 'email' },
+                { label: 'Documento / RUC', placeholder: '12.345.678-9', key: 'document' },
               ].map(f => (
                 <div key={f.key}>
-                  <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">{f.label}</label>
-                  <input defaultValue={f.placeholder} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-300"/>
+                  <label htmlFor={f.key} className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">{f.label}</label>
+                  <input id={f.key} value={form[f.key as keyof ClientForm]} onChange={e => setField(f.key as keyof ClientForm, e.target.value)} placeholder={f.placeholder} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-300"/>
                 </div>
               ))}
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Categoría</label>
-                  <select defaultValue={editClient?.category || 'Minorista'} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
+                  <label htmlFor="category" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Categoría</label>
+                  <select id="category" value={form.category} onChange={e => setField('category', e.target.value)} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
                     <option>Minorista</option><option>Corporativo</option><option>VIP</option>
                   </select>
                 </div>
                 <div>
-                  <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Estado</label>
-                  <select defaultValue={editClient?.status || 'Activo'} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
+                  <label htmlFor="status" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Estado</label>
+                  <select id="status" value={form.status} onChange={e => setField('status', e.target.value)} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
                     <option>Activo</option><option>Suspendido</option>
                   </select>
                 </div>
@@ -171,7 +210,7 @@ export default function Clients() {
             </div>
             <div className="flex gap-3 mt-6">
               <button onClick={() => setShowModal(false)} className="flex-1 py-3 rounded-xl border border-slate-200 text-[14px] font-semibold text-slate-700 hover:bg-slate-50">Cancelar</button>
-              <button onClick={() => setShowModal(false)} className="flex-1 py-3 rounded-xl text-white text-[14px] font-semibold" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
+              <button onClick={saveClient} className="flex-1 py-3 rounded-xl text-white text-[14px] font-semibold" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
                 {editClient ? 'Guardar cambios' : 'Crear cliente'}
               </button>
             </div>
