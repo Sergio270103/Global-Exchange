@@ -9,6 +9,7 @@ interface SidebarItem {
 const userMenu: SidebarItem[] = [
   { icon: '⊞', label: 'Dashboard', page: 'dashboard' },
   { icon: '◈', label: 'Billeteras', page: 'wallets' },
+  { icon: '🔄', label: 'Simular Conversion', page: 'simulator' },
   { icon: '↑↓', label: 'Comprar / Vender', page: 'buy' },
   { icon: '⋯', label: 'Pagos Digitales', page: 'payments' },
   { icon: '≡', label: 'Transacciones', page: 'transactions' },

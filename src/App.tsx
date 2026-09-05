@@ -12,6 +12,7 @@ import BuySell from './pages/BuySell'
 import Transactions from './pages/Transactions'
 import Rates from './pages/Rates'
 import Notifications from './pages/Notifications'
+import Simulator from './pages/Simulator'
 import Invoices from './pages/Invoices'
 import Payments from './pages/Payments'
 import CashierDashboard from './pages/cashier/CashierDashboard'
@@ -103,6 +104,8 @@ export default function App() {
         return <Rates />
       case 'notifications':
         return <Notifications />
+      case 'simulator':
+        return <Simulator />
       case 'invoices':
         return <Invoices />
       case 'payments':

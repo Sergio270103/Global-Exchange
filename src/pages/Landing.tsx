@@ -54,7 +54,7 @@ export default function Landing({ navigate }: LandingProps) {
   const tickerRates = [...exchangeRates, ...exchangeRates]
 
   return (
-    <div className="min-h-screen" style={{ fontFamily: 'Inter, sans-serif' }}>
+    <div id="inicio" className="min-h-screen" style={{ fontFamily: 'Inter, sans-serif' }}>
 
       {/* Topbar */}
       <div className="fixed top-0 left-0 right-0 z-50 bg-white/90 backdrop-blur-md border-b border-slate-200/60">

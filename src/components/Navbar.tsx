@@ -14,6 +14,7 @@ const pageTitles: Record<string, string> = {
   banks: 'Cuentas Bancarias',
   rates: 'Tasas de Cambio',
   notifications: 'Notificaciones',
+  simulator: 'Simulador de Conversión', // 👈 Título para la página de simulador
   'analyst-rates': 'Gestión de Tasas',
   'analyst-earnings': 'Ganancias y Análisis',
   'admin-clients': 'Gestión de Clientes',
