@@ -1,11 +1,25 @@
+/**
+ * Barra lateral de navegación de la aplicación autenticada.
+ *
+ * Muestra un menú adaptado al rol del usuario (usuario, cajero, analista
+ * cambiario o administrador), con la opción de colapsarse y el perfil del
+ * usuario en la parte inferior.
+ *
+ * @module Sidebar
+ */
 import { type Page, type AuthUser } from '@/types'
 
+/** Ítem de navegación del menú lateral. */
 interface SidebarItem {
+  /** Icono representativo del ítem. */
   icon: string
+  /** Etiqueta visible del ítem. */
   label: string
+  /** Página a la que navega el ítem. */
   page: Page
 }
 
+/** Menú de navegación para el rol `user`. */
 const userMenu: SidebarItem[] = [
   { icon: '⊞', label: 'Dashboard', page: 'dashboard' },
   { icon: '◈', label: 'Billeteras', page: 'wallets' },
@@ -19,6 +33,7 @@ const userMenu: SidebarItem[] = [
   { icon: '🔔', label: 'Notificaciones', page: 'notifications' },
 ]
 
+/** Menú de navegación para el rol `cashier`. */
 const cashierMenu: SidebarItem[] = [
   { icon: '⊞', label: 'Dashboard', page: 'dashboard' },
   { icon: '↑↓', label: 'Comprar / Vender', page: 'buy' },
@@ -29,6 +44,7 @@ const cashierMenu: SidebarItem[] = [
   { icon: '🔔', label: 'Notificaciones', page: 'notifications' },
 ]
 
+/** Menú de navegación para el rol `analyst`. */
 const analystMenu: SidebarItem[] = [
   { icon: '⊞', label: 'Dashboard', page: 'dashboard' },
   { icon: '%', label: 'Gestión de Tasas', page: 'analyst-rates' },
@@ -37,6 +53,7 @@ const analystMenu: SidebarItem[] = [
   { icon: '🔔', label: 'Notificaciones', page: 'notifications' },
 ]
 
+/** Menú de navegación para el rol `admin`. */
 const adminMenu: SidebarItem[] = [
   { icon: '⊞', label: 'Dashboard', page: 'dashboard' },
   { icon: '◎', label: 'Clientes', page: 'admin-clients' },
@@ -51,15 +68,28 @@ const adminMenu: SidebarItem[] = [
   { icon: '🔔', label: 'Notificaciones', page: 'notifications' },
 ]
 
-interface SidebarProps {
+/** Propiedades de la barra lateral. */
+export interface SidebarProps {
+  /** Usuario autenticado. */
   auth: AuthUser
+  /** Página actualmente visible. */
   currentPage: Page
+  /** Función para navegar entre páginas. */
   navigate: (p: Page) => void
+  /** Callback ejecutado al cerrar sesión. */
   onLogout: () => void
+  /** Indica si la barra lateral está colapsada. */
   collapsed: boolean
+  /** Alterna el estado colapsado de la barra lateral. */
   onToggle: () => void
 }
 
+/**
+ * Renderiza el menú lateral según el rol del usuario.
+ *
+ * @param props - Propiedades del componente.
+ * @returns la barra lateral de navegación.
+ */
 export default function Sidebar({ auth, currentPage, navigate, onLogout, collapsed, onToggle }: SidebarProps) {
   const menu = auth.role === 'admin' 
     ? adminMenu 

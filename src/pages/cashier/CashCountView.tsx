@@ -1,3 +1,12 @@
+/**
+ * Arqueo de caja del rol cajero.
+ *
+ * Permite registrar el dinero recibido, contabilizar denominaciones y
+ * billetes por moneda en la caja de la sucursal y visualizar la evolución
+ * del efectivo mediante un gráfico.
+ *
+ * @module CashCountView
+ */
 import { useState } from 'react'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 

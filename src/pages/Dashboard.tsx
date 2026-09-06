@@ -1,9 +1,18 @@
+/**
+ * Dashboard principal del usuario autenticado.
+ *
+ * Muestra el resumen de la billetera, las tasas de cambio vigentes, las
+ * últimas transacciones y el desempeño de ganancias del período. Para el
+ * rol `cashier` se delega en el {@link CashierDashboard}.
+ *
+ * @module Dashboard
+ */
 import { type AuthUser, type Page } from '@/types'
 import { wallets, transactions, exchangeRates, earningsData } from '@/data/mockData'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import CashierDashboard from './cashier/CashierDashboard'
 
-interface DashboardProps {
+export interface DashboardProps {
   auth: AuthUser
   currentClient: string
   navigate: (p: Page) => void

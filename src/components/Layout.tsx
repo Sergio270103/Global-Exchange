@@ -1,18 +1,40 @@
+/**
+ * Layout principal de las secciones autenticadas.
+ *
+ * Compone la barra lateral ({@link Sidebar}), la barra superior
+ * ({@link Navbar}) y el área de contenido del usuario autenticado.
+ *
+ * @module Layout
+ */
 import { useState } from 'react'
 import Sidebar from './Sidebar'
 import Navbar from './Navbar'
 import { type Page, type AuthUser } from '@/types'
 
-interface LayoutProps {
+/** Propiedades del layout principal de la aplicación. */
+export interface LayoutProps {
+  /** Usuario autenticado. */
   auth: AuthUser
+  /** Página actualmente visible. */
   currentPage: Page
+  /** Función para navegar entre páginas. */
   navigate: (p: Page) => void
+  /** Callback ejecutado al cerrar sesión. */
   onLogout: () => void
+  /** Cliente seleccionado en la sesión. */
   currentClient: string
+  /** Actualiza el cliente seleccionado. */
   setCurrentClient: (c: string) => void
+  /** Contenido de la página a renderizar. */
   children: React.ReactNode
 }
 
+/**
+ * Renderiza el shell de la aplicación autenticada.
+ *
+ * @param props - Propiedades del layout.
+ * @returns la estructura con sidebar, navbar y contenido.
+ */
 export default function Layout({ auth, currentPage, navigate, onLogout, currentClient, setCurrentClient, children }: LayoutProps) {
   const [collapsed, setCollapsed] = useState(false)
 

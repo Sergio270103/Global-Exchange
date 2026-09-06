@@ -1,3 +1,11 @@
+/**
+ * Gestión de tasas de cambio (analista cambiario).
+ *
+ * Permite al analista modificar las tasas de compra/venta de las monedas,
+ * registrando un historial de actualización para trazabilidad.
+ *
+ * @module RatesManagement
+ */
 import { useState } from 'react'
 import { editableRates } from '@/data/mockData'
 

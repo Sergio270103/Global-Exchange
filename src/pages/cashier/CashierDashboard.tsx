@@ -1,7 +1,16 @@
+/**
+ * Panel operativo del cajero.
+ *
+ * Permite al cajero registrar o identificar clientes presenciales, realizar
+ * operaciones de compra/venta de divisas, emitir comprobantes legales y
+ * gestionar el arqueo de caja de la sucursal.
+ *
+ * @module CashierDashboard
+ */
 import React, { useState } from 'react'
 import { type AuthUser, type Page } from '../../types'
 
-interface Props {
+export interface Props {
   auth: AuthUser
   currentClient: string
   navigate: (p: Page) => void

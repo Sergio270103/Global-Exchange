@@ -1,7 +1,17 @@
+/**
+ * Barra superior de la aplicación autenticada.
+ *
+ * Muestra el título de la página activa, el selector de cliente (para
+ * usuarios), el panel de notificaciones y el perfil del usuario con la
+ * opción de cerrar sesión.
+ *
+ * @module Navbar
+ */
 import { useState } from 'react'
 import { type Page, type AuthUser } from '@/types'
 import { notifications as mockNotifications, demoClients } from '@/data/mockData'
 
+/** Mapa de títulos por página de la aplicación. */
 const pageTitles: Record<string, string> = {
   dashboard: 'Dashboard',
   'cash-count': 'Arqueo de Caja', // 👈 Título para la página de arqueo
@@ -28,15 +38,28 @@ const pageTitles: Record<string, string> = {
   'admin-config': 'Configuración del Sistema',
 }
 
-interface NavbarProps {
+/** Propiedades de la barra superior. */
+export interface NavbarProps {
+  /** Usuario autenticado. */
   auth: AuthUser
+  /** Página actualmente visible. */
   currentPage: Page
+  /** Función para navegar entre páginas. */
   navigate: (p: Page) => void
+  /** Callback ejecutado al cerrar sesión. */
   onLogout: () => void
+  /** Cliente seleccionado en la sesión. */
   currentClient: string
+  /** Actualiza el cliente seleccionado. */
   setCurrentClient: (c: string) => void
 }
 
+/**
+ * Renderiza la barra superior con título, notificaciones y perfil.
+ *
+ * @param props - Propiedades del componente.
+ * @returns la barra superior de la aplicación.
+ */
 export default function Navbar({ auth, currentPage, navigate, onLogout, currentClient, setCurrentClient }: NavbarProps) {
   const [showNotifications, setShowNotifications] = useState(false)
   const [showProfile, setShowProfile] = useState(false)

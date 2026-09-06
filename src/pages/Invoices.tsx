@@ -1,3 +1,11 @@
+/**
+ * Vista de facturas electrónicas.
+ *
+ * Lista las facturas emitidas para las transacciones del cliente con su
+ * estado (emitida, aprobada, rechazada).
+ *
+ * @module Invoices
+ */
 import { invoices } from '@/data/mockData'
 
 const statusStyle: Record<string, string> = {

@@ -1,3 +1,15 @@
+/**
+ * Datos simulados (mock) para el desarrollo de la aplicación.
+ *
+ * Este módulo centraliza los datos de ejemplo que alimentan las vistas
+ * mientras no exista integración con el backend: tasas de cambio,
+ * billeteras, cuentas bancarias, transacciones, facturas, clientes,
+ * usuarios, ganancias, notificaciones y tasas históricas.
+ *
+ * @module mockData
+ */
+
+/** Tasas de cambio vigentes de cada moneda (compra/venta). */
 export const exchangeRates = [
   { currency: 'USD', flag: '🇺🇸', name: 'Dólar Americano', buy: 7580, sell: 7650, change: +0.42, updatedAt: '14:32' },
   { currency: 'EUR', flag: '🇪🇺', name: 'Euro', buy: 8250, sell: 8340, change: -0.18, updatedAt: '14:32' },
@@ -7,6 +19,7 @@ export const exchangeRates = [
   { currency: 'CLP', flag: '🇨🇱', name: 'Peso Chileno', buy: 7.80, sell: 8.20, change: +0.12, updatedAt: '14:31' },
 ]
 
+/** Billetera digital multidivisa del cliente en sesión. */
 export const wallets = [
   { currency: 'PYG', balance: 15750000, symbol: '₲', flag: '🇵🇾', change: +2.1 },
   { currency: 'USD', balance: 2450.00, symbol: '$', flag: '🇺🇸', change: +0.42 },
@@ -14,11 +27,13 @@ export const wallets = [
   { currency: 'BRL', balance: 8900.00, symbol: 'R$', flag: '🇧🇷', change: +1.05 },
 ]
 
+/** Cuentas bancarias externas vinculadas al cliente. */
 export const bankAccounts = [
   { id: 1, bank: 'Banco Continental', account: '•••• •••• 4521', code: 'BCON-PY', holder: 'Carlos Martínez', document: '12.345.678', currency: 'PYG', status: 'Activa' },
   { id: 2, bank: 'Itaú Paraguay', account: '•••• •••• 8832', code: 'ITAU-PY', holder: 'Carlos Martínez', document: '12.345.678', currency: 'USD', status: 'Activa' },
 ]
 
+/** Historial de transacciones de compra/venta de divisas. */
 export const transactions = [
   { id: 'TRX-2024-0891', date: '15 Ene 2024', client: 'Carlos Martínez', type: 'Compra', currency: 'USD', amount: 1500, rate: 7580, total: 11370000, status: 'Completada', payment: 'Transferencia' },
   { id: 'TRX-2024-0890', date: '15 Ene 2024', client: 'Ana López', type: 'Venta', currency: 'EUR', amount: 800, rate: 8340, total: 6672000, status: 'Completada', payment: 'Billetera' },
@@ -30,6 +45,7 @@ export const transactions = [
   { id: 'TRX-2024-0884', date: '12 Ene 2024', client: 'Sofía Ramírez', type: 'Compra', currency: 'USD', amount: 800, rate: 7580, total: 6064000, status: 'Completada', payment: 'Transferencia' },
 ]
 
+/** Facturas electrónicas generadas para las transacciones. */
 export const invoices = [
   { id: 'F001-0891', date: '15 Ene 2024', client: 'Carlos Martínez', amount: 11370000, status: 'Aprobada', trx: 'TRX-2024-0891' },
   { id: 'F001-0890', date: '15 Ene 2024', client: 'Ana López', amount: 6672000, status: 'Aprobada', trx: 'TRX-2024-0890' },
@@ -38,6 +54,7 @@ export const invoices = [
   { id: 'F001-0887', date: '13 Ene 2024', client: 'Roberto Torres', amount: 9900000, status: 'Rechazada', trx: 'TRX-2024-0887' },
 ]
 
+/** Clientes registrados en la plataforma con su segmentación. */
 export const clients = [
   { id: 1, name: 'Carlos Martínez', category: 'Minorista', operations: 45, users: 2, status: 'Activo', email: 'carlos@email.com', document: '12.345.678-9', joined: 'Mar 2023' },
   { id: 2, name: 'Corporación Atlas S.A.', category: 'Corporativo', operations: 320, users: 8, status: 'Activo', email: 'contacto@atlas.com', document: '80-012345-6', joined: 'Jan 2022' },
@@ -47,6 +64,7 @@ export const clients = [
   { id: 6, name: 'Laura Díaz', category: 'VIP', operations: 96, users: 1, status: 'Activo', email: 'laura@email.com', document: '45.678.901-2', joined: 'Sep 2022' },
 ]
 
+/** Usuarios del sistema y sus roles asignados. */
 export const users = [
   { id: 1, name: 'María García', email: 'maria@globalexchange.com', role: 'Administrador', client: 'Global Exchange', status: 'Activo', lastLogin: 'Hoy 14:20' },
   { id: 2, name: 'Juan Analista', email: 'juan@globalexchange.com', role: 'Analista Cambiario', client: 'Global Exchange', status: 'Activo', lastLogin: 'Hoy 13:45' },
@@ -56,6 +74,7 @@ export const users = [
   { id: 6, name: 'Laura Operadora', email: 'laura@globalexchange.com', role: 'Analista Cambiario', client: 'Global Exchange', status: 'Activo', lastLogin: 'Hoy 11:55' },
 ]
 
+/** Datos de ganancias mensuales y por moneda para el monitoreo. */
 export const earningsData = {
   monthly: [
     { month: 'Jul', total: 4200, usd: 1800, eur: 1200, brl: 800, pyg: 400 },
@@ -74,6 +93,7 @@ export const earningsData = {
   ],
 }
 
+/** Notificaciones enviadas al usuario (tasas, transacciones, facturas). */
 export const notifications = [
   { id: 1, type: 'rate', title: 'Variación significativa en USD', message: 'El dólar subió +0.42% en las últimas 2 horas', time: '14:30', read: false },
   { id: 2, type: 'transaction', title: 'Operación completada', message: 'Compra de USD 1,500.00 acreditada exitosamente', time: '13:45', read: false },
@@ -85,6 +105,12 @@ export const notifications = [
 
 const seed = (n: number) => ((Math.sin(n) * 10000) % 1 + 1) / 2
 
+/**
+ * Evolución histórica de tasas de cambio por moneda.
+ *
+ * Genera series de 30 días con valores deterministas (semilla) para poder
+ * graficar la evolución diaria de compra/venta de cada moneda.
+ */
 export const historicalRates: Record<string, { date: string; buy: number; sell: number }[]> = {
   USD: Array.from({ length: 30 }, (_, i) => ({
     date: new Date(2024, 0, i + 1).toLocaleDateString('es', { day: '2-digit', month: 'short' }),
@@ -103,6 +129,7 @@ export const historicalRates: Record<string, { date: string; buy: number; sell: 
   })),
 }
 
+/** Tasas editables por el analista cambiario, con trazabilidad. */
 export const editableRates = [
   { currency: 'USD', flag: '🇺🇸', name: 'Dólar Americano', buy: 7580, sell: 7650, updatedAt: '14:32 - 15 Ene 2024', updatedBy: 'Juan Analista' },
   { currency: 'EUR', flag: '🇪🇺', name: 'Euro', buy: 8250, sell: 8340, updatedAt: '14:32 - 15 Ene 2024', updatedBy: 'Juan Analista' },
@@ -111,4 +138,5 @@ export const editableRates = [
   { currency: 'GBP', flag: '🇬🇧', name: 'Libra Esterlina', buy: 9520, sell: 9640, updatedAt: '14:31 - 15 Ene 2024', updatedBy: 'Laura Operadora' },
 ]
 
+/** Clientes de demostración para el selector de cliente en sesión. */
 export const demoClients = ['Carlos Martínez', 'Corporación Atlas S.A.', 'Ana López']

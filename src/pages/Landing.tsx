@@ -1,3 +1,11 @@
+/**
+ * Página de aterrizaje (landing) pública.
+ *
+ * Presenta la casa de cambio, las tasas de cambio vigentes y brinda acceso
+ * a autenticación y registro a través de Keycloak.
+ *
+ * @module Landing
+ */
 import { useState } from 'react'
 import { exchangeRates } from '@/data/mockData'
 import { type Page } from '@/types'
@@ -30,7 +38,9 @@ const benefits = [
 
 const currencies = ['🇺🇸 USD', '🇪🇺 EUR', '🇧🇷 BRL', '🇦🇷 ARS', '🇵🇾 PYG', '🇬🇧 GBP', '🇨🇱 CLP', '🇺🇾 UYP', '🇨🇴 COP', '🇵🇪 PEN', '🇧🇴 BOB', '🇨🇭 CHF']
 
-interface LandingProps {
+/** Propiedades de la página de aterrizaje. */
+export interface LandingProps {
+  /** Función para navegar entre páginas de la aplicación. */
   navigate: (p: Page) => void
 }
 

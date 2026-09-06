@@ -1,3 +1,11 @@
+/**
+ * Monitoreo de ganancias (analista cambiario y administración).
+ *
+ * Visualiza las ganancias generadas por la casa de cambio en tiempo real,
+ * desglosadas por moneda y período mediante gráficos.
+ *
+ * @module Earnings
+ */
 import { earningsData } from '@/data/mockData'
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 

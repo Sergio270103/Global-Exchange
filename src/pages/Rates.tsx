@@ -1,3 +1,11 @@
+/**
+ * Vista de tasas de cambio.
+ *
+ * Muestra las tasas vigentes del día y la evolución histórica mediante
+ * gráficos de líneas o barras, con filtros por período y rango de fechas.
+ *
+ * @module Rates
+ */
 import { useState } from 'react'
 import { exchangeRates, historicalRates } from '@/data/mockData'
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'

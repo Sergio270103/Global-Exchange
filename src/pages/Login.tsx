@@ -1,7 +1,15 @@
+/**
+ * Vista de inicio de sesión.
+ *
+ * Permite autenticar al usuario y, una vez validado, actualiza el estado
+ * global de la aplicación con el usuario en sesión.
+ *
+ * @module Login
+ */
 import { useState } from 'react'
 import { type Page, type AuthUser, type Role } from '@/types'
 
-interface LoginProps {
+export interface LoginProps {
   navigate: (p: Page) => void
   onLogin: (user: AuthUser) => void
 }

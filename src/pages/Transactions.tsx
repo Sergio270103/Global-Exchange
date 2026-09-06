@@ -1,3 +1,11 @@
+/**
+ * Historial de transacciones.
+ *
+ * Muestra el historial completo de operaciones de compra/venta con
+ * filtrado por estado, fecha y moneda.
+ *
+ * @module Transactions
+ */
 import { useState } from 'react'
 import { transactions } from '@/data/mockData'
 import { type AuthUser } from '@/types'
@@ -9,7 +17,8 @@ const statusStyle: Record<string, string> = {
   Anulada: 'bg-slate-100 text-slate-500 border-slate-200',
 }
 
-interface TransactionsProps { auth: AuthUser; currentClient: string }
+/** Propiedades del historial de transacciones. */
+export interface TransactionsProps { auth: AuthUser; currentClient: string }
 
 export default function Transactions({ auth, currentClient }: TransactionsProps) {
   const [filterStatus, setFilterStatus] = useState('Todos')

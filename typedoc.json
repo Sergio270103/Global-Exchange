@@ -1,0 +1,15 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["src"],
+  "entryPointStrategy": "expand",
+  "out": "docs/PDO",
+  "name": "Global Exchange - Documentación del Código Fuente",
+  "exclude": ["**/*.test.ts", "**/*.test.tsx", "src/test/**"],
+  "excludePrivate": true,
+  "excludeProtected": true,
+  "excludeExternals": true,
+  "includeVersion": true,
+  "cleanOutputDir": true,
+  "readme": "none",
+  "hideGenerator": true
+}

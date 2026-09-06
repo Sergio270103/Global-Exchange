@@ -1,3 +1,12 @@
+/**
+ * Vista de billeteras digitales.
+ *
+ * Muestra los saldos multidivisa del cliente y permite la gestión de
+ * cuentas bancarias vinculadas y operaciones de depósito, retiro y
+ * transferencia.
+ *
+ * @module Wallets
+ */
 import { useState } from 'react'
 import { wallets, bankAccounts } from '@/data/mockData'
 import { exchangeRates } from '@/data/mockData'
