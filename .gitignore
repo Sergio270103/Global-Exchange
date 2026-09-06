@@ -1,0 +1,29 @@
+node_modules/
+dist/
+build/
+.cache/
+.env*
+.vite/
+vite.config.*.timestamp-*
+*.tsbuildinfo
+*-debug.log*
+logs/
+*.log
+.claude-replay.*
+.tmp-*
+
+coverage/
+
+# Ignorar archivos autogenerados de PDO
+frontend/docs/PDO/functions/
+frontend/docs/PDO/interfaces/
+frontend/docs/PDO/modules/
+frontend/docs/PDO/types/
+frontend/docs/PDO/variables/
+
+# Backend
+venv/
+__pycache__/
+*.pyc
+*.sqlite3
+.env
