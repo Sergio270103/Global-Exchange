@@ -1,3 +1,11 @@
+/**
+ * Gestión de clientes (administración).
+ *
+ * Permite al administrador listar, registrar y mantener los clientes de la
+ * plataforma, incluyendo su segmentación por categoría.
+ *
+ * @module Clients
+ */
 import { useState } from 'react'
 import { clients as initial } from '@/data/mockData'
 

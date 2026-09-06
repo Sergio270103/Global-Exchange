@@ -1,3 +1,11 @@
+/**
+ * Vista de pagos digitales.
+ *
+ * Muestra los pagos asociados a las transacciones y su método de pago
+ * (transferencia bancaria, billetera digital, tarjeta, QR).
+ *
+ * @module Payments
+ */
 import { useState } from 'react'
 
 const payments = [

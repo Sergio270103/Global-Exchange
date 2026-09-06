@@ -1,3 +1,11 @@
+/**
+ * Roles y permisos (administración).
+ *
+ * Permite visualizar los roles del sistema y sus permisos de acceso a los
+ * distintos módulos de la plataforma.
+ *
+ * @module RolesPermissions
+ */
 import { useState } from 'react'
 
 const roles = ['Administrador', 'Analista Cambiario', 'Usuario', 'No Registrado']

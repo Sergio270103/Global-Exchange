@@ -1,3 +1,12 @@
+/**
+ * Vista de notificaciones del usuario.
+ *
+ * Muestra las alertas generadas por el sistema (variaciones de tasas,
+ * transacciones, facturas y avisos del sistema) con la opción de
+ * marcarlas como leídas.
+ *
+ * @module Notifications
+ */
 import { useState } from 'react'
 import { notifications as initial } from '@/data/mockData'
 

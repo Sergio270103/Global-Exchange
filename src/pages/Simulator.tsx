@@ -1,8 +1,17 @@
+/**
+ * Simulador de conversión de divisas.
+ *
+ * Permite simular operaciones de compra/venta seleccionando monedas y
+ * monto, mostrando la tasa aplicada y el resultado estimado sin llegar a
+ * concretar la operación.
+ *
+ * @module Simulator
+ */
 import { useState } from 'react'
 import { exchangeRates } from '@/data/mockData'
 import { type Page } from '@/types'
 
-interface SimulatorProps {
+export interface SimulatorProps {
   navigate?: (p: Page) => void
 }
 

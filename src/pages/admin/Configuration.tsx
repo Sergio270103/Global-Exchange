@@ -1,3 +1,11 @@
+/**
+ * Configuración del sistema (administración).
+ *
+ * Permite al administrador administrar monedas admitidas, tasas de cambio
+ * y métodos de pago habilitados en la plataforma.
+ *
+ * @module Configuration
+ */
 import { useState } from 'react'
 
 export default function Configuration() {

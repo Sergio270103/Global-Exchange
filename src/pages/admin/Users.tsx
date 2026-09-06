@@ -1,3 +1,11 @@
+/**
+ * Gestión de usuarios (administración).
+ *
+ * Permite al administrador listar, registrar y gestionar los usuarios del
+ * sistema junto con sus roles asignados.
+ *
+ * @module Users
+ */
 import { useState } from 'react'
 import { users as initial } from '@/data/mockData'
 

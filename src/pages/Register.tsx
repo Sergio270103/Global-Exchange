@@ -1,7 +1,15 @@
+/**
+ * Vista de registro de usuarios.
+ *
+ * Permite el auto-registro de usuarios en la plataforma (delegando la
+ * creación de la cuenta y la verificación de correo a Keycloak).
+ *
+ * @module Register
+ */
 import { useState } from 'react'
 import { type Page } from '@/types'
 
-interface RegisterProps {
+export interface RegisterProps {
   navigate: (p: Page) => void
 }
 

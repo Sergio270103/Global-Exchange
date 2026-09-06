@@ -1,3 +1,13 @@
+/**
+ * Componente raíz de la aplicación Global Exchange.
+ *
+ * Administra el ciclo de vida de la sesión de Keycloak, el estado del
+ * usuario autenticado y la página activa. Según el rol del usuario se
+ * renderiza el dashboard correspondiente (usuario, cajero, analista
+ * cambiario o administrador) dentro de un layout común.
+ *
+ * @module App
+ */
 import { useState, useEffect } from 'react'
 import keycloak, { initKeycloak } from './keycloak'
 import { type AuthUser, type Page, type Role } from './types'
@@ -25,6 +35,16 @@ import Users from './pages/admin/Users'
 import RolesPermissions from './pages/admin/RolesPermissions'
 import Configuration from './pages/admin/Configuration'
 
+/**
+ * Convierte los datos del token de Keycloak en un usuario autenticado.
+ *
+ * Determina el rol de la aplicación a partir de los roles del realm
+ * (`admin`, `analyst`, `cashier`) presentes en el token. Si no coincide
+ * con ninguno, se asigna el rol `user`.
+ *
+ * @param tokenParsed - Datos decodificados del token de acceso de Keycloak.
+ * @returns Usuario autenticado mapeado desde el token.
+ */
 function mapKeycloakUser(tokenParsed: any): AuthUser {
   const roles: string[] = tokenParsed?.realm_access?.roles ?? []
 
@@ -46,6 +66,16 @@ function mapKeycloakUser(tokenParsed: any): AuthUser {
   }
 }
 
+/**
+ * Componente principal de la aplicación.
+ *
+ * - Inicializa la sesión de Keycloak al montar el componente.
+ * - Muestra la landing pública mientras no haya usuario autenticado.
+ * - Renderiza el dashboard y navegación correspondientes al rol del
+ *   usuario autenticado dentro de un {@link Layout} compartido.
+ *
+ * @returns la interfaz de la aplicación según el estado de autenticación.
+ */
 export default function App() {
   const [keycloakReady, setKeycloakReady] = useState(false)
   const [auth, setAuth] = useState<AuthUser | null>(null)

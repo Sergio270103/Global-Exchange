@@ -1,8 +1,16 @@
+/**
+ * Vista de compra y venta de divisas.
+ *
+ * Permite al usuario seleccionar moneda origen y destino, visualizar la
+ * tasa vigente, simular la conversión y confirmar la operación cambiaria.
+ *
+ * @module BuySell
+ */
 import { useState } from 'react'
 import { exchangeRates } from '@/data/mockData'
 import { type AuthUser } from '@/types'
 
-interface BuySellProps {
+export interface BuySellProps {
   auth: AuthUser
   currentClient: string
 }
