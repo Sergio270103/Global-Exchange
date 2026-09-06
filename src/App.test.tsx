@@ -60,4 +60,18 @@ describe('App (resolución de sesión y rol)', () => {
     expect(screen.getByText('Gestión de Tasas')).toBeInTheDocument()
     expect(screen.queryByText('Roles y Permisos')).not.toBeInTheDocument()
   })
+
+  it('ingresa como usuario y muestra su tipo de persona del token (persona jurídica)', async () => {
+    keycloakMock.tokenParsed = {
+      name: 'Ana López',
+      email: 'ana@email.com',
+      realm_access: { roles: ['user'] },
+      tipo_persona: 'Persona Jurídica',
+    }
+    initKeycloakMock.mockResolvedValue(true)
+    render(<App />)
+    expect(await screen.findByText('Ana')).toBeInTheDocument()
+    expect(screen.getByText('Persona Jurídica')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cambiar cliente' })).toBeInTheDocument()
+  })
 })

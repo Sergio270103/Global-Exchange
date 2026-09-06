@@ -115,14 +115,24 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
             className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 transition-colors text-sm font-medium text-slate-700"
           >
             <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Cliente</span>
-            <span className="text-slate-800 font-semibold text-[13px] max-w-[140px] truncate">{currentClient}</span>
-            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="text-slate-400">
+            <div className="min-w-0">
+              <div className="text-slate-800 font-semibold text-[13px] max-w-[140px] truncate">{currentClient}</div>
+              {auth.tipoPersona && (
+                <div className="text-[10px] text-emerald-600 font-medium leading-tight">{auth.tipoPersona}</div>
+              )}
+            </div>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" className="text-slate-400 shrink-0">
               <path d="M2 4l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
           </button>
           {showClientDropdown && (
             <div className="absolute right-0 top-full mt-2 w-56 bg-white rounded-xl shadow-xl border border-slate-100 py-1.5 animate-fadein z-50">
               <div className="px-3 py-1.5 text-[11px] text-slate-400 font-semibold uppercase tracking-wider">Cambiar cliente</div>
+              {auth.tipoPersona && (
+                <div className="px-3 pb-1.5 text-[11px] text-emerald-600 font-medium">
+                  Tipo de persona: {auth.tipoPersona}
+                </div>
+              )}
               {demoClients.map(c => (
                 <button
                   key={c}

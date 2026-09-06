@@ -6,6 +6,7 @@ import { type AuthUser } from '@/types'
 
 const admin: AuthUser = { name: 'María García', email: 'maria@globalexchange.com', role: 'admin', avatar: '' }
 const userAuth: AuthUser = { name: 'Carlos Martínez', email: 'carlos@email.com', role: 'user', avatar: '' }
+const userJuridica: AuthUser = { name: 'Ana López', email: 'ana@email.com', role: 'user', avatar: '', tipoPersona: 'Persona Jurídica' }
 
 function renderNavbar(auth: AuthUser = admin, currentPage: string = 'dashboard') {
   const navigate = vi.fn()
@@ -76,6 +77,19 @@ describe('Navbar (barra superior)', () => {
   it('no muestra el selector de cliente para el rol admin', () => {
     renderNavbar(admin)
     expect(screen.queryByRole('button', { name: 'Cambiar cliente' })).not.toBeInTheDocument()
+  })
+
+  it('muestra el tipo de persona del usuario en el selector de cliente', async () => {
+    const user = userEvent.setup()
+    renderNavbar(userJuridica)
+    expect(screen.getByText('Persona Jurídica')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Cambiar cliente' }))
+    expect(screen.getByText('Tipo de persona: Persona Jurídica')).toBeInTheDocument()
+  })
+
+  it('no muestra tipo de persona si el usuario no lo tiene definido', () => {
+    renderNavbar(userAuth)
+    expect(screen.queryByText('Persona Jurídica')).not.toBeInTheDocument()
   })
 
   it('muestra el rol del usuario en el perfil', () => {

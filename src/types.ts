@@ -38,6 +38,8 @@ export interface AuthUser {
   role: Role
   /** URL de la imagen de avatar del usuario. */
   avatar: string
+  /** Tipo de persona del usuario: física o jurídica (del token de Keycloak). */
+  tipoPersona?: string
 }
 
 /**
