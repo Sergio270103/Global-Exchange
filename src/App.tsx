@@ -63,6 +63,7 @@ function mapKeycloakUser(tokenParsed: any): AuthUser {
     email: tokenParsed?.email ?? '',
     role,
     avatar: tokenParsed?.picture ?? `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=0f3460&color=fff`,
+    tipoPersona: tokenParsed?.tipo_persona ?? '',
   }
 }
 
