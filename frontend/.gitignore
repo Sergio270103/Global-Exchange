@@ -13,3 +13,10 @@ logs/
 .tmp-*
 
 coverage/
+
+# Ignorar archivos autogenerados de PDO
+docs/PDO/functions/
+docs/PDO/interfaces/
+docs/PDO/modules/
+docs/PDO/types/
+docs/PDO/variables/
