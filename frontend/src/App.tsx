@@ -132,7 +132,7 @@ export default function App() {
         return <Transactions auth={auth} currentClient={currentClient} />
       case 'rates':
       case 'admin-rates':
-        return <Rates />
+        return <Rates authUser={auth} />
       case 'notifications':
         return <Notifications />
       case 'simulator':
