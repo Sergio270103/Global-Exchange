@@ -36,7 +36,6 @@ const userMenu: SidebarItem[] = [
 /** Menú de navegación para el rol `cashier`. */
 const cashierMenu: SidebarItem[] = [
   { icon: '⊞', label: 'Dashboard', page: 'dashboard' },
-  { icon: '↑↓', label: 'Comprar / Vender', page: 'buy' },
   { icon: '≡', label: 'Transacciones', page: 'transactions' },
   { icon: '⬜', label: 'Facturas', page: 'invoices' },
   { icon: '💵', label: 'Arqueo de Caja', page: 'cash-count' },
