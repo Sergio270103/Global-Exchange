@@ -155,8 +155,6 @@ export default function App() {
         return <Clients />
       case 'admin-users':
         return <Users />
-      case 'admin-roles':
-        return <RolesPermissions />
       case 'admin-currencies':
         return <CurrenciesPlaceholder />
       case 'admin-reports':

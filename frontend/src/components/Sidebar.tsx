@@ -57,7 +57,6 @@ const adminMenu: SidebarItem[] = [
   { icon: '⊞', label: 'Dashboard', page: 'dashboard' },
   { icon: '◎', label: 'Clientes', page: 'admin-clients' },
   { icon: '👤', label: 'Usuarios', page: 'admin-users' },
-  { icon: '⛨', label: 'Roles y Permisos', page: 'admin-roles' },
   { icon: '◈', label: 'Monedas', page: 'admin-currencies' },
   { icon: '%', label: 'Tasas', page: 'admin-rates' },
   { icon: '⊟', label: 'Métodos de Pago', page: 'admin-payments' },
