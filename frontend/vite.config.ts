@@ -8,7 +8,7 @@ export default defineConfig({
     react(),
     tailwindcss(),
   ],
-  base:"/Global-Exchange/",
+  base: "/", // Cambiado a '/' para compatibilidad con Vercel
 
   resolve: {
     alias: {
@@ -17,7 +17,7 @@ export default defineConfig({
   },
 
   server: {
-    host: "localhost",
-    port: 5173,
+    host: '0.0.0.0',
+    allowedHosts: true, // Permite conexiones desde ngrok y dispositivos en tu red local
   },
 });

@@ -1,0 +1,22 @@
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.2
+    container_name: global-exchange-keycloak
+    command: start-dev --import-realm
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_HOSTNAME: "https://clang-opponent-catalyze.ngrok-free.dev"
+      KC_HOSTNAME_ADMIN: "http://localhost:8080"
+      KC_HOSTNAME_STRICT: "false"
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: "xforwarded"
+      KC_SPI_LOGIN_PROTOCOL_OPENID_CONNECT_CHECK_SESSION_IFRAME_ENABLED: "false"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./realm-export.json:/opt/keycloak/data/import/realm-export.json
+      - keycloak_data:/opt/keycloak/data
+
+volumes:
+  keycloak_data:
