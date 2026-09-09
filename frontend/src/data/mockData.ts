@@ -8,6 +8,7 @@
  *
  * @module mockData
  */
+import type { BankAccount } from '@/types'
 
 /** Tasas de cambio vigentes de cada moneda (compra/venta). */
 export const exchangeRates = [
@@ -27,10 +28,16 @@ export const wallets = [
   { currency: 'BRL', balance: 8900.00, symbol: 'R$', flag: '🇧🇷', change: +1.05 },
 ]
 
-/** Cuentas bancarias externas vinculadas al cliente. */
-export const bankAccounts = [
-  { id: 1, bank: 'Banco Continental', account: '•••• •••• 4521', code: 'BCON-PY', holder: 'Carlos Martínez', document: '12.345.678', currency: 'PYG', status: 'Activa' },
-  { id: 2, bank: 'Itaú Paraguay', account: '•••• •••• 8832', code: 'ITAU-PY', holder: 'Carlos Martínez', document: '12.345.678', currency: 'USD', status: 'Activa' },
+/**
+ * Cuentas bancarias externas vinculadas al cliente (medios de pago, RF16/RF26).
+ *
+ * Cada cuenta reúne los datos mínimos exigidos para la vinculación:
+ * Nombre, Apellido, Nº Cédula, Entidad bancaria, Nº de cuenta bancaria
+ * y Código Bancario.
+ */
+export const bankAccounts: BankAccount[] = [
+  { id: 1, bank: 'Banco Continental', account: '•••• •••• 4521', code: 'BCON-PY', holder: 'Carlos Martínez', firstName: 'Carlos', lastName: 'Martínez', document: '12.345.678', currency: 'PYG', status: 'Activa' },
+  { id: 2, bank: 'Itaú Paraguay', account: '•••• •••• 8832', code: 'ITAU-PY', holder: 'Carlos Martínez', firstName: 'Carlos', lastName: 'Martínez', document: '12.345.678', currency: 'USD', status: 'Activa' },
 ]
 
 /** Historial de transacciones de compra/venta de divisas. */

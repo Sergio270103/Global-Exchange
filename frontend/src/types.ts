@@ -59,3 +59,33 @@ export interface NavProps {
   /** Actualiza el cliente seleccionado dentro de la sesión. */
   setCurrentClient: (c: string) => void
 }
+
+/**
+ * Cuenta bancaria externa vinculada a un cliente como medio de pago.
+ *
+ * Contiene los datos mínimos exigidos por el RF16 de la ERS (Nombre,
+ * Apellido, Nº Cédula, Entidad bancaria, Nº de cuenta bancaria y
+ * Código Bancario), más la moneda y el estado de la vinculación.
+ */
+export interface BankAccount {
+  /** Identificador único de la cuenta dentro del sistema. */
+  id: number
+  /** Entidad bancaria a la que pertenece la cuenta. */
+  bank: string
+  /** Número de cuenta bancaria (puede viajar enmascarado). */
+  account: string
+  /** Código bancario de la entidad. */
+  code: string
+  /** Nombre completo del titular (Nombre + Apellido). */
+  holder: string
+  /** Nombre del titular de la cuenta. */
+  firstName: string
+  /** Apellido del titular de la cuenta. */
+  lastName: string
+  /** Número de cédula de identidad del titular. */
+  document: string
+  /** Moneda en la que opera la cuenta (código ISO 4217). */
+  currency: string
+  /** Estado de la vinculación: activa o inactiva. */
+  status: 'Activa' | 'Inactiva'
+}
