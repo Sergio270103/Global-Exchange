@@ -25,6 +25,7 @@ import Notifications from './pages/Notifications'
 import Simulator from './pages/Simulator'
 import Invoices from './pages/Invoices'
 import Payments from './pages/Payments'
+import Banks from './pages/Banks'
 import CashierDashboard from './pages/cashier/CashierDashboard'
 import CashCountView from './pages/cashier/CashCountView'
 import RatesManagement from './pages/analyst/RatesManagement'
@@ -124,7 +125,7 @@ export default function App() {
       case 'cash-count':
         return <CashCountView /> // 👈 Pestaña de Arqueo y Dinero Recibido
       case 'wallets':
-        return <Wallets />
+        return <Wallets navigate={navigate} />
       case 'buy':
       case 'sell':
         return <BuySell auth={auth} currentClient={currentClient} />
@@ -143,7 +144,7 @@ export default function App() {
       case 'admin-payments':
         return <Payments />
       case 'banks':
-        return <BankAccountsPlaceholder />
+        return <Banks />
       // Analyst
       case 'analyst-rates':
         return <RatesManagement />
@@ -177,16 +178,6 @@ export default function App() {
     >
       {renderPage()}
     </Layout>
-  )
-}
-
-function BankAccountsPlaceholder() {
-  return (
-    <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-16 text-center animate-fadein">
-      <div className="text-5xl mb-4">🏦</div>
-      <h3 className="font-bold text-slate-900 text-xl mb-2" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Cuentas bancarias</h3>
-      <p className="text-slate-400 text-[14px]">Esta sección está disponible en tu billetera digital</p>
-    </div>
   )
 }
 
