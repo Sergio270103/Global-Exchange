@@ -6,8 +6,6 @@ services:
     environment:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
-      KC_HOSTNAME: "https://clang-opponent-catalyze.ngrok-free.dev"
-      KC_HOSTNAME_ADMIN: "http://localhost:8080"
       KC_HOSTNAME_STRICT: "false"
       KC_HTTP_ENABLED: "true"
       KC_PROXY_HEADERS: "xforwarded"
