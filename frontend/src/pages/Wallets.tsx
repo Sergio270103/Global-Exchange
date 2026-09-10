@@ -10,10 +10,17 @@
 import { useState } from 'react'
 import { wallets, bankAccounts } from '@/data/mockData'
 import { exchangeRates } from '@/data/mockData'
+import type { Page } from '@/types'
 
 type ModalType = 'deposit' | 'withdraw' | 'transfer' | null
 
-export default function Wallets() {
+/** Propiedades de la vista de billeteras. */
+export interface WalletsProps {
+  /** Función para navegar entre páginas (usada para ir al CRUD de cuentas). */
+  navigate: (page: Page) => void
+}
+
+export default function Wallets({ navigate }: WalletsProps) {
   const [modal, setModal] = useState<ModalType>(null)
   const [selectedCurrency, setSelectedCurrency] = useState('USD')
   const [amount, setAmount] = useState('')
@@ -88,7 +95,7 @@ export default function Wallets() {
       <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-6">
         <div className="flex items-center justify-between mb-5">
           <h3 className="font-semibold text-slate-800 text-[15px]" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Cuentas bancarias vinculadas</h3>
-          <button className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-semibold text-white transition-all hover:opacity-90" style={{ background: '#0f3460' }}>
+          <button onClick={() => navigate('banks')} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-[13px] font-semibold text-white transition-all hover:opacity-90" style={{ background: '#0f3460' }}>
             + Agregar cuenta
           </button>
         </div>
