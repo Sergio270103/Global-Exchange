@@ -35,6 +35,7 @@ import Clients from './pages/admin/Clients'
 import Users from './pages/admin/Users'
 import RolesPermissions from './pages/admin/RolesPermissions'
 import Configuration from './pages/admin/Configuration'
+import Currencies from './pages/admin/Currencies'
 
 /**
  * Convierte los datos del token de Keycloak en un usuario autenticado.
@@ -157,7 +158,7 @@ export default function App() {
       case 'admin-users':
         return <Users />
       case 'admin-currencies':
-        return <CurrenciesPlaceholder />
+        return <Currencies auth={auth} />
       case 'admin-reports':
         return <ReportsPlaceholder />
       case 'admin-config':
@@ -181,38 +182,6 @@ export default function App() {
   )
 }
 
-function CurrenciesPlaceholder() {
-  const currencies = [
-    { code: 'USD', name: 'Dólar Americano', flag: '🇺🇸', active: true },
-    { code: 'EUR', name: 'Euro', flag: '🇪🇺', active: true },
-    { code: 'BRL', name: 'Real Brasileño', flag: '🇧🇷', active: true },
-    { code: 'PYG', name: 'Guaraní Paraguayo', flag: '🇵🇾', active: true },
-    { code: 'ARS', name: 'Peso Argentino', flag: '🇦🇷', active: true },
-    { code: 'GBP', name: 'Libra Esterlina', flag: '🇬🇧', active: true },
-  ]
-  return (
-    <div className="space-y-4 animate-fadein">
-      <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5 flex items-center justify-between">
-        <h3 className="font-semibold text-slate-800 text-[15px]" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Monedas admitidas</h3>
-        <button className="px-4 py-2 rounded-lg text-white text-[13px] font-semibold" style={{ background: '#0f3460' }}>+ Nueva moneda</button>
-      </div>
-      <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-        {currencies.map(c => (
-          <div key={c.code} className="bg-white rounded-xl border border-slate-100 shadow-sm p-5 flex items-center gap-4">
-            <span className="text-3xl">{c.flag}</span>
-            <div className="flex-1">
-              <div className="font-bold text-slate-900 text-[15px]">{c.code}</div>
-              <div className="text-[12px] text-slate-400">{c.name}</div>
-            </div>
-            <div className="w-8 h-4 rounded-full bg-emerald-500 relative">
-              <div className="absolute top-0.5 right-0.5 w-3 h-3 rounded-full bg-white shadow-sm"/>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
 
 function ReportsPlaceholder() {
   return (

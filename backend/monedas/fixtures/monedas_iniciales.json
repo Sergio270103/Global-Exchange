@@ -1,0 +1,8 @@
+[
+  {"model": "monedas.moneda", "fields": {"codigo": "PYG", "nombre": "Guaraní Paraguayo", "simbolo": "Gs.", "decimales": 0, "pais_iso": "PY", "activo": true}},
+  {"model": "monedas.moneda", "fields": {"codigo": "USD", "nombre": "Dólar Americano", "simbolo": "$", "decimales": 2, "pais_iso": "US", "activo": true}},
+  {"model": "monedas.moneda", "fields": {"codigo": "EUR", "nombre": "Euro", "simbolo": "€", "decimales": 2, "pais_iso": "EU", "activo": true}},
+  {"model": "monedas.moneda", "fields": {"codigo": "BRL", "nombre": "Real Brasileño", "simbolo": "R$", "decimales": 2, "pais_iso": "BR", "activo": true}},
+  {"model": "monedas.moneda", "fields": {"codigo": "ARS", "nombre": "Peso Argentino", "simbolo": "$", "decimales": 2, "pais_iso": "AR", "activo": true}},
+  {"model": "monedas.moneda", "fields": {"codigo": "GBP", "nombre": "Libra Esterlina", "simbolo": "£", "decimales": 2, "pais_iso": "GB", "activo": true}}
+]

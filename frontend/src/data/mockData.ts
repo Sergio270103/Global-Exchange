@@ -8,7 +8,17 @@
  *
  * @module mockData
  */
-import type { BankAccount } from '@/types'
+
+import type { BankAccount, Currency } from '@/types'
+/** Catálogo de monedas admitidas por la plataforma. */
+export const currencies: Currency[] = [
+  { id: 1, code: 'PYG', name: 'Guaraní Paraguayo', symbol: '₲', flag: '🇵🇾', decimals: 0, active: true },
+  { id: 2, code: 'USD', name: 'Dólar Americano', symbol: '$', flag: '🇺🇸', decimals: 2, active: true },
+  { id: 3, code: 'EUR', name: 'Euro', symbol: '€', flag: '🇪🇺', decimals: 2, active: true },
+  { id: 4, code: 'BRL', name: 'Real Brasileño', symbol: 'R$', flag: '🇧🇷', decimals: 2, active: true },
+  { id: 5, code: 'ARS', name: 'Peso Argentino', symbol: '$', flag: '🇦🇷', decimals: 2, active: true },
+  { id: 6, code: 'GBP', name: 'Libra Esterlina', symbol: '£', flag: '🇬🇧', decimals: 2, active: true },
+]
 
 /** Tasas de cambio vigentes de cada moneda (compra/venta). */
 export const exchangeRates = [

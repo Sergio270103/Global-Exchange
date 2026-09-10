@@ -89,3 +89,26 @@ export interface BankAccount {
   /** Estado de la vinculación: activa o inactiva. */
   status: 'Activa' | 'Inactiva'
 }
+/**
+ * Moneda admitida por la plataforma.
+ *
+ * El catálogo de monedas lo administra el rol administrador. La baja es
+ * lógica (`active: false`): la moneda deja de ofrecerse a los clientes
+ * pero conserva su histórico de tasas y transacciones.
+ */
+export interface Currency {
+  /** Identificador único de la moneda dentro del sistema. */
+  id: number
+  /** Código ISO 4217 de 3 letras. Ej.: `USD`. */
+  code: string
+  /** Nombre descriptivo. Ej.: `Dólar Americano`. */
+  name: string
+  /** Símbolo usado al mostrar montos. Ej.: `$`. */
+  symbol: string
+  /** Emoji de la bandera, derivado del código. */
+  flag: string
+  /** Decimales con los que se muestran los montos (0 para el guaraní). */
+  decimals: number
+  /** Indica si la moneda está habilitada para operar. */
+  active: boolean
+}
