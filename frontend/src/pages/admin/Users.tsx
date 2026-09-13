@@ -1,82 +1,112 @@
 /**
- * Gestión de usuarios (administración).
+ * Gestión de usuarios asociados a clientes (administración).
  *
- * Permite al administrador listar, registrar y gestionar los usuarios del
- * sistema junto con sus roles asignados.
+ * Las cuentas de acceso y los roles se administran en Keycloak
+ * (RF44/RF53–RF55). Aquí se gestionan las asociaciones usuario-cliente:
+ * qué usuarios pueden operar en nombre de cada cliente (RF8/RF9/RF43).
+ * Un usuario puede estar asociado a varios clientes y viceversa.
  *
  * @module Users
  */
-import { useState } from 'react'
-import { users as initial } from '@/data/mockData'
+import { useEffect, useState } from 'react'
+import {
+  listarClientes,
+  listarAsociaciones,
+  crearAsociacion,
+  eliminarAsociacion,
+  type Cliente,
+  type Asociacion,
+} from '@/services/clientes'
 
-const roleColor: Record<string, { bg: string; text: string }> = {
-  Administrador: { bg: '#fef3c7', text: '#d97706' },
-  'Analista Cambiario': { bg: '#ede9fe', text: '#7c3aed' },
-  Usuario: { bg: '#f0fdf4', text: '#16a34a' },
-}
+type AsocForm = { cliente: string; username: string; email: string; keycloak_id: string }
 
-type UserForm = { name: string; email: string; role: string; client: string }
-
-const emptyForm: UserForm = { name: '', email: '', role: 'Usuario', client: 'Global Exchange' }
+const emptyForm: AsocForm = { cliente: '', username: '', email: '', keycloak_id: '' }
 
 export default function Users() {
-  const [users, setUsers] = useState(initial)
+  const [asocs, setAsocs] = useState<Asociacion[]>([])
+  const [clientes, setClientes] = useState<Cliente[]>([])
+  const [cargando, setCargando] = useState(true)
+  const [aviso, setAviso] = useState('')
   const [search, setSearch] = useState('')
-  const [filterRole, setFilterRole] = useState('Todos')
+  const [filterClient, setFilterClient] = useState('Todos')
   const [showModal, setShowModal] = useState(false)
-  const [editUser, setEditUser] = useState<typeof initial[0] | null>(null)
-  const [form, setForm] = useState<UserForm>(emptyForm)
+  const [form, setForm] = useState<AsocForm>(emptyForm)
+  const [formError, setFormError] = useState('')
+  const [guardando, setGuardando] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null)
 
-  const filtered = users.filter(u => {
-    if (filterRole !== 'Todos' && u.role !== filterRole) return false
-    if (search && !u.name.toLowerCase().includes(search.toLowerCase()) && !u.email.toLowerCase().includes(search.toLowerCase())) return false
+  useEffect(() => {
+    Promise.all([listarAsociaciones(), listarClientes({ activo: true })])
+      .then(([as, cs]) => {
+        setAsocs(as)
+        setClientes(cs)
+      })
+      .catch(() => setAviso('No se pudieron cargar las asociaciones. Verificá que el backend esté corriendo.'))
+      .finally(() => setCargando(false))
+  }, [])
+
+  const filtered = asocs.filter(a => {
+    if (filterClient !== 'Todos' && a.cliente_nombre !== filterClient) return false
+    if (search) {
+      const texto = `${a.username} ${a.email} ${a.cliente_nombre}`.toLowerCase()
+      if (!texto.includes(search.toLowerCase())) return false
+    }
     return true
   })
 
-  const setField = (key: keyof UserForm, value: string) => setForm(f => ({ ...f, [key]: value }))
+  const setField = (key: keyof AsocForm, value: string) => setForm(f => ({ ...f, [key]: value }))
 
   const openCreate = () => {
-    setEditUser(null)
-    setForm(emptyForm)
+    setForm({ ...emptyForm, cliente: clientes[0] ? String(clientes[0].id) : '' })
+    setFormError('')
+    setAviso('')
     setShowModal(true)
   }
 
-  const openEdit = (user: typeof initial[0]) => {
-    setEditUser(user)
-    setForm({ name: user.name, email: user.email, role: user.role, client: user.client })
-    setShowModal(true)
-  }
-
-  const saveUser = () => {
-    if (!form.name.trim() || !form.email.trim()) return
-    if (editUser) {
-      setUsers(us => us.map(x => x.id === editUser.id ? { ...x, name: form.name, email: form.email, role: form.role, client: form.client } : x))
-    } else {
-      setUsers(us => [...us, {
-        id: us.reduce((m, x) => Math.max(m, x.id), 0) + 1,
-        name: form.name,
-        email: form.email,
-        role: form.role,
-        client: form.client,
-        status: 'Activo',
-        lastLogin: 'Nunca',
-      }])
+  const saveAsoc = async () => {
+    if (!form.cliente || !form.keycloak_id.trim()) {
+      setFormError('Seleccioná el cliente e indicá el sub de Keycloak del usuario.')
+      return
     }
-    setShowModal(false)
+    setGuardando(true)
+    try {
+      const creada = await crearAsociacion({
+        cliente: Number(form.cliente),
+        keycloak_id: form.keycloak_id.trim(),
+        username: form.username.trim(),
+        email: form.email.trim(),
+      })
+      setAsocs(prev => [...prev, creada])
+      setAviso(`${creada.username || creada.email} quedó asociado a ${creada.cliente_nombre}.`)
+      setShowModal(false)
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : 'No se pudo crear la asociación.')
+    } finally {
+      setGuardando(false)
+    }
   }
 
-  const toggleStatus = (id: number) => setUsers(u => u.map(x => x.id === id ? { ...x, status: x.status === 'Activo' ? 'Suspendido' : 'Activo' } : x))
-  const deleteUser = (id: number) => setUsers(u => u.filter(x => x.id !== id))
+  const deleteAsoc = async (id: number) => {
+    try {
+      await eliminarAsociacion(id)
+      setAsocs(prev => prev.filter(a => a.id !== id))
+      setAviso('La asociación quedó eliminada.')
+    } catch (err) {
+      setAviso(err instanceof Error ? err.message : 'No se pudo eliminar la asociación.')
+    }
+    setDeleteConfirm(null)
+  }
+
+  const totalUsuarios = new Set(asocs.map(a => a.keycloak_id)).size
 
   return (
     <div className="space-y-5 animate-fadein">
       {/* Stats */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-3 gap-4">
         {[
-          { label: 'Total usuarios', value: users.length, color: '#0f3460' },
-          { label: 'Activos', value: users.filter(u => u.status === 'Activo').length, color: '#10b981' },
-          { label: 'Analistas', value: users.filter(u => u.role === 'Analista Cambiario').length, color: '#8b5cf6' },
-          { label: 'Admins', value: users.filter(u => u.role === 'Administrador').length, color: '#f59e0b' },
+          { label: 'Usuarios asociados', value: totalUsuarios, color: '#0f3460' },
+          { label: 'Asociaciones', value: asocs.length, color: '#10b981' },
+          { label: 'Clientes con usuarios', value: new Set(asocs.map(a => a.cliente)).size, color: '#8b5cf6' },
         ].map(s => (
           <div key={s.label} className="bg-white rounded-xl border border-slate-100 shadow-sm p-4">
             <div className="font-mono font-bold text-2xl" style={{ color: s.color }}>{s.value}</div>
@@ -85,112 +115,129 @@ export default function Users() {
         ))}
       </div>
 
+      <div className="bg-blue-50 border border-blue-100 rounded-xl px-4 py-3 text-[13px] text-blue-800">
+        Las cuentas de acceso y los roles se administran en <strong>Keycloak</strong>. Aquí se gestiona qué usuarios pueden operar en nombre de cada cliente.
+      </div>
+
       {/* Filters */}
       <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 flex flex-wrap gap-3 items-center">
         <div className="relative flex-1 min-w-[200px]">
-          <svg className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
-          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar usuario..." className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-lg text-[13px] text-slate-700 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-emerald-300 placeholder:text-slate-300"/>
+          <svg className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" /></svg>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar usuario..." className="w-full pl-9 pr-4 py-2 border border-slate-200 rounded-lg text-[13px] text-slate-700 bg-slate-50 focus:outline-none focus:ring-2 focus:ring-emerald-300 placeholder:text-slate-300" />
         </div>
-        <select value={filterRole} onChange={e => setFilterRole(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-medium text-slate-700 bg-white focus:outline-none">
-          <option value="Todos">Todos los roles</option>
-          <option>Administrador</option><option>Analista Cambiario</option><option>Usuario</option>
+        <select value={filterClient} onChange={e => setFilterClient(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-medium text-slate-700 bg-white focus:outline-none">
+          <option value="Todos">Todos los clientes</option>
+          {clientes.map(c => <option key={c.id} value={c.nombre}>{c.nombre}</option>)}
         </select>
         <button onClick={openCreate} className="ml-auto flex items-center gap-1.5 px-4 py-2 rounded-lg text-white text-[13px] font-semibold transition-all hover:-translate-y-0.5" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
-          + Nuevo usuario
+          + Asociar usuario
         </button>
       </div>
 
+      {aviso && (
+        <div role="status" className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-[13px] text-slate-600">
+          {aviso}
+        </div>
+      )}
+
       {/* Table */}
       <div className="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden">
-        <table className="w-full">
-          <thead>
-            <tr className="border-b border-slate-100 bg-slate-50/60">
-              {['Usuario', 'Rol', 'Cliente', 'Estado', 'Último acceso', 'Acciones'].map(h => (
-                <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap">{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-50">
-            {filtered.map(user => {
-              const rc = roleColor[user.role] || { bg: '#f1f5f9', text: '#64748b' }
-              return (
-                <tr key={user.id} className="hover:bg-slate-50/60 transition-colors">
+        {cargando ? (
+          <div className="p-16 text-center text-slate-400 text-[14px]">Cargando asociaciones…</div>
+        ) : (
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-slate-100 bg-slate-50/60">
+                {['Usuario', 'Cliente', 'Sub de Keycloak', 'Acciones'].map(h => (
+                  <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50">
+              {filtered.map(a => (
+                <tr key={a.id} className="hover:bg-slate-50/60 transition-colors">
                   <td className="px-5 py-4">
                     <div className="flex items-center gap-3">
                       <div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-bold shrink-0" style={{ background: 'linear-gradient(135deg,#132952,#10b981)' }}>
-                        {user.name.charAt(0)}
+                        {(a.username || a.email).charAt(0).toUpperCase()}
                       </div>
                       <div>
-                        <div className="font-semibold text-slate-900 text-[14px]">{user.name}</div>
-                        <div className="text-[12px] text-slate-400">{user.email}</div>
+                        <div className="font-semibold text-slate-900 text-[14px]">{a.username || '(sin nombre)'}</div>
+                        <div className="text-[12px] text-slate-400">{a.email}</div>
                       </div>
                     </div>
                   </td>
+                  <td className="px-5 py-4 text-[13px] text-slate-600 font-medium">{a.cliente_nombre}</td>
+                  <td className="px-5 py-4 text-[12px] font-mono text-slate-400">{a.keycloak_id.slice(0, 8)}…</td>
                   <td className="px-5 py-4">
-                    <span className="text-[11px] font-semibold px-2.5 py-1 rounded-full" style={{ backgroundColor: rc.bg, color: rc.text }}>{user.role}</span>
-                  </td>
-                  <td className="px-5 py-4 text-[13px] text-slate-600 font-medium">{user.client}</td>
-                  <td className="px-5 py-4">
-                    <button onClick={() => toggleStatus(user.id)} className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border cursor-pointer transition-colors ${user.status === 'Activo' ? 'bg-emerald-50 text-emerald-700 border-emerald-100' : 'bg-red-50 text-red-600 border-red-100'}`}>
-                      {user.status}
-                    </button>
-                  </td>
-                  <td className="px-5 py-4 text-[12px] text-slate-500">{user.lastLogin}</td>
-                  <td className="px-5 py-4">
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => openEdit(user)} className="text-[12px] font-semibold text-slate-500 hover:text-blue-600 px-2 py-1 rounded hover:bg-blue-50 transition-colors">Editar</button>
-                      <button className="text-[12px] font-semibold text-slate-500 hover:text-purple-600 px-2 py-1 rounded hover:bg-purple-50 transition-colors">Asignar</button>
-                      <button onClick={() => deleteUser(user.id)} className="text-[12px] font-semibold text-slate-500 hover:text-red-500 px-2 py-1 rounded hover:bg-red-50 transition-colors">Eliminar</button>
-                    </div>
+                    <button onClick={() => setDeleteConfirm(a.id)} className="text-[12px] font-semibold text-slate-500 hover:text-red-500 px-2 py-1 rounded hover:bg-red-50 transition-colors">Desvincular</button>
                   </td>
                 </tr>
-              )
-            })}
-          </tbody>
-        </table>
+              ))}
+            </tbody>
+          </table>
+        )}
+        {!cargando && filtered.length === 0 && (
+          <div className="p-16 text-center">
+            <div className="text-5xl mb-4">👥</div>
+            <h3 className="font-bold text-slate-900 text-xl mb-2" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Sin asociaciones</h3>
+            <p className="text-slate-400 text-[14px] mb-6">Asociá usuarios de Keycloak a los clientes para que puedan operar en su nombre</p>
+            <button onClick={openCreate} className="px-4 py-2 rounded-lg text-white text-[13px] font-semibold" style={{ background: '#0f3460' }}>
+              + Asociar usuario
+            </button>
+          </div>
+        )}
       </div>
+
+      {/* Delete confirm */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-sm animate-fadein text-center">
+            <div className="text-4xl mb-4">⚠️</div>
+            <h3 className="font-bold text-slate-900 text-lg mb-2" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Desvincular usuario</h3>
+            <p className="text-slate-500 text-[14px] mb-6">El usuario pierde el acceso a operar en nombre de este cliente. La cuenta de Keycloak no se elimina.</p>
+            <div className="flex gap-3">
+              <button onClick={() => setDeleteConfirm(null)} className="flex-1 py-2.5 rounded-xl border border-slate-200 text-[14px] font-semibold text-slate-700 hover:bg-slate-50">Cancelar</button>
+              <button onClick={() => deleteAsoc(deleteConfirm)} className="flex-1 py-2.5 rounded-xl bg-red-500 text-white text-[14px] font-semibold hover:bg-red-600">Desvincular</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={() => setShowModal(false)}>
           <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md animate-fadein" onClick={e => e.stopPropagation()}>
             <h2 className="font-bold text-slate-900 text-lg mb-6" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>
-              {editUser ? 'Editar usuario' : 'Nuevo usuario'}
+              Asociar usuario a cliente
             </h2>
             <div className="space-y-4">
               <div>
-                <label htmlFor="user-name" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Nombre completo</label>
-                <input id="user-name" value={form.name} onChange={e => setField('name', e.target.value)} placeholder="Nombre Apellido" className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-300"/>
+                <label htmlFor="asoc-client" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Cliente</label>
+                <select id="asoc-client" value={form.cliente} onChange={e => setField('cliente', e.target.value)} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
+                  <option value="">Seleccionar…</option>
+                  {clientes.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+                </select>
               </div>
               <div>
-                <label htmlFor="user-email" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Correo electrónico</label>
-                <input id="user-email" value={form.email} onChange={e => setField('email', e.target.value)} placeholder="usuario@email.com" type="email" className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-300"/>
+                <label htmlFor="asoc-sub" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Sub de Keycloak</label>
+                <input id="asoc-sub" value={form.keycloak_id} onChange={e => setField('keycloak_id', e.target.value)} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-300" />
+                <p className="text-[12px] text-slate-400 mt-1">Identificador del usuario en Keycloak (claim “sub” del token).</p>
               </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label htmlFor="user-role" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Rol</label>
-                  <select id="user-role" value={form.role} onChange={e => setField('role', e.target.value)} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
-                    <option>Administrador</option><option>Analista Cambiario</option><option>Usuario</option>
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor="user-client" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Cliente</label>
-                  <select id="user-client" value={form.client} onChange={e => setField('client', e.target.value)} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
-                    <option>Carlos Martínez</option><option>Corporación Atlas S.A.</option><option>Ana López</option><option>Global Exchange</option>
-                  </select>
-                </div>
+              <div>
+                <label htmlFor="asoc-username" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Nombre de usuario</label>
+                <input id="asoc-username" value={form.username} onChange={e => setField('username', e.target.value)} placeholder="Nombre Apellido" className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-300" />
               </div>
-              {!editUser && (
-                <div>
-                  <label htmlFor="user-password" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Contraseña temporal</label>
-                  <input id="user-password" type="password" placeholder="Mínimo 8 caracteres" className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-300"/>
-                </div>
-              )}
+              <div>
+                <label htmlFor="asoc-email" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Correo electrónico</label>
+                <input id="asoc-email" value={form.email} onChange={e => setField('email', e.target.value)} placeholder="usuario@email.com" type="email" className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-300" />
+              </div>
+              {formError && <p role="alert" className="text-red-500 text-[13px]">{formError}</p>}
             </div>
             <div className="flex gap-3 mt-6">
               <button onClick={() => setShowModal(false)} className="flex-1 py-3 rounded-xl border border-slate-200 text-[14px] font-semibold text-slate-700 hover:bg-slate-50">Cancelar</button>
-              <button onClick={saveUser} className="flex-1 py-3 rounded-xl text-white text-[14px] font-semibold" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
-                {editUser ? 'Guardar' : 'Crear usuario'}
+              <button onClick={saveAsoc} disabled={guardando} className="flex-1 py-3 rounded-xl text-white text-[14px] font-semibold disabled:opacity-60" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
+                {guardando ? 'Guardando…' : 'Asociar'}
               </button>
             </div>
           </div>

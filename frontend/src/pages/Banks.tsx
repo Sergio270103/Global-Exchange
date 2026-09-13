@@ -1,19 +1,20 @@
 /**
  * Vista de cuentas bancarias del cliente (medios de pago, RF16/RF26).
  *
- * Permite al cliente gestionar sus propios medios de pago: listar las
- * cuentas bancarias vinculadas, agregar una nueva con los datos mínimos
+ * Conectada a la API Django: lista las cuentas vinculadas del cliente
+ * seleccionado, permite vincular una nueva con los datos mínimos
  * exigidos (Nombre, Apellido, Nº Cédula, Entidad bancaria, Nº de cuenta
  * bancaria y Código Bancario), editarla o eliminarla con confirmación.
- *
- * Los datos viven en `mockData.bankAccounts` mientras no exista
- * integración con el backend; esta vista opera sobre una copia local.
+ * La baja es lógica en el backend. El número de cuenta viaja
+ * enmascarado y nunca se expone en claro.
  *
  * @module Banks
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { bankAccounts, exchangeRates } from '@/data/mockData'
+import { listarClientes, type Cliente } from '@/services/clientes'
+import { listarCuentas, crearCuenta, actualizarCuenta, eliminarCuenta } from '@/services/cuentas'
+import { listarMonedas } from '@/services/monedas'
 import type { BankAccount } from '@/types'
 
 /** Entidades bancarias disponibles para vincular. */
@@ -68,13 +69,42 @@ const inputClass = 'w-full border border-slate-200 rounded-xl px-4 py-2.5 text-[
 const labelClass = 'block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5'
 
 export default function Banks() {
-  const [accounts, setAccounts] = useState<BankAccount[]>(() => [...bankAccounts])
+  const [clientes, setClientes] = useState<Cliente[]>([])
+  const [clienteId, setClienteId] = useState<number | null>(null)
+  const [monedas, setMonedas] = useState<{ id: number; code: string; name: string; flag: string }[]>([])
+  const [accounts, setAccounts] = useState<BankAccount[]>([])
+  const [cargando, setCargando] = useState(true)
+  const [aviso, setAviso] = useState('')
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [originalAccount, setOriginalAccount] = useState('')
   const [confirmId, setConfirmId] = useState<number | null>(null)
   const [form, setForm] = useState(emptyForm)
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const [guardando, setGuardando] = useState(false)
+
+  useEffect(() => {
+    Promise.all([listarClientes({ activo: true }), listarMonedas(true)])
+      .then(([cs, ms]) => {
+        setClientes(cs)
+        setMonedas(ms)
+        if (cs.length > 0) setClienteId(cs[0].id)
+        else setCargando(false)
+      })
+      .catch(() => {
+        setAviso('No se pudieron cargar los datos. Verificá que el backend esté corriendo.')
+        setCargando(false)
+      })
+  }, [])
+
+  useEffect(() => {
+    if (clienteId === null) return
+    setCargando(true)
+    listarCuentas(clienteId)
+      .then(setAccounts)
+      .catch(() => setAviso('No se pudieron cargar las cuentas del cliente.'))
+      .finally(() => setCargando(false))
+  }, [clienteId])
 
   const set = (field: keyof typeof emptyForm, value: string) => {
     setForm(prev => ({ ...prev, [field]: value }))
@@ -86,9 +116,13 @@ export default function Banks() {
     })
   }
 
+  const monedaIdPorCodigo = (code: string): number | undefined =>
+    monedas.find(m => m.code === code)?.id
+
   const openCreate = () => {
-    setForm(emptyForm)
+    setForm({ ...emptyForm, currency: monedas[0]?.code ?? 'PYG' })
     setErrors({})
+    setAviso('')
     setEditingId(null)
     setOriginalAccount('')
     setShowForm(true)
@@ -105,44 +139,70 @@ export default function Banks() {
       currency: acc.currency,
     })
     setErrors({})
+    setAviso('')
     setEditingId(acc.id)
     setOriginalAccount(acc.account)
     setShowForm(true)
   }
 
-  const handleSubmit = () => {
-    const account = form.account.trim() || originalAccount
+  const handleSubmit = async () => {
+    if (clienteId === null) {
+      setAviso('Primero tiene que existir un cliente: crealo en Clientes (administración).')
+      return
+    }
     const validation = validateForm(form, !originalAccount || form.account.trim().length > 0)
     setErrors(validation)
     if (Object.keys(validation).length > 0) return
-
-    const holder = `${form.firstName.trim()} ${form.lastName.trim()}`
-    if (editingId !== null) {
-      setAccounts(prev => prev.map(acc =>
-        acc.id === editingId
-          ? { ...acc, firstName: form.firstName.trim(), lastName: form.lastName.trim(), holder, document: form.document.trim(), bank: form.bank, account, code: form.code.trim(), currency: form.currency }
-          : acc
-      ))
-    } else {
-      const nextId = Math.max(0, ...accounts.map(acc => acc.id)) + 1
-      setAccounts(prev => [...prev, {
-        id: nextId,
-        bank: form.bank,
-        account: form.account.trim(),
-        code: form.code.trim(),
-        holder,
-        firstName: form.firstName.trim(),
-        lastName: form.lastName.trim(),
-        document: form.document.trim(),
-        currency: form.currency,
-        status: 'Activa',
-      }])
+    const monedaId = monedaIdPorCodigo(form.currency)
+    if (!monedaId) {
+      setErrors({ currency: 'Seleccioná la moneda de la cuenta' })
+      return
     }
-    setShowForm(false)
+
+    setGuardando(true)
+    try {
+      if (editingId !== null) {
+        const actualizada = await actualizarCuenta(editingId, {
+          firstName: form.firstName.trim(),
+          lastName: form.lastName.trim(),
+          document: form.document.trim(),
+          bank: form.bank,
+          account: form.account.trim(),
+          code: form.code.trim(),
+          moneda: monedaId,
+        })
+        setAccounts(prev => prev.map(acc => (acc.id === editingId ? actualizada : acc)))
+        setAviso('Se guardaron los cambios de la cuenta.')
+      } else {
+        const creada = await crearCuenta({
+          cliente: clienteId,
+          firstName: form.firstName.trim(),
+          lastName: form.lastName.trim(),
+          document: form.document.trim(),
+          bank: form.bank,
+          account: form.account.trim(),
+          code: form.code.trim(),
+          moneda: monedaId,
+        })
+        setAccounts(prev => [...prev, creada])
+        setAviso('La cuenta quedó vinculada.')
+      }
+      setShowForm(false)
+    } catch (err) {
+      setAviso(err instanceof Error ? err.message : 'No se pudo guardar la cuenta.')
+    } finally {
+      setGuardando(false)
+    }
   }
 
-  const handleDelete = (id: number) => {
-    setAccounts(prev => prev.filter(acc => acc.id !== id))
+  const handleDelete = async (id: number) => {
+    try {
+      await eliminarCuenta(id)
+      setAccounts(prev => prev.filter(acc => acc.id !== id))
+      setAviso('La cuenta quedó desvinculada.')
+    } catch (err) {
+      setAviso(err instanceof Error ? err.message : 'No se pudo eliminar la cuenta.')
+    }
     setConfirmId(null)
   }
 
@@ -151,18 +211,48 @@ export default function Banks() {
   return (
     <div className="space-y-5 animate-fadein">
       {/* Header */}
-      <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5 flex items-center justify-between">
+      <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5 flex items-center justify-between flex-wrap gap-4">
         <div>
           <h3 className="font-semibold text-slate-800 text-[15px]" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Cuentas bancarias</h3>
-          <p className="text-[12px] text-slate-400 mt-0.5">{accounts.length === 1 ? '1 cuenta vinculada' : `${accounts.length} cuentas vinculadas`}</p>
+          <p className="text-[12px] text-slate-400 mt-0.5">
+            {cargando ? 'Cargando…' : accounts.length === 1 ? '1 cuenta vinculada' : `${accounts.length} cuentas vinculadas`}
+          </p>
         </div>
-        <button onClick={openCreate} className="px-4 py-2 rounded-lg text-white text-[13px] font-semibold transition-all hover:opacity-90" style={{ background: '#0f3460' }}>
-          + Agregar cuenta
-        </button>
+        <div className="flex items-center gap-3">
+          <label htmlFor="bank-client" className="sr-only">Cliente</label>
+          <select
+            id="bank-client"
+            value={clienteId ?? ''}
+            onChange={e => setClienteId(Number(e.target.value))}
+            className="border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-medium text-slate-700 bg-white focus:outline-none"
+          >
+            {clientes.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+          </select>
+          <button onClick={openCreate} disabled={clienteId === null} className="px-4 py-2 rounded-lg text-white text-[13px] font-semibold transition-all hover:opacity-90 disabled:opacity-50" style={{ background: '#0f3460' }}>
+            + Agregar cuenta
+          </button>
+        </div>
       </div>
 
+      {aviso && (
+        <div role="status" className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-3 text-[13px] text-slate-600">
+          {aviso}
+        </div>
+      )}
+
+      {/* Sin clientes: no se puede operar */}
+      {!cargando && clientes.length === 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-[13px] text-amber-800">
+          Todavía no hay clientes registrados. Un administrador debe crear al menos uno en <strong>Clientes</strong> antes de vincular cuentas.
+        </div>
+      )}
+
       {/* List */}
-      {accounts.length === 0 ? (
+      {cargando ? (
+        <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-16 text-center text-slate-400 text-[14px]">
+          Cargando cuentas…
+        </div>
+      ) : accounts.length === 0 ? (
         <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-16 text-center">
           <div className="text-5xl mb-4">🏦</div>
           <h3 className="font-bold text-slate-900 text-xl mb-2" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Sin cuentas vinculadas</h3>
@@ -243,7 +333,7 @@ export default function Banks() {
               <div className="sm:col-span-2">
                 <label htmlFor="bank-currency" className={labelClass}>Moneda</label>
                 <select id="bank-currency" value={form.currency} onChange={e => set('currency', e.target.value)} className={inputClass}>
-                  {exchangeRates.map(r => <option key={r.currency} value={r.currency}>{r.flag} {r.currency} — {r.name}</option>)}
+                  {monedas.map(m => <option key={m.code} value={m.code}>{m.flag} {m.code} — {m.name}</option>)}
                 </select>
                 {errors.currency && <p className="text-red-500 text-[12px] mt-1">{errors.currency}</p>}
               </div>
@@ -252,8 +342,8 @@ export default function Banks() {
               <button onClick={() => setShowForm(false)} className="flex-1 py-3 rounded-xl border border-slate-200 text-[14px] font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
                 Cancelar
               </button>
-              <button onClick={handleSubmit} className="flex-1 py-3 rounded-xl text-white text-[14px] font-semibold transition-all hover:-translate-y-0.5" style={{ background: '#0f3460' }}>
-                {editingId !== null ? 'Guardar cambios' : 'Vincular cuenta'}
+              <button onClick={handleSubmit} disabled={guardando} className="flex-1 py-3 rounded-xl text-white text-[14px] font-semibold transition-all hover:-translate-y-0.5 disabled:opacity-60" style={{ background: '#0f3460' }}>
+                {guardando ? 'Guardando…' : editingId !== null ? 'Guardar cambios' : 'Vincular cuenta'}
               </button>
             </div>
           </div>

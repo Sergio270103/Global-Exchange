@@ -7,9 +7,10 @@
  *
  * @module Navbar
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { type Page, type AuthUser } from '@/types'
 import { notifications as mockNotifications, demoClients } from '@/data/mockData'
+import { misClientes } from '@/services/clientes'
 
 /** Mapa de títulos por página de la aplicación. */
 const pageTitles: Record<string, string> = {
@@ -65,6 +66,25 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
   const [showProfile, setShowProfile] = useState(false)
   const [showClientDropdown, setShowClientDropdown] = useState(false)
   const [notifList, setNotifList] = useState(mockNotifications)
+
+  // Clientes que el usuario puede representar (RF10/RF11). Si la API
+  // falla o el usuario aún no tiene asociaciones, se usa el listado
+  // local como respaldo para no bloquear la navegación.
+  const [clientes, setClientes] = useState<string[]>(demoClients)
+  useEffect(() => {
+    if (auth.role !== 'user') return
+    misClientes()
+      .then(mios => {
+        if (mios.length > 0) {
+          setClientes(mios.map(m => m.nombre))
+          if (!mios.some(m => m.nombre === currentClient)) {
+            setCurrentClient(mios[0].nombre)
+          }
+        }
+      })
+      .catch(() => { /* respaldo local */ })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth.role])
 
   const unread = notifList.filter(n => !n.read).length
 
@@ -133,7 +153,7 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
                   Tipo de persona: {auth.tipoPersona}
                 </div>
               )}
-              {demoClients.map(c => (
+              {clientes.map(c => (
                 <button
                   key={c}
                   onClick={() => { setCurrentClient(c); setShowClientDropdown(false) }}

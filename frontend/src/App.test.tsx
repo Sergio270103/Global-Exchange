@@ -45,7 +45,9 @@ describe('App (resolución de sesión y rol)', () => {
     render(<App />)
     expect(await screen.findByText('María')).toBeInTheDocument()
     expect(screen.getByText('Clientes')).toBeInTheDocument()
-    expect(screen.getByText('Roles y Permisos')).toBeInTheDocument()
+    expect(screen.getByText('Usuarios')).toBeInTheDocument()
+    // Los roles se delegan a Keycloak (RF44): no hay gestión local de roles.
+    expect(screen.queryByText('Roles y Permisos')).not.toBeInTheDocument()
   })
 
   it('ingresa como analista cambiario cuando el rol es analyst', async () => {

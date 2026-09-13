@@ -45,9 +45,11 @@ describe('Sidebar (menú lateral por rol)', () => {
 
   it('muestra el menú de administración para el rol admin', () => {
     renderSidebar(admin)
-    for (const label of ['Clientes', 'Usuarios', 'Roles y Permisos', 'Monedas', 'Configuración', 'Reportes']) {
+    for (const label of ['Clientes', 'Usuarios', 'Monedas', 'Configuración', 'Reportes']) {
       expect(screen.getByText(label)).toBeInTheDocument()
     }
+    // Los roles se delegan a Keycloak (RF44): no hay gestión local de roles.
+    expect(screen.queryByText('Roles y Permisos')).not.toBeInTheDocument()
     expect(screen.queryByText('Billeteras')).not.toBeInTheDocument()
   })
 
