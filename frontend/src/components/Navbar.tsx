@@ -8,7 +8,7 @@
  * @module Navbar
  */
 import { useEffect, useState } from 'react'
-import { type Page, type AuthUser } from '@/types'
+import { type Page, type AuthUser, type ClienteActivo } from '@/types'
 import { notifications as mockNotifications, demoClients } from '@/data/mockData'
 import { misClientes } from '@/services/clientes'
 
@@ -50,9 +50,9 @@ export interface NavbarProps {
   /** Callback ejecutado al cerrar sesión. */
   onLogout: () => void
   /** Cliente seleccionado en la sesión. */
-  currentClient: string
+  currentClient: ClienteActivo | null
   /** Actualiza el cliente seleccionado. */
-  setCurrentClient: (c: string) => void
+  setCurrentClient: (c: ClienteActivo | null) => void
 }
 
 /**
@@ -67,18 +67,21 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
   const [showClientDropdown, setShowClientDropdown] = useState(false)
   const [notifList, setNotifList] = useState(mockNotifications)
 
-  // Clientes que el usuario puede representar (RF10/RF11). Si la API
-  // falla o el usuario aún no tiene asociaciones, se usa el listado
-  // local como respaldo para no bloquear la navegación.
-  const [clientes, setClientes] = useState<string[]>(demoClients)
+  // Clientes que el usuario puede representar (RF10/RF11 + Hito
+  // Operaciones). Se guardan como {id, nombre} para validar activo +
+  // asociación antes de operar. Si la API falla, respaldo local con ids
+  // negativos para no bloquear la navegación.
+  const [clientes, setClientes] = useState<ClienteActivo[]>(
+    demoClients.map((nombre, i) => ({ id: -(i + 1), nombre })),
+  )
   useEffect(() => {
     if (auth.role !== 'user') return
     misClientes()
       .then(mios => {
         if (mios.length > 0) {
-          setClientes(mios.map(m => m.nombre))
-          if (!mios.some(m => m.nombre === currentClient)) {
-            setCurrentClient(mios[0].nombre)
+          setClientes(mios)
+          if (!currentClient || !mios.some(m => m.id === currentClient.id)) {
+            setCurrentClient(mios[0])
           }
         }
       })
@@ -136,7 +139,7 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
           >
             <span className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">Cliente</span>
             <div className="min-w-0">
-              <div className="text-slate-800 font-semibold text-[13px] max-w-[140px] truncate">{currentClient}</div>
+              <div className="text-slate-800 font-semibold text-[13px] max-w-[140px] truncate">{currentClient?.nombre ?? 'Seleccionar'}</div>
               {auth.tipoPersona && (
                 <div className="text-[10px] text-emerald-600 font-medium leading-tight">{auth.tipoPersona}</div>
               )}
@@ -155,15 +158,15 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
               )}
               {clientes.map(c => (
                 <button
-                  key={c}
+                  key={c.id}
                   onClick={() => { setCurrentClient(c); setShowClientDropdown(false) }}
                   className="w-full text-left px-3 py-2 text-[13px] hover:bg-slate-50 flex items-center gap-2 transition-colors"
                 >
                   <div className="w-6 h-6 rounded-full bg-gradient-to-br from-emerald-400 to-blue-500 flex items-center justify-center text-white text-[10px] font-bold shrink-0">
-                    {c.charAt(0)}
+                    {c.nombre.charAt(0)}
                   </div>
-                  <span className={`font-medium ${c === currentClient ? 'text-emerald-600' : 'text-slate-700'}`}>{c}</span>
-                  {c === currentClient && (
+                  <span className={`font-medium ${c.id === currentClient?.id ? 'text-emerald-600' : 'text-slate-700'}`}>{c.nombre}</span>
+                  {c.id === currentClient?.id && (
                     <svg className="ml-auto text-emerald-500" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                       <path d="M5 13l4 4L19 7" strokeLinecap="round" strokeLinejoin="round"/>
                     </svg>

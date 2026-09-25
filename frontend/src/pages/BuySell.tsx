@@ -1,66 +1,284 @@
 /**
- * Vista de compra y venta de divisas.
+ * Vista de compra y venta de divisas conectada al backend (Hito Operaciones).
  *
- * Permite al usuario seleccionar moneda origen y destino, visualizar la
- * tasa vigente, simular la conversión y confirmar la operación cambiaria.
+ * - Tasas vigentes desde `GET /cotizaciones/vigentes/`.
+ * - Resumen con comisión desde `GET /simulador/` (contraparte PYG) o cálculo
+ *   local vía PYG como pivote (cruces divisa-divisa).
+ * - Ejecución con `POST /api/operaciones/` y validación cliente activo +
+ *   asociación (`detail` 400) mostrada inline en rojo, bloqueando el botón.
+ * - Éxito con modal "Transacción Exitosa" y comprobante.
  *
  * @module BuySell
  */
-import { useState } from 'react'
-import { exchangeRates } from '@/data/mockData'
-import { type AuthUser } from '@/types'
+import { useEffect, useMemo, useState } from 'react'
+import { vigentes, type Cotizacion } from '@/services/cotizaciones'
+import { simular, listarComisiones, type CategoriaCliente } from '@/services/simulador'
+import {
+  crearOperacion,
+  verificarClienteOperable,
+  ERROR_CLIENTE_INACTIVO,
+  type Operacion,
+} from '@/services/operaciones'
+import { listarMetodos, type MetodoPago } from '@/services/metodos'
+import { type AuthUser, type ClienteActivo } from '@/types'
 
 export interface BuySellProps {
   auth: AuthUser
-  currentClient: string
+  currentClient: ClienteActivo | null
 }
 
 type Step = 'form' | 'confirm' | 'receipt'
 
-export default function BuySell({ auth, currentClient }: BuySellProps) {
+interface Resumen {
+  tasaEfectiva: number
+  bruto: number
+  comisionPct: number
+  comision: number
+  total: number
+  monedaOrigen: string
+  monedaDestino: string
+}
+
+function redondear(valor: number, codigo: string): number {
+  if (codigo === 'PYG') return Math.round(valor)
+  return Math.round(valor * 100) / 100
+}
+
+export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
   const [mode, setMode] = useState<'buy' | 'sell'>('buy')
   const [step, setStep] = useState<Step>('form')
-  const [fromCurrency, setFromCurrency] = useState('USD')
-  const [toCurrency, setToCurrency] = useState('PYG')
+  const [divisa, setDivisa] = useState('USD')
+  const [contraparte, setContraparte] = useState('PYG')
   const [amount, setAmount] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('transfer')
-  const [walletOrigin, setWalletOrigin] = useState('USD')
+  const [metodos, setMetodos] = useState<MetodoPago[]>([])
 
-  const selectedRate = exchangeRates.find(r => r.currency === (mode === 'buy' ? fromCurrency : walletOrigin))
-  const rate = mode === 'buy' ? (selectedRate?.sell || 7650) : (selectedRate?.buy || 7580)
-  const amountNum = parseFloat(amount) || 0
-  const total = mode === 'buy' ? amountNum * rate : amountNum * rate
-  const commission = total * 0.001
-  const finalAmount = mode === 'buy' ? total - commission : total - commission
+  const [tasas, setTasas] = useState<Cotizacion[]>([])
+  const [cargando, setCargando] = useState(true)
+  const [errorCarga, setErrorCarga] = useState('')
+  const [comisiones, setComisiones] = useState<Record<string, number>>({})
 
-  const trxId = `TRX-2024-${Math.floor(Math.random() * 9000 + 1000)}`
+  const [clienteOk, setClienteOk] = useState(false)
+  const [clienteMotivo, setClienteMotivo] = useState('')
+  const [clienteCategoria, setClienteCategoria] = useState<CategoriaCliente>('MINORISTA')
+  const [verificandoCliente, setVerificandoCliente] = useState(false)
 
-  const resetForm = () => { setStep('form'); setAmount('') }
+  const [resumen, setResumen] = useState<Resumen | null>(null)
+  const [simulando, setSimulando] = useState(false)
+  const [simError, setSimError] = useState('')
 
-  if (step === 'receipt') {
+  const [operacion, setOperacion] = useState<Operacion | null>(null)
+  const [creando, setCreando] = useState(false)
+  const [errorPost, setErrorPost] = useState('')
+
+  const amountNum = useMemo(() => parseFloat(amount) || 0, [amount])
+  const tipo = mode === 'buy' ? 'COMPRA' : 'VENTA'
+
+  // Carga inicial: tasas, métodos, comisiones.
+  useEffect(() => {
+    Promise.all([
+      vigentes(),
+      listarMetodos().catch(() => [] as MetodoPago[]),
+      listarComisiones().catch(() => ({})),
+    ])
+      .then(([t, m, c]) => {
+        setTasas(t)
+        setMetodos(m.filter(x => x.activo))
+        setComisiones(c)
+        const codigos = t.map(x => x.moneda)
+        if (!codigos.includes('USD') && codigos.length > 0) setDivisa(codigos[0])
+      })
+      .catch(() => setErrorCarga('No se pudieron cargar las tasas. Verificá que el backend esté corriendo.'))
+      .finally(() => setCargando(false))
+  }, [])
+
+  // Validación pre-vuelo del cliente activo (mensaje inline rojo).
+  useEffect(() => {
+    let vivo = true
+    setVerificandoCliente(true)
+    verificarClienteOperable(currentClient?.id)
+      .then(r => {
+        if (!vivo) return
+        setClienteOk(r.ok)
+        setClienteMotivo(r.ok ? '' : (r.motivo ?? ERROR_CLIENTE_INACTIVO))
+        if (r.ok && r.cliente) setClienteCategoria(r.cliente.categoria)
+      })
+      .catch(() => {
+        if (!vivo) return
+        setClienteOk(false)
+        setClienteMotivo(ERROR_CLIENTE_INACTIVO)
+      })
+      .finally(() => vivo && setVerificandoCliente(false))
+    return () => { vivo = false }
+  }, [currentClient])
+
+  // Resumen: simulador si contraparte es PYG, cálculo local si es cruce.
+  useEffect(() => {
+    if (amountNum <= 0 || tasas.length === 0) {
+      setResumen(null)
+      setSimError('')
+      return
+    }
+    let vivo = true
+    setSimulando(true)
+    setSimError('')
+
+    const correr = async () => {
+      try {
+        if (contraparte === 'PYG') {
+          const s = await simular({
+            moneda: divisa,
+            monto: amountNum,
+            operacion: mode === 'buy' ? 'compra' : 'venta',
+            categoria: clienteCategoria,
+          })
+          if (!vivo) return
+          if (mode === 'buy') {
+            // Hito Operaciones: en compra el cliente paga bruto + comisión.
+            const totalPagar = s.monto_bruto_pyg + s.comision_pyg
+            setResumen({
+              tasaEfectiva: s.tasa_aplicada,
+              bruto: s.monto_bruto_pyg,
+              comisionPct: s.comision_porcentaje,
+              comision: s.comision_pyg,
+              total: totalPagar,
+              monedaOrigen: 'PYG',
+              monedaDestino: divisa,
+            })
+          } else {
+            setResumen({
+              tasaEfectiva: s.tasa_aplicada,
+              bruto: s.monto_bruto_pyg,
+              comisionPct: s.comision_porcentaje,
+              comision: s.comision_pyg,
+              total: s.monto_neto_pyg,
+              monedaOrigen: divisa,
+              monedaDestino: 'PYG',
+            })
+          }
+        } else {
+          // Cruce divisa-divisa vía PYG como pivote.
+          const tDiv = tasas.find(t => t.moneda === divisa)
+          const tContra = tasas.find(t => t.moneda === contraparte)
+          if (!tDiv || !tContra) throw new Error(`Sin cotización vigente para el par ${divisa}/${contraparte}.`)
+          const pct = comisiones[clienteCategoria] ?? 0
+          if (mode === 'buy') {
+            const pygNecesarios = amountNum * tDiv.venta
+            const brutoOrigen = pygNecesarios / tContra.compra
+            const comisionOrigen = (brutoOrigen * pct) / 100
+            setResumen({
+              tasaEfectiva: brutoOrigen / amountNum,
+              bruto: redondear(brutoOrigen, contraparte),
+              comisionPct: pct,
+              comision: redondear(comisionOrigen, contraparte),
+              total: redondear(brutoOrigen + comisionOrigen, contraparte),
+              monedaOrigen: contraparte,
+              monedaDestino: divisa,
+            })
+          } else {
+            const pyg = amountNum * tDiv.compra
+            const brutoDest = pyg / tContra.venta
+            const comisionDest = (brutoDest * pct) / 100
+            setResumen({
+              tasaEfectiva: brutoDest / amountNum,
+              bruto: redondear(brutoDest, contraparte),
+              comisionPct: pct,
+              comision: redondear(comisionDest, contraparte),
+              total: redondear(brutoDest - comisionDest, contraparte),
+              monedaOrigen: divisa,
+              monedaDestino: contraparte,
+            })
+          }
+        }
+      } catch (err) {
+        if (!vivo) return
+        setResumen(null)
+        setSimError(err instanceof Error ? err.message : 'No se pudo calcular la tasa.')
+      } finally {
+        if (vivo) setSimulando(false)
+      }
+    }
+    const timer = setTimeout(correr, 350)
+    return () => { vivo = false; clearTimeout(timer) }
+  }, [amountNum, divisa, contraparte, mode, tasas, comisiones, clienteCategoria])
+
+  const bloqueado = !clienteOk || amountNum <= 0 || !resumen || simulando
+  const mostrarErrorCliente = !verificandoCliente && !clienteOk
+
+  const confirmar = async () => {
+    if (!currentClient || bloqueado || creando) return
+    setCreando(true)
+    setErrorPost('')
+    try {
+      const op = await crearOperacion({
+        clienteId: currentClient.id,
+        tipo,
+        moneda: divisa,
+        montoDivisa: amountNum,
+        monedaContraparte: contraparte,
+        metodoPago: paymentMethod,
+      })
+      setOperacion(op)
+      setStep('receipt')
+    } catch (err) {
+      setErrorPost(err instanceof Error ? err.message : 'No se pudo procesar la operación.')
+    } finally {
+      setCreando(false)
+    }
+  }
+
+  const resetForm = () => {
+    setStep('form')
+    setAmount('')
+    setOperacion(null)
+    setErrorPost('')
+  }
+
+  const nombreCliente = currentClient?.nombre ?? 'Sin cliente seleccionado'
+  const divisasDisponibles = tasas.length > 0 ? tasas : []
+  const contrapartes = [{ moneda: 'PYG', nombre: 'Guaraní', flag: '🇵🇾' }, ...tasas.filter(t => t.moneda !== divisa).map(t => ({ moneda: t.moneda, nombre: t.nombre, flag: t.flag }))]
+
+  if (cargando) {
+    return (
+      <div className="max-w-2xl mx-auto bg-white rounded-2xl border border-slate-100 shadow-sm p-10 text-center text-slate-400 text-[14px]">
+        Cargando tasas vigentes…
+      </div>
+    )
+  }
+
+  if (errorCarga) {
+    return (
+      <div role="alert" className="max-w-2xl mx-auto bg-white rounded-2xl border border-red-100 shadow-sm p-10 text-center text-red-500 text-[14px]">
+        {errorCarga}
+      </div>
+    )
+  }
+
+  if (step === 'receipt' && operacion) {
+    const fecha = new Date(operacion.fecha_creacion).toLocaleString('es-PY', { dateStyle: 'medium', timeStyle: 'short' })
     return (
       <div className="max-w-lg mx-auto animate-fadein">
         <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-8 text-center">
           <div className="w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-5">
-            <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><path d="M6 16l7 7L26 9" stroke="#10b981" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><path d="M6 16l7 7L26 9" stroke="#10b981" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" /></svg>
           </div>
-          <h2 className="text-xl font-bold text-slate-900 mb-2" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>¡Operación completada!</h2>
-          <p className="text-slate-400 text-[14px] mb-6">Los fondos han sido acreditados en tu billetera</p>
+          <h2 className="text-xl font-bold text-slate-900 mb-2" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Transacción Exitosa</h2>
+          <p className="text-slate-400 text-[14px] mb-6">Comprobante de la operación cambiaria</p>
 
           <div className="bg-slate-50 rounded-xl p-4 text-left space-y-3 mb-6">
             {[
-              ['Número de operación', trxId],
-              ['Tipo', `${mode === 'buy' ? 'Compra' : 'Venta'} de ${mode === 'buy' ? fromCurrency : walletOrigin}`],
-              ['Monto', `${amountNum.toLocaleString()} ${mode === 'buy' ? fromCurrency : walletOrigin}`],
-              ['Tipo de cambio', `₲ ${rate.toLocaleString()}`],
-              ['Comisión', `₲ ${commission.toLocaleString('es', { maximumFractionDigits: 0 })}`],
-              ['Total acreditado', `₲ ${finalAmount.toLocaleString('es', { maximumFractionDigits: 0 })}`],
-              ['Fecha', 'Lun, 15 Enero 2024 · 14:35'],
-              ['Cliente', currentClient],
+              ['Número de operación', `#${operacion.id}`],
+              ['Tipo', `${operacion.tipo_operacion === 'COMPRA' ? 'Compra' : 'Venta'} de ${divisa}`],
+              ['Origen', `${operacion.monto_enviado.toLocaleString()} ${operacion.moneda_origen_codigo}`],
+              ['Destino (neto)', `${operacion.monto_recibido.toLocaleString()} ${operacion.moneda_destino_codigo}`],
+              ['Tipo efectivo', `${Number(operacion.cotizacion_aplicada).toLocaleString()}`],
+              [`Comisión (${operacion.porcentaje_comision_aplicado}%)`, `${operacion.monto_comision.toLocaleString()} ${operacion.moneda_destino_codigo}`],
+              ['Fecha', fecha],
+              ['Cliente', operacion.cliente_nombre || nombreCliente],
             ].map(([label, value]) => (
               <div key={label as string} className="flex justify-between items-start">
                 <span className="text-[12px] text-slate-400 font-medium">{label}</span>
-                <span className={`text-[13px] font-semibold text-slate-800 text-right ${label === 'Total acreditado' ? 'text-emerald-600 font-mono' : ''}`}>{value}</span>
+                <span className="text-[13px] font-semibold text-slate-800 text-right">{value}</span>
               </div>
             ))}
           </div>
@@ -78,7 +296,7 @@ export default function BuySell({ auth, currentClient }: BuySellProps) {
     )
   }
 
-  if (step === 'confirm') {
+  if (step === 'confirm' && resumen) {
     return (
       <div className="max-w-lg mx-auto animate-fadein">
         <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-8">
@@ -89,17 +307,21 @@ export default function BuySell({ auth, currentClient }: BuySellProps) {
               {mode === 'buy' ? '↑' : '↓'}
             </div>
             <div>
-              <div className="font-bold text-slate-900 text-[15px]">{mode === 'buy' ? 'Compra' : 'Venta'} de {mode === 'buy' ? fromCurrency : walletOrigin}</div>
-              <div className="text-[13px] text-slate-400">Cliente: {currentClient}</div>
+              <div className="font-bold text-slate-900 text-[15px]">{mode === 'buy' ? 'Compra' : 'Venta'} de {divisa}</div>
+              <div className="text-[13px] text-slate-400">Cliente: {nombreCliente}</div>
             </div>
           </div>
 
+          {mostrarErrorCliente && (
+            <p role="alert" className="mb-4 text-red-600 text-[13px] font-medium">{clienteMotivo}</p>
+          )}
+
           <div className="space-y-3 mb-6">
             {[
-              ['Monto', `${amountNum.toLocaleString()} ${mode === 'buy' ? fromCurrency : walletOrigin}`],
-              ['Tipo de cambio', `₲ ${rate.toLocaleString()}`],
-              ['Subtotal', `₲ ${total.toLocaleString('es', { maximumFractionDigits: 0 })}`],
-              ['Comisión (0.1%)', `₲ ${commission.toLocaleString('es', { maximumFractionDigits: 0 })}`],
+              ['Monto en divisa', `${amountNum.toLocaleString()} ${divisa}`],
+              ['Tipo efectivo', `${resumen.tasaEfectiva.toLocaleString()} ${resumen.monedaOrigen}/${resumen.monedaDestino}`],
+              ['Subtotal', `${resumen.bruto.toLocaleString()} ${resumen.monedaDestino === divisa && mode === 'buy' ? resumen.monedaOrigen : resumen.monedaDestino}`],
+              [`Comisión (${resumen.comisionPct}%)`, `${resumen.comision.toLocaleString()} ${mode === 'buy' ? resumen.monedaOrigen : resumen.monedaDestino}`],
             ].map(([label, value]) => (
               <div key={label as string} className="flex justify-between py-2 border-b border-slate-50 last:border-0">
                 <span className="text-[13px] text-slate-500">{label}</span>
@@ -108,16 +330,24 @@ export default function BuySell({ auth, currentClient }: BuySellProps) {
             ))}
             <div className="flex justify-between py-3 bg-emerald-50 rounded-xl px-4 -mx-4">
               <span className="text-[14px] font-bold text-emerald-700">Total a {mode === 'buy' ? 'pagar' : 'recibir'}</span>
-              <span className="font-mono font-extrabold text-emerald-700 text-[16px]">₲ {finalAmount.toLocaleString('es', { maximumFractionDigits: 0 })}</span>
+              <span className="font-mono font-extrabold text-emerald-700 text-[16px]">{resumen.total.toLocaleString()} {mode === 'buy' ? resumen.monedaOrigen : resumen.monedaDestino}</span>
             </div>
           </div>
+
+          {errorPost && <p role="alert" className="mb-4 text-red-600 text-[13px] font-medium">{errorPost}</p>}
 
           <div className="flex gap-3">
             <button onClick={() => setStep('form')} className="flex-1 py-3 rounded-xl border border-slate-200 text-[14px] font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
               Volver
             </button>
-            <button onClick={() => setStep('receipt')} className="flex-1 py-3 rounded-xl text-white text-[14px] font-semibold transition-all hover:-translate-y-0.5 hover:shadow-lg" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
-              Confirmar {mode === 'buy' ? 'compra' : 'venta'}
+            <button
+              onClick={confirmar}
+              disabled={!clienteOk || creando}
+              title={!clienteOk ? clienteMotivo : undefined}
+              className="flex-1 py-3 rounded-xl text-white text-[14px] font-semibold transition-all hover:-translate-y-0.5 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
+              style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}
+            >
+              {creando ? 'Procesando…' : `Confirmar ${mode === 'buy' ? 'compra' : 'venta'}`}
             </button>
           </div>
         </div>
@@ -127,7 +357,6 @@ export default function BuySell({ auth, currentClient }: BuySellProps) {
 
   return (
     <div className="max-w-2xl mx-auto animate-fadein">
-      {/* Mode toggle */}
       <div className="flex rounded-xl border border-slate-200 bg-white p-1 mb-6 shadow-sm">
         <button
           onClick={() => setMode('buy')}
@@ -150,60 +379,48 @@ export default function BuySell({ auth, currentClient }: BuySellProps) {
         </h2>
 
         <div className="space-y-5">
-          {/* Client */}
           <div>
             <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Cliente</label>
-            <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-slate-200 bg-slate-50">
-              <div className="w-7 h-7 rounded-full bg-gradient-to-br from-emerald-400 to-blue-500 flex items-center justify-center text-white text-xs font-bold">{currentClient.charAt(0)}</div>
-              <span className="text-[14px] font-medium text-slate-800">{currentClient}</span>
+            <div className={`flex items-center gap-3 px-4 py-3 rounded-xl border bg-slate-50 ${mostrarErrorCliente ? 'border-red-300' : 'border-slate-200'}`}>
+              <div className="w-7 h-7 rounded-full bg-gradient-to-br from-emerald-400 to-blue-500 flex items-center justify-center text-white text-xs font-bold">{nombreCliente.charAt(0)}</div>
+              <span className="text-[14px] font-medium text-slate-800">{nombreCliente}</span>
+            </div>
+            {mostrarErrorCliente && (
+              <p role="alert" className="mt-2 text-red-600 text-[13px] font-medium">{clienteMotivo}</p>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                {mode === 'buy' ? 'Moneda a comprar' : 'Moneda a vender'}
+              </label>
+              <select value={divisa} onChange={e => setDivisa(e.target.value)} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] font-medium text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
+                {divisasDisponibles.map(r => <option key={r.moneda} value={r.moneda}>{r.flag} {r.moneda} — {r.nombre}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                {mode === 'buy' ? 'Pagar con' : 'Recibir en'}
+              </label>
+              <select value={contraparte} onChange={e => setContraparte(e.target.value)} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] font-medium text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
+                {contrapartes.map(c => <option key={c.moneda} value={c.moneda}>{c.flag} {c.moneda} — {c.nombre}</option>)}
+              </select>
             </div>
           </div>
 
-          {mode === 'buy' ? (
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Moneda a comprar</label>
-                <select value={fromCurrency} onChange={e => setFromCurrency(e.target.value)} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] font-medium text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
-                  {exchangeRates.map(r => <option key={r.currency} value={r.currency}>{r.flag} {r.currency} — {r.name}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Pagar con</label>
-                <select value={toCurrency} onChange={e => setToCurrency(e.target.value)} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] font-medium text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
-                  <option value="PYG">🇵🇾 PYG — Guaraní</option>
-                </select>
-              </div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Billetera origen</label>
-                <select value={walletOrigin} onChange={e => setWalletOrigin(e.target.value)} className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] font-medium text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
-                  {exchangeRates.map(r => <option key={r.currency} value={r.currency}>{r.flag} {r.currency}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Cuenta bancaria destino</label>
-                <select className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] font-medium text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
-                  <option>Banco Continental •••• 4521</option>
-                  <option>Itaú Paraguay •••• 8832</option>
-                </select>
-              </div>
-            </div>
-          )}
-
-          {/* Amount */}
           <div>
             <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
-              Monto ({mode === 'buy' ? fromCurrency : walletOrigin})
+              Monto ({divisa})
             </label>
             <div className="relative">
               <input
                 type="number"
+                min={0}
                 value={amount}
                 onChange={e => setAmount(e.target.value)}
                 placeholder="0.00"
-                className="w-full border border-slate-200 rounded-xl px-4 py-3.5 text-[16px] font-mono font-semibold text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300 placeholder:text-slate-200"
+                className={`w-full border rounded-xl px-4 py-3.5 text-[16px] font-mono font-semibold text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300 placeholder:text-slate-200 ${mostrarErrorCliente ? 'border-red-300' : 'border-slate-200'}`}
               />
               <div className="absolute right-3 top-1/2 -translate-y-1/2 flex gap-2">
                 {['100', '500', '1000'].map(v => (
@@ -213,19 +430,24 @@ export default function BuySell({ auth, currentClient }: BuySellProps) {
                 ))}
               </div>
             </div>
+            {mostrarErrorCliente && (
+              <p role="alert" className="mt-2 text-red-600 text-[13px] font-medium">{clienteMotivo}</p>
+            )}
           </div>
 
-          {/* Payment method (buy only) */}
           {mode === 'buy' && (
             <div>
               <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Método de pago</label>
               <div className="grid grid-cols-4 gap-2">
-                {[
-                  { id: 'transfer', icon: '🏦', label: 'Transferencia' },
-                  { id: 'wallet', icon: '◈', label: 'Billetera' },
-                  { id: 'card', icon: '💳', label: 'Tarjeta' },
-                  { id: 'qr', icon: '⊞', label: 'QR' },
-                ].map(m => (
+                {(metodos.length > 0
+                  ? metodos.map(m => ({ id: m.codigo, icon: '🏦', label: m.nombre }))
+                  : [
+                      { id: 'transfer', icon: '🏦', label: 'Transferencia' },
+                      { id: 'wallet', icon: '◈', label: 'Billetera' },
+                      { id: 'card', icon: '💳', label: 'Tarjeta' },
+                      { id: 'qr', icon: '⊞', label: 'QR' },
+                    ]
+                ).map(m => (
                   <button
                     key={m.id}
                     onClick={() => setPaymentMethod(m.id)}
@@ -239,14 +461,18 @@ export default function BuySell({ auth, currentClient }: BuySellProps) {
             </div>
           )}
 
-          {/* Rate summary */}
-          {amountNum > 0 && (
+          {simulando && amountNum > 0 && (
+            <p className="text-slate-400 text-[13px]">Calculando tasa vigente con comisión…</p>
+          )}
+          {simError && <p role="alert" className="text-red-600 text-[13px] font-medium">{simError}</p>}
+
+          {amountNum > 0 && resumen && (
             <div className="rounded-xl border border-slate-100 bg-slate-50 p-4 space-y-2.5 animate-fadein">
               <h4 className="font-semibold text-slate-700 text-[13px] mb-3">Resumen de la operación</h4>
               {[
-                ['Tipo de cambio', `₲ ${rate.toLocaleString()}`],
-                ['Subtotal', `₲ ${total.toLocaleString('es', { maximumFractionDigits: 0 })}`],
-                ['Comisión (0.1%)', `₲ ${commission.toLocaleString('es', { maximumFractionDigits: 0 })}`],
+                ['Tipo efectivo', `${resumen.tasaEfectiva.toLocaleString()} ${resumen.monedaOrigen}/${resumen.monedaDestino}`],
+                ['Subtotal', `${resumen.bruto.toLocaleString()}`],
+                [`Comisión (${resumen.comisionPct}%)`, `${resumen.comision.toLocaleString()}`],
               ].map(([label, value]) => (
                 <div key={label as string} className="flex justify-between">
                   <span className="text-[12px] text-slate-400">{label}</span>
@@ -255,14 +481,15 @@ export default function BuySell({ auth, currentClient }: BuySellProps) {
               ))}
               <div className="border-t border-slate-200 pt-2.5 flex justify-between">
                 <span className="text-[13px] font-bold text-slate-700">Total a {mode === 'buy' ? 'pagar' : 'recibir'}</span>
-                <span className="font-mono font-extrabold text-emerald-600 text-[15px]">₲ {finalAmount.toLocaleString('es', { maximumFractionDigits: 0 })}</span>
+                <span className="font-mono font-extrabold text-emerald-600 text-[15px]">{resumen.total.toLocaleString()} {mode === 'buy' ? resumen.monedaOrigen : resumen.monedaDestino}</span>
               </div>
             </div>
           )}
 
           <button
-            onClick={() => { if (amountNum > 0) setStep('confirm') }}
-            disabled={amountNum <= 0}
+            onClick={() => { if (!bloqueado) setStep('confirm') }}
+            disabled={bloqueado}
+            title={mostrarErrorCliente ? clienteMotivo : undefined}
             className="w-full py-4 rounded-xl text-white font-semibold text-[15px] transition-all hover:-translate-y-0.5 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
             style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}
           >

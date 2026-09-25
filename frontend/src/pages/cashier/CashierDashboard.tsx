@@ -8,11 +8,11 @@
  * @module CashierDashboard
  */
 import React, { useState } from 'react'
-import { type AuthUser, type Page } from '../../types'
+import { type AuthUser, type Page, type ClienteActivo } from '../../types'
 
 export interface Props {
   auth: AuthUser
-  currentClient: string
+  currentClient: ClienteActivo | null
   navigate: (p: Page) => void
 }
 
@@ -28,7 +28,7 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
   const [searchDoc, setSearchDoc] = useState('')
   const [selectedClient, setSelectedClient] = useState<Client | null>({
     id: '1',
-    name: currentClient || 'Carlos Martínez',
+    name: currentClient?.nombre || 'Carlos Martínez',
     document: '4589201',
     email: 'carlos.martinez@email.com',
     phone: '0981123456',

@@ -43,6 +43,20 @@ export interface AuthUser {
 }
 
 /**
+ * Cliente activo de la sesión (Hito Operaciones).
+ *
+ * Se guarda como objeto `{id, nombre}` para poder validar contra el
+ * backend que el cliente esté activo y asociado al usuario Keycloak
+ * (`GET /clientes/{id}/` + `GET /asociaciones/?mine=1`).
+ */
+export interface ClienteActivo {
+  /** Id del cliente en el backend. */
+  id: number
+  /** Razón social / nombre para mostrar. */
+  nombre: string
+}
+
+/**
  * Propiedades de navegación compartidas entre los componentes.
  */
 export interface NavProps {
@@ -55,9 +69,9 @@ export interface NavProps {
   /** Callback ejecutado al cerrar sesión. */
   onLogout: () => void
   /** Cliente seleccionado actualmente por el usuario. */
-  currentClient: string
+  currentClient: ClienteActivo | null
   /** Actualiza el cliente seleccionado dentro de la sesión. */
-  setCurrentClient: (c: string) => void
+  setCurrentClient: (c: ClienteActivo | null) => void
 }
 
 /**

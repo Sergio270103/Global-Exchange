@@ -7,14 +7,14 @@
  *
  * @module Dashboard
  */
-import { type AuthUser, type Page } from '@/types'
+import { type AuthUser, type Page, type ClienteActivo } from '@/types'
 import { wallets, transactions, exchangeRates, earningsData } from '@/data/mockData'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import CashierDashboard from './cashier/CashierDashboard'
 
 export interface DashboardProps {
   auth: AuthUser
-  currentClient: string
+  currentClient: ClienteActivo | null
   navigate: (p: Page) => void
 }
 
@@ -50,7 +50,7 @@ export default function Dashboard({ auth, currentClient, navigate }: DashboardPr
         <div>
           <h2 className="text-[15px] text-slate-500 font-medium">{greeting},</h2>
           <h1 className="text-2xl font-bold text-slate-900" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>{auth.name.split(' ')[0]} 👋</h1>
-          {auth.role === 'user' && <p className="text-sm text-slate-400 mt-0.5">Cliente: <span className="text-slate-600 font-medium">{currentClient}</span></p>}
+          {auth.role === 'user' && <p className="text-sm text-slate-400 mt-0.5">Cliente: <span className="text-slate-600 font-medium">{currentClient?.nombre ?? '—'}</span></p>}
         </div>
         <div className="flex gap-3">
           <button onClick={() => navigate('buy')} className="px-4 py-2 rounded-lg text-white text-[13px] font-semibold transition-all hover:-translate-y-0.5 hover:shadow-md" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>

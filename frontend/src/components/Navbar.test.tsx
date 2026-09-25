@@ -18,7 +18,7 @@ function renderNavbar(auth: AuthUser = admin, currentPage: string = 'dashboard')
       currentPage={currentPage as NavbarPage}
       navigate={navigate}
       onLogout={onLogout}
-      currentClient="Carlos Martínez"
+      currentClient={{ id: 1, nombre: 'Carlos Martínez' }}
       setCurrentClient={setCurrentClient}
     />
   )
@@ -71,7 +71,7 @@ describe('Navbar (barra superior)', () => {
     expect(screen.getByText('Carlos Martínez')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Cambiar cliente' }))
     await user.click(screen.getByText('Ana López'))
-    expect(setCurrentClient).toHaveBeenCalledWith('Ana López')
+    expect(setCurrentClient).toHaveBeenCalledWith(expect.objectContaining({ nombre: 'Ana López' }))
   })
 
   it('no muestra el selector de cliente para el rol admin', () => {

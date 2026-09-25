@@ -9,7 +9,7 @@
 import { useState } from 'react'
 import Sidebar from './Sidebar'
 import Navbar from './Navbar'
-import { type Page, type AuthUser } from '@/types'
+import { type Page, type AuthUser, type ClienteActivo } from '@/types'
 
 /** Propiedades del layout principal de la aplicación. */
 export interface LayoutProps {
@@ -22,9 +22,9 @@ export interface LayoutProps {
   /** Callback ejecutado al cerrar sesión. */
   onLogout: () => void
   /** Cliente seleccionado en la sesión. */
-  currentClient: string
+  currentClient: ClienteActivo | null
   /** Actualiza el cliente seleccionado. */
-  setCurrentClient: (c: string) => void
+  setCurrentClient: (c: ClienteActivo | null) => void
   /** Contenido de la página a renderizar. */
   children: React.ReactNode
 }

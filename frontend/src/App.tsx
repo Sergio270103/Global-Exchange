@@ -10,7 +10,7 @@
  */
 import { useState, useEffect } from 'react'
 import keycloak, { initKeycloak } from './keycloak'
-import { type AuthUser, type Page, type Role } from './types'
+import { type AuthUser, type Page, type Role, type ClienteActivo } from './types'
 
 import Layout from './components/Layout'
 import Landing from './pages/Landing'
@@ -83,7 +83,7 @@ export default function App() {
   const [keycloakReady, setKeycloakReady] = useState(false)
   const [auth, setAuth] = useState<AuthUser | null>(null)
   const [page, setPage] = useState<Page>('landing')
-  const [currentClient, setCurrentClient] = useState('Carlos Martínez')
+  const [currentClient, setCurrentClient] = useState<ClienteActivo | null>(null)
 
   const navigate = (p: Page) => setPage(p)
 
