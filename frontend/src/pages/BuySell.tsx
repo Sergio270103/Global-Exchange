@@ -4,8 +4,12 @@
  * - Tasas vigentes desde `GET /cotizaciones/vigentes/`.
  * - Resumen con comisión desde `GET /simulador/` (contraparte PYG) o cálculo
  *   local vía PYG como pivote (cruces divisa-divisa).
- * - Ejecución con `POST /api/operaciones/` y validación cliente activo +
- *   asociación (`detail` 400) mostrada inline en rojo, bloqueando el botón.
+ * - Inicio con `POST /api/operaciones/` (queda PENDIENTE con la tasa
+ *   congelada) y validación cliente activo + asociación (`detail` 400)
+ *   mostrada inline en rojo, bloqueando el botón.
+ * - PI-64: en la confirmación se muestra cuánto dura la tasa garantizada.
+ *   Si al confirmar la cotización cambió (fuera de la ventana), se muestra
+ *   la nueva y el usuario puede aceptarla o cancelar sin costo.
  * - Éxito con modal "Transacción Exitosa" y comprobante.
  *
  * @module BuySell
@@ -15,9 +19,12 @@ import { vigentes, type Cotizacion } from '@/services/cotizaciones'
 import { simular, listarComisiones, type CategoriaCliente } from '@/services/simulador'
 import {
   crearOperacion,
+  confirmarOperacion,
+  cancelarOperacion,
   verificarClienteOperable,
   ERROR_CLIENTE_INACTIVO,
   type Operacion,
+  type MotivoCancelacion,
 } from '@/services/operaciones'
 import { listarMetodos, type MetodoPago } from '@/services/metodos'
 import { type AuthUser, type ClienteActivo } from '@/types'
@@ -27,7 +34,7 @@ export interface BuySellProps {
   currentClient: ClienteActivo | null
 }
 
-type Step = 'form' | 'confirm' | 'receipt'
+type Step = 'form' | 'confirm' | 'receipt' | 'cancelled'
 
 interface Resumen {
   tasaEfectiva: number
@@ -37,6 +44,11 @@ interface Resumen {
   total: number
   monedaOrigen: string
   monedaDestino: string
+}
+
+function formatoMonto(valor: number, codigo: string): string {
+  const dec = codigo === 'PYG' ? 0 : 2
+  return `${valor.toLocaleString('es-PY', { minimumFractionDigits: dec, maximumFractionDigits: dec })} ${codigo}`
 }
 
 function redondear(valor: number, codigo: string): number {
@@ -70,6 +82,13 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
   const [operacion, setOperacion] = useState<Operacion | null>(null)
   const [creando, setCreando] = useState(false)
   const [errorPost, setErrorPost] = useState('')
+
+  // PI-64: operación pendiente, cotización anterior (si cambió) y cuenta regresiva.
+  const [pendiente, setPendiente] = useState<Operacion | null>(null)
+  const [anterior, setAnterior] = useState<Operacion | null>(null)
+  const [segundos, setSegundos] = useState(0)
+  const [iniciando, setIniciando] = useState(false)
+  const [cancelando, setCancelando] = useState(false)
 
   const amountNum = useMemo(() => parseFloat(amount) || 0, [amount])
   const tipo = mode === 'buy' ? 'COMPRA' : 'VENTA'
@@ -202,12 +221,21 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
     return () => { vivo = false; clearTimeout(timer) }
   }, [amountNum, divisa, contraparte, mode, tasas, comisiones, clienteCategoria])
 
+  // Cuenta regresiva de la tasa garantizada (solo visual: el backend decide).
+  useEffect(() => {
+    if (step !== 'confirm' || !pendiente) return
+    setSegundos(pendiente.segundos_restantes)
+    const id = setInterval(() => setSegundos(s => (s > 0 ? s - 1 : 0)), 1000)
+    return () => clearInterval(id)
+  }, [step, pendiente])
+
   const bloqueado = !clienteOk || amountNum <= 0 || !resumen || simulando
   const mostrarErrorCliente = !verificandoCliente && !clienteOk
 
-  const confirmar = async () => {
-    if (!currentClient || bloqueado || creando) return
-    setCreando(true)
+  /** "Continuar": crea la operación PENDIENTE y congela la cotización. */
+  const iniciar = async () => {
+    if (!currentClient || bloqueado || iniciando) return
+    setIniciando(true)
     setErrorPost('')
     try {
       const op = await crearOperacion({
@@ -218,12 +246,59 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
         monedaContraparte: contraparte,
         metodoPago: paymentMethod,
       })
-      setOperacion(op)
-      setStep('receipt')
+      setPendiente(op)
+      setAnterior(null)
+      setStep('confirm')
     } catch (err) {
-      setErrorPost(err instanceof Error ? err.message : 'No se pudo procesar la operación.')
+      setErrorPost(err instanceof Error ? err.message : 'No se pudo iniciar la operación.')
+    } finally {
+      setIniciando(false)
+    }
+  }
+
+  /** Confirma; si la tasa cambió, muestra la nueva y espera la decisión. */
+  const confirmar = async () => {
+    if (!pendiente || creando) return
+    setCreando(true)
+    setErrorPost('')
+    try {
+      const r = await confirmarOperacion(pendiente.id)
+      if (r.resultado === 'CONFIRMADA') {
+        setOperacion(r.operacion)
+        setPendiente(null)
+        setAnterior(null)
+        setStep('receipt')
+      } else {
+        // Guardamos la primera cotización que vio el usuario para comparar.
+        setAnterior(prev => prev ?? r.anterior)
+        setPendiente(r.operacion)
+      }
+    } catch (err) {
+      setErrorPost(err instanceof Error ? err.message : 'No se pudo confirmar la operación.')
     } finally {
       setCreando(false)
+    }
+  }
+
+  /** Cancela sin costo la operación pendiente. */
+  const cancelar = async (motivo: MotivoCancelacion) => {
+    if (!pendiente || cancelando) return
+    setCancelando(true)
+    setErrorPost('')
+    try {
+      const op = await cancelarOperacion(pendiente.id, motivo)
+      setPendiente(null)
+      setAnterior(null)
+      if (motivo === 'DESISTIO') {
+        setStep('form')
+      } else {
+        setOperacion(op)
+        setStep('cancelled')
+      }
+    } catch (err) {
+      setErrorPost(err instanceof Error ? err.message : 'No se pudo cancelar la operación.')
+    } finally {
+      setCancelando(false)
     }
   }
 
@@ -231,6 +306,8 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
     setStep('form')
     setAmount('')
     setOperacion(null)
+    setPendiente(null)
+    setAnterior(null)
     setErrorPost('')
   }
 
@@ -296,18 +373,57 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
     )
   }
 
-  if (step === 'confirm' && resumen) {
+  if (step === 'cancelled' && operacion) {
+    const fecha = operacion.fecha_cancelacion
+      ? new Date(operacion.fecha_cancelacion).toLocaleString('es-PY', { dateStyle: 'medium', timeStyle: 'short' })
+      : ''
+    return (
+      <div className="max-w-lg mx-auto animate-fadein">
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-8 text-center">
+          <div className="w-16 h-16 rounded-full bg-slate-100 flex items-center justify-center mx-auto mb-5">
+            <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><path d="M8 8l12 12M20 8L8 20" stroke="#64748b" strokeWidth="3" strokeLinecap="round" /></svg>
+          </div>
+          <h2 className="text-xl font-bold text-slate-900 mb-2" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Transacción cancelada</h2>
+          <p className="text-slate-500 text-[14px] mb-6">
+            No se te cobró nada. La operación #{operacion.id} queda en tu historial como cancelada.
+          </p>
+          {fecha && <p className="text-slate-400 text-[12px] mb-6">Cancelada el {fecha}</p>}
+          <button onClick={resetForm} className="w-full py-3 rounded-xl text-white text-[14px] font-semibold transition-all hover:-translate-y-0.5" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
+            Nueva operación
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  if (step === 'confirm' && pendiente) {
+    const op = pendiente
+    const cambio = anterior !== null
+    const esCompra = op.tipo_operacion === 'COMPRA'
+    const totalLabel = esCompra ? 'Total a pagar' : 'Total a recibir'
+    const totalValor = esCompra
+      ? formatoMonto(op.monto_enviado, op.moneda_origen_codigo)
+      : formatoMonto(op.monto_recibido, op.moneda_destino_codigo)
+    const totalAnterior = anterior
+      ? (esCompra
+          ? formatoMonto(anterior.monto_enviado, anterior.moneda_origen_codigo)
+          : formatoMonto(anterior.monto_recibido, anterior.moneda_destino_codigo))
+      : ''
+    const ocupado = creando || cancelando
+
     return (
       <div className="max-w-lg mx-auto animate-fadein">
         <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-8">
-          <h2 className="text-lg font-bold text-slate-900 mb-6" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Confirmar operación</h2>
+          <h2 className="text-lg font-bold text-slate-900 mb-6" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>
+            {cambio ? 'La cotización cambió' : 'Confirmar operación'}
+          </h2>
 
           <div className="flex items-center gap-4 p-4 rounded-xl bg-slate-50 mb-6">
-            <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold ${mode === 'buy' ? 'bg-emerald-500' : 'bg-blue-500'}`}>
-              {mode === 'buy' ? '↑' : '↓'}
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white font-bold ${esCompra ? 'bg-emerald-500' : 'bg-blue-500'}`}>
+              {esCompra ? '↑' : '↓'}
             </div>
             <div>
-              <div className="font-bold text-slate-900 text-[15px]">{mode === 'buy' ? 'Compra' : 'Venta'} de {divisa}</div>
+              <div className="font-bold text-slate-900 text-[15px]">{esCompra ? 'Compra' : 'Venta'} de {divisa}</div>
               <div className="text-[13px] text-slate-400">Cliente: {nombreCliente}</div>
             </div>
           </div>
@@ -316,12 +432,44 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
             <p role="alert" className="mb-4 text-red-600 text-[13px] font-medium">{clienteMotivo}</p>
           )}
 
+          {cambio && anterior ? (
+            <div role="alert" className="mb-6 rounded-xl border border-amber-200 bg-amber-50 p-4">
+              <p className="text-[13px] text-amber-800 font-medium mb-3">
+                La tasa se actualizó mientras confirmabas. Revisá el nuevo total: podés aceptarlo o cancelar sin costo.
+              </p>
+              <div className="grid grid-cols-2 gap-3 text-[12px]">
+                <div>
+                  <div className="text-amber-700/70">Tipo efectivo anterior</div>
+                  <div className="font-mono text-slate-500 line-through">{anterior.cotizacion_aplicada.toLocaleString('es-PY')}</div>
+                </div>
+                <div>
+                  <div className="text-amber-700/70">Tipo efectivo nuevo</div>
+                  <div className="font-mono font-semibold text-slate-900">{op.cotizacion_aplicada.toLocaleString('es-PY')}</div>
+                </div>
+                <div>
+                  <div className="text-amber-700/70">{totalLabel} anterior</div>
+                  <div className="font-mono text-slate-500 line-through">{totalAnterior}</div>
+                </div>
+                <div>
+                  <div className="text-amber-700/70">{totalLabel} nuevo</div>
+                  <div className="font-mono font-semibold text-slate-900">{totalValor}</div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <p className={`mb-6 text-[13px] ${segundos > 0 ? 'text-slate-500' : 'text-amber-700'}`} aria-live="polite">
+              {segundos > 0
+                ? `Tasa garantizada por ${segundos} s más.`
+                : 'La tasa garantizada venció. Si cambió al confirmar, te mostramos la nueva antes de cobrar.'}
+            </p>
+          )}
+
           <div className="space-y-3 mb-6">
             {[
-              ['Monto en divisa', `${amountNum.toLocaleString()} ${divisa}`],
-              ['Tipo efectivo', `${resumen.tasaEfectiva.toLocaleString()} ${resumen.monedaOrigen}/${resumen.monedaDestino}`],
-              ['Subtotal', `${resumen.bruto.toLocaleString()} ${resumen.monedaDestino === divisa && mode === 'buy' ? resumen.monedaOrigen : resumen.monedaDestino}`],
-              [`Comisión (${resumen.comisionPct}%)`, `${resumen.comision.toLocaleString()} ${mode === 'buy' ? resumen.monedaOrigen : resumen.monedaDestino}`],
+              ['Envías', formatoMonto(op.monto_enviado, op.moneda_origen_codigo)],
+              ['Recibís', formatoMonto(op.monto_recibido, op.moneda_destino_codigo)],
+              ['Tipo efectivo', `${op.cotizacion_aplicada.toLocaleString('es-PY')} ${op.moneda_origen_codigo}/${op.moneda_destino_codigo}`],
+              [`Comisión (${op.porcentaje_comision_aplicado}%)`, formatoMonto(op.monto_comision, op.moneda_destino_codigo)],
             ].map(([label, value]) => (
               <div key={label as string} className="flex justify-between py-2 border-b border-slate-50 last:border-0">
                 <span className="text-[13px] text-slate-500">{label}</span>
@@ -329,25 +477,43 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
               </div>
             ))}
             <div className="flex justify-between py-3 bg-emerald-50 rounded-xl px-4 -mx-4">
-              <span className="text-[14px] font-bold text-emerald-700">Total a {mode === 'buy' ? 'pagar' : 'recibir'}</span>
-              <span className="font-mono font-extrabold text-emerald-700 text-[16px]">{resumen.total.toLocaleString()} {mode === 'buy' ? resumen.monedaOrigen : resumen.monedaDestino}</span>
+              <span className="text-[14px] font-bold text-emerald-700">{totalLabel}</span>
+              <span className="font-mono font-extrabold text-emerald-700 text-[16px]">{totalValor}</span>
             </div>
           </div>
 
           {errorPost && <p role="alert" className="mb-4 text-red-600 text-[13px] font-medium">{errorPost}</p>}
 
           <div className="flex gap-3">
-            <button onClick={() => setStep('form')} className="flex-1 py-3 rounded-xl border border-slate-200 text-[14px] font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
-              Volver
-            </button>
+            {cambio ? (
+              <button
+                onClick={() => cancelar('COTIZACION_CAMBIADA')}
+                disabled={ocupado}
+                className="flex-1 py-3 rounded-xl border border-red-200 text-[14px] font-semibold text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {cancelando ? 'Cancelando…' : 'Cancelar transacción'}
+              </button>
+            ) : (
+              <button
+                onClick={() => cancelar('DESISTIO')}
+                disabled={ocupado}
+                className="flex-1 py-3 rounded-xl border border-slate-200 text-[14px] font-semibold text-slate-700 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {cancelando ? 'Volviendo…' : 'Volver'}
+              </button>
+            )}
             <button
               onClick={confirmar}
-              disabled={!clienteOk || creando}
+              disabled={!clienteOk || ocupado}
               title={!clienteOk ? clienteMotivo : undefined}
               className="flex-1 py-3 rounded-xl text-white text-[14px] font-semibold transition-all hover:-translate-y-0.5 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
               style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}
             >
-              {creando ? 'Procesando…' : `Confirmar ${mode === 'buy' ? 'compra' : 'venta'}`}
+              {creando
+                ? 'Procesando…'
+                : cambio
+                  ? 'Aceptar nueva cotización'
+                  : `Confirmar ${esCompra ? 'compra' : 'venta'}`}
             </button>
           </div>
         </div>
@@ -486,14 +652,16 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
             </div>
           )}
 
+          {errorPost && <p role="alert" className="text-red-600 text-[13px] font-medium">{errorPost}</p>}
+
           <button
-            onClick={() => { if (!bloqueado) setStep('confirm') }}
-            disabled={bloqueado}
+            onClick={iniciar}
+            disabled={bloqueado || iniciando}
             title={mostrarErrorCliente ? clienteMotivo : undefined}
             className="w-full py-4 rounded-xl text-white font-semibold text-[15px] transition-all hover:-translate-y-0.5 hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
             style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}
           >
-            Continuar →
+            {iniciando ? 'Congelando cotización…' : 'Continuar →'}
           </button>
         </div>
       </div>
