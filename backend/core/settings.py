@@ -162,3 +162,5 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+# Segundos en que se respeta la tasa congelada al confirmar
+OPERACION_TOLERANCIA_SEGUNDOS = 30

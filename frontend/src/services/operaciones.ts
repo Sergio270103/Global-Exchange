@@ -1,8 +1,11 @@
 /**
  * Servicio de operaciones de compra/venta (`/api/operaciones/`).
  *
- * - `crearOperacion()`: ejecuta la operación en el backend con la última
- *   cotización vigente y la comisión de la categoría del cliente.
+ * - `crearOperacion()`: inicia la operación (estado PENDIENTE) con la última
+ *   cotización vigente, que queda congelada durante la ventana de tolerancia.
+ * - `confirmarOperacion()`: confirma; si la tasa cambió fuera de la ventana
+ *   devuelve la nueva cotización para que el usuario la acepte o cancele.
+ * - `cancelarOperacion()`: cancela sin costo una operación pendiente (PI-64).
  * - `listarOperaciones()`: historial para Transactions.tsx.
  * - `verificarClienteOperable()`: validación pre-vuelo para el mensaje
  *   inline de BuySell (cliente activo + asociación `mine=1`).
@@ -35,12 +38,31 @@ export interface Operacion {
   monto_comision: number
   metodo_pago: string
   fecha_creacion: string
+  estado: EstadoOperacion
+  fecha_cotizacion: string
+  fecha_confirmacion: string | null
+  fecha_cancelacion: string | null
+  cancelada_por: string
+  cancelada_por_nombre: string
+  motivo_cancelacion: MotivoCancelacion | ''
+  /** Duración total de la tasa garantizada, en segundos. */
+  tolerancia_segundos: number
+  /** Segundos de tasa garantizada que quedan (calculado por el servidor). */
+  segundos_restantes: number
 }
+
+export type EstadoOperacion = 'PENDIENTE' | 'PAGADA' | 'CANCELADA' | 'ANULADA'
+export type MotivoCancelacion = 'COTIZACION_CAMBIADA' | 'DESISTIO'
+
+/** Resultado de `confirmarOperacion()`. */
+export type ResultadoConfirmacion =
+  | { resultado: 'CONFIRMADA'; operacion: Operacion }
+  | { resultado: 'COTIZACION_CAMBIADA'; operacion: Operacion; anterior: Operacion; detail: string }
 
 export type TipoOperacion = 'COMPRA' | 'VENTA'
 
 /**
- * Ejecuta una compra/venta.
+ * Inicia una compra/venta. Queda PENDIENTE hasta `confirmarOperacion()`.
  *
  * @param input - `moneda` es la divisa que el usuario tipea (ej. USD),
  *   `monto_divisa` la cantidad, `moneda_contraparte` por defecto PYG.
@@ -65,6 +87,44 @@ export async function crearOperacion(input: {
     }),
   })
   return mapear(cruda)
+}
+
+/**
+ * Confirma una operación pendiente.
+ *
+ * Dentro de la ventana de tolerancia se respeta la tasa congelada. Fuera de
+ * ella, si la tasa cambió, el backend re-cotiza y devuelve
+ * `COTIZACION_CAMBIADA` con la operación actualizada (nueva ventana).
+ */
+export async function confirmarOperacion(id: number): Promise<ResultadoConfirmacion> {
+  const r = await apiFetch<Record<string, unknown>>(`/operaciones/${id}/confirmar/`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+  const operacion = mapear(r.operacion as Record<string, unknown>)
+  if (r.resultado === 'COTIZACION_CAMBIADA') {
+    return {
+      resultado: 'COTIZACION_CAMBIADA',
+      operacion,
+      anterior: mapear(r.anterior as Record<string, unknown>),
+      detail: String(r.detail ?? ''),
+    }
+  }
+  return { resultado: 'CONFIRMADA', operacion }
+}
+
+/**
+ * Cancela sin costo una operación pendiente. Queda trazado quién y cuándo.
+ */
+export async function cancelarOperacion(
+  id: number,
+  motivo: MotivoCancelacion = 'DESISTIO',
+): Promise<Operacion> {
+  const r = await apiFetch<Record<string, unknown>>(`/operaciones/${id}/cancelar/`, {
+    method: 'POST',
+    body: JSON.stringify({ motivo }),
+  })
+  return mapear(r)
 }
 
 function numero(v: unknown): number {
@@ -92,6 +152,17 @@ function mapear(o: Record<string, unknown>): Operacion {
     monto_comision: numero(o.monto_comision),
     metodo_pago: String(o.metodo_pago ?? ''),
     fecha_creacion: String(o.fecha_creacion ?? ''),
+    estado: (['PENDIENTE', 'PAGADA', 'CANCELADA', 'ANULADA'].includes(String(o.estado))
+      ? String(o.estado)
+      : 'PAGADA') as EstadoOperacion,
+    fecha_cotizacion: String(o.fecha_cotizacion ?? ''),
+    fecha_confirmacion: o.fecha_confirmacion == null ? null : String(o.fecha_confirmacion),
+    fecha_cancelacion: o.fecha_cancelacion == null ? null : String(o.fecha_cancelacion),
+    cancelada_por: String(o.cancelada_por ?? ''),
+    cancelada_por_nombre: String(o.cancelada_por_nombre ?? ''),
+    motivo_cancelacion: (String(o.motivo_cancelacion ?? '') as MotivoCancelacion | ''),
+    tolerancia_segundos: numero(o.tolerancia_segundos),
+    segundos_restantes: numero(o.segundos_restantes),
   }
 }
 
@@ -102,12 +173,14 @@ export async function listarOperaciones(params: {
   mine?: boolean
   clienteId?: number
   tipo?: string
+  estado?: EstadoOperacion
   buscar?: string
 } = {}): Promise<Operacion[]> {
   const qs = new URLSearchParams()
   if (params.mine) qs.set('mine', '1')
   if (params.clienteId) qs.set('cliente', String(params.clienteId))
   if (params.tipo) qs.set('tipo', params.tipo)
+  if (params.estado) qs.set('estado', params.estado)
   if (params.buscar) qs.set('buscar', params.buscar)
   const sufijo = qs.toString() ? `?${qs}` : ''
   const datos = await apiFetch<Record<string, unknown>[]>(`/operaciones/${sufijo}`)

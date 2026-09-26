@@ -2,13 +2,17 @@
  * Historial de transacciones (Hito Operaciones).
  *
  * Lee el historial real desde `GET /api/operaciones/?mine=1` con filtros
- * por tipo y moneda. Si el backend no responde, muestra el respaldo local.
+ * por tipo, moneda y estado. Si el backend no responde, muestra el respaldo
+ * local.
+ *
+ * Estados (RF27, PI-64): Pendiente, Pagada, Cancelada, Anulada. En las
+ * canceladas se muestra quién y cuándo la canceló (auditoría).
  *
  * @module Transactions
  */
 import { useEffect, useMemo, useState } from 'react'
 import { transactions as mockTransactions } from '@/data/mockData'
-import { listarOperaciones, type Operacion } from '@/services/operaciones'
+import { listarOperaciones, type EstadoOperacion, type Operacion } from '@/services/operaciones'
 import { type AuthUser, type ClienteActivo } from '@/types'
 
 /** Propiedades del historial de transacciones. */
@@ -17,9 +21,36 @@ export interface TransactionsProps {
   currentClient: ClienteActivo | null
 }
 
+const ETIQUETA_ESTADO: Record<EstadoOperacion, string> = {
+  PENDIENTE: 'Pendiente',
+  PAGADA: 'Pagada',
+  CANCELADA: 'Cancelada',
+  ANULADA: 'Anulada',
+}
+
+/** Colores del badge según la etiqueta (sirve también para los datos locales). */
+function estiloEstado(etiqueta: string): string {
+  switch (etiqueta) {
+    case 'Pendiente':
+      return 'bg-amber-50 text-amber-700 border-amber-100'
+    case 'Cancelada':
+      return 'bg-slate-100 text-slate-600 border-slate-200'
+    case 'Anulada':
+      return 'bg-red-50 text-red-700 border-red-100'
+    default:
+      return 'bg-emerald-50 text-emerald-700 border-emerald-100'
+  }
+}
+
+function fechaCorta(iso: string | null): string {
+  if (!iso) return ''
+  return new Date(iso).toLocaleString('es-PY', { dateStyle: 'short', timeStyle: 'short' })
+}
+
 export default function Transactions({ auth: _auth, currentClient }: TransactionsProps) {
   const [filterCurrency, setFilterCurrency] = useState('Todos')
   const [filterType, setFilterType] = useState('Todos')
+  const [filterStatus, setFilterStatus] = useState('Todos')
   const [search, setSearch] = useState('')
   const [ops, setOps] = useState<Operacion[]>([])
   const [cargando, setCargando] = useState(true)
@@ -40,6 +71,7 @@ export default function Transactions({ auth: _auth, currentClient }: Transaction
         .filter(t => {
           if (filterType !== 'Todos' && t.type !== filterType) return false
           if (filterCurrency !== 'Todos' && t.currency !== filterCurrency) return false
+          if (filterStatus !== 'Todos' && t.status !== filterStatus) return false
           if (search && !t.id.toLowerCase().includes(search.toLowerCase()) && !t.client.toLowerCase().includes(search.toLowerCase())) return false
           return true
         })
@@ -52,6 +84,7 @@ export default function Transactions({ auth: _auth, currentClient }: Transaction
           monto: `${t.amount.toLocaleString()} ${t.currency}`,
           total: `₲ ${t.total.toLocaleString('es')}`,
           estado: t.status,
+          detalleEstado: '',
         }))
     }
     return ops
@@ -61,6 +94,7 @@ export default function Transactions({ auth: _auth, currentClient }: Transaction
           if (o.tipo_operacion !== esperado) return false
         }
         if (filterCurrency !== 'Todos' && o.moneda_origen_codigo !== filterCurrency && o.moneda_destino_codigo !== filterCurrency) return false
+        if (filterStatus !== 'Todos' && ETIQUETA_ESTADO[o.estado] !== filterStatus) return false
         if (search && !String(o.id).includes(search) && !o.cliente_nombre.toLowerCase().includes(search.toLowerCase())) return false
         return true
       })
@@ -72,9 +106,16 @@ export default function Transactions({ auth: _auth, currentClient }: Transaction
         par: `${o.moneda_origen_codigo}/${o.moneda_destino_codigo}`,
         monto: `${o.monto_enviado.toLocaleString()} ${o.moneda_origen_codigo} → ${o.monto_recibido.toLocaleString()} ${o.moneda_destino_codigo}`,
         total: `${o.monto_recibido.toLocaleString()} ${o.moneda_destino_codigo}`,
-        estado: 'Completada',
+        estado: ETIQUETA_ESTADO[o.estado] ?? o.estado,
+        detalleEstado: o.estado === 'CANCELADA'
+          ? `Cancelada por ${o.cancelada_por_nombre || 'el usuario'} el ${fechaCorta(o.fecha_cancelacion)}${
+              o.motivo_cancelacion === 'COTIZACION_CAMBIADA' ? ' (no aceptó la nueva cotización)' : ''
+            }`
+          : o.estado === 'PAGADA' && o.fecha_confirmacion
+            ? `Pagada el ${fechaCorta(o.fecha_confirmacion)}`
+            : '',
       }))
-  }, [ops, usandoMock, filterType, filterCurrency, search])
+  }, [ops, usandoMock, filterType, filterCurrency, filterStatus, search])
 
   const currencies = useMemo(() => {
     const set = new Set<string>()
@@ -100,6 +141,7 @@ export default function Transactions({ auth: _auth, currentClient }: Transaction
             {[
               { label: 'Tipo', value: filterType, set: setFilterType, options: ['Todos', 'Compra', 'Venta'] },
               { label: 'Moneda', value: filterCurrency, set: setFilterCurrency, options: currencies },
+              { label: 'Estado', value: filterStatus, set: setFilterStatus, options: ['Todos', 'Pendiente', 'Pagada', 'Cancelada', 'Anulada'] },
             ].map(f => (
               <select
                 key={f.label}
@@ -183,9 +225,12 @@ export default function Transactions({ auth: _auth, currentClient }: Transaction
                     {trx.total}
                   </td>
                   <td className="px-4 py-3.5">
-                    <span className="text-[11px] font-semibold px-2 py-1 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-100">
+                    <span className={`text-[11px] font-semibold px-2 py-1 rounded-full border whitespace-nowrap ${estiloEstado(trx.estado)}`}>
                       {trx.estado}
                     </span>
+                    {trx.detalleEstado && (
+                      <div className="mt-1 text-[11px] text-slate-400 max-w-[220px]">{trx.detalleEstado}</div>
+                    )}
                   </td>
                 </tr>
               ))}
