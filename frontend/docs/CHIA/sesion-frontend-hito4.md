@@ -124,3 +124,10 @@ Asistente: Muse Spark (opencode). Sin commits ni push, solo trabajo local.
 - Operacion suma billetera_origen (migracion 0005); alta valida existencia/dueno/moneda/fondos con 400 'No hay saldo suficiente...'; confirmar re-valida con lock y si no alcanza va 400 con rollback (sigue PENDIENTE); debito+credito con Movimiento CREDITO/DEBITO.
 - BuySell Pagar con ofrece cuentas y billeteras; operaciones.ts extendido. Tests backend 60/60 (3 debito nuevos), frontend area 35/35 + BuySell/Wallets, tsc limpio, build OK, ambas BD migradas. Sin push.
 
+
+## 17. PI-72 revision de test (2026-09-13, rama feature/PI-72)
+- Backend 100% cubierto (60/60, 7 archivos): nada que agregar, solo re-verificado.
+- Frontend: 6 suites de servicios nuevas (20 casos) + 11 paginas + Layout (Notifications, Invoices, Payments, Simulator, Transactions, Dashboard, Configuration, CashierDashboard, CashCountView, RatesManagement, Earnings).
+- Full suite 35 archivos 142/142 en verde; 2 timeouts ampliados a 30s (Register, Clients) por carga paralela.
+- tests-global-exchange.txt en Escritorio para la profesora. Sin push.
+

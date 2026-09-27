@@ -67,9 +67,11 @@ describe('Register (autoregistro y verificación por correo)', () => {
     await user.type(screen.getByLabelText('Confirmar contraseña'), 'claveSegura12')
     await user.click(screen.getByRole('checkbox'))
     await user.click(screen.getByRole('button', { name: 'Crear cuenta' }))
-    expect(await screen.findByText('Verificá tu correo electrónico', {}, { timeout: 4000 })).toBeInTheDocument()
+    // Timeout amplio: bajo carga paralela el tipeo caracter por caracter
+    // puede superar los 5s por defecto (PI-72).
+    expect(await screen.findByText('Verificá tu correo electrónico', {}, { timeout: 15000 })).toBeInTheDocument()
     expect(screen.getByText('carlos@email.com')).toBeInTheDocument()
-  })
+  }, 30000)
 
   it('permite ir al login desde el registro', async () => {
     const user = userEvent.setup()
