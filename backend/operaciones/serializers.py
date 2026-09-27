@@ -20,6 +20,9 @@ class OperacionSerializer(serializers.ModelSerializer):
     cliente_nombre = serializers.CharField(source='cliente.nombre', read_only=True)
     moneda_origen_codigo = serializers.CharField(source='moneda_origen.codigo', read_only=True)
     moneda_destino_codigo = serializers.CharField(source='moneda_destino.codigo', read_only=True)
+    billetera_destino_detalle = serializers.SerializerMethodField()
+    cuenta_origen_detalle = serializers.SerializerMethodField()
+    billetera_origen_detalle = serializers.SerializerMethodField()
     tolerancia_segundos = serializers.SerializerMethodField()
     segundos_restantes = serializers.SerializerMethodField()
 
@@ -33,6 +36,9 @@ class OperacionSerializer(serializers.ModelSerializer):
             'tasa_origen', 'tasa_destino',
             'porcentaje_comision_aplicado', 'monto_comision',
             'metodo_pago', 'fecha_creacion',
+            'billetera_destino', 'billetera_destino_detalle',
+            'cuenta_origen', 'cuenta_origen_detalle',
+            'billetera_origen', 'billetera_origen_detalle',
             'estado', 'fecha_cotizacion', 'fecha_confirmacion',
             'fecha_cancelacion', 'cancelada_por', 'cancelada_por_nombre',
             'motivo_cancelacion',
@@ -42,6 +48,15 @@ class OperacionSerializer(serializers.ModelSerializer):
 
     def get_tolerancia_segundos(self, obj: Operacion) -> int:
         return tolerancia_segundos()
+
+    def get_billetera_destino_detalle(self, obj: Operacion) -> str:
+        return str(obj.billetera_destino) if obj.billetera_destino_id else ''
+
+    def get_cuenta_origen_detalle(self, obj: Operacion) -> str:
+        return str(obj.cuenta_origen) if obj.cuenta_origen_id else ''
+
+    def get_billetera_origen_detalle(self, obj: Operacion) -> str:
+        return str(obj.billetera_origen) if obj.billetera_origen_id else ''
 
     def get_segundos_restantes(self, obj: Operacion) -> int:
         """Segundos que le quedan a la tasa garantizada (0 si no aplica).
@@ -77,6 +92,11 @@ class CrearOperacionSerializer(serializers.Serializer):
     monto_divisa = serializers.DecimalField(max_digits=18, decimal_places=2)
     moneda_contraparte = serializers.CharField(max_length=3, default='PYG')
     metodo_pago = serializers.CharField(max_length=24, required=False, allow_blank=True, default='')
+    # PI-66: vinculación (solo registro, sin mover fondos).
+    billetera_destino = serializers.IntegerField(required=False, allow_null=True, default=None)
+    cuenta_origen = serializers.IntegerField(required=False, allow_null=True, default=None)
+    # PI-66c: débito de billetera origen (opción B).
+    billetera_origen = serializers.IntegerField(required=False, allow_null=True, default=None)
 
 
 class CancelarOperacionSerializer(serializers.Serializer):

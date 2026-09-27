@@ -116,6 +116,26 @@ class Operacion(models.Model):
         'método de pago', max_length=24, blank=True,
         help_text='Informativo: transfer, wallet, card, qr.',
     )
+    # --- PI-66: vinculación de billetera y cuenta (solo registro) ---
+    billetera_destino = models.ForeignKey(
+        'billeteras.Billetera', on_delete=models.PROTECT,
+        null=True, blank=True, related_name='operaciones_destino',
+        verbose_name='billetera destino',
+        help_text='Billetera donde se acreditarán los fondos al confirmar.',
+    )
+    cuenta_origen = models.ForeignKey(
+        'pagos.CuentaBancaria', on_delete=models.PROTECT,
+        null=True, blank=True, related_name='operaciones_origen',
+        verbose_name='cuenta origen',
+        help_text='Cuenta desde donde salen los fondos al confirmar.',
+    )
+    # --- PI-66c: débito de billetera origen (opción B) ---
+    billetera_origen = models.ForeignKey(
+        'billeteras.Billetera', on_delete=models.PROTECT,
+        null=True, blank=True, related_name='operaciones_origen_billetera',
+        verbose_name='billetera origen',
+        help_text='Billetera desde donde se descuenta al confirmar.',
+    )
     fecha_creacion = models.DateTimeField('fecha de creación', auto_now_add=True)
 
     # --- PI-64: estado y cotización congelada ---
