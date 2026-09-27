@@ -9,8 +9,10 @@
  * clientes pero conserva su histórico de tasas y transacciones. Solo el
  * rol `admin` puede acceder a esta pantalla.
  *
- * Los datos se leen a través de `services/monedas`, que hoy opera sobre
- * los datos simulados y mañana contra la API.
+ * Cada tarjeta muestra la cotización vigente (compra/venta) o un aviso
+ * de "Sin cotización" (el guaraní, moneda base, muestra "Moneda base" y
+ * no admite tasa). Desde acá mismo se registra la tasa actual de
+ * cualquier moneda, tenga o no historial previo (PI-71).
  *
  * @module admin/Currencies
  */
@@ -24,6 +26,7 @@ import {
   listarMonedas,
   type DatosMoneda,
 } from '@/services/monedas'
+import { vigentes, crearCotizacion, type Cotizacion } from '@/services/cotizaciones'
 import type { AuthUser, Currency } from '@/types'
 
 /** Valores iniciales del formulario de moneda. */
@@ -66,6 +69,7 @@ const labelClass = 'block text-[12px] font-semibold text-slate-500 uppercase tra
 
 export default function Currencies({ auth }: { auth: AuthUser }) {
   const [monedas, setMonedas] = useState<Currency[]>([])
+  const [vigentesMap, setVigentesMap] = useState<Record<string, Cotizacion>>({})
   const [cargando, setCargando] = useState(true)
   const [aviso, setAviso] = useState('')
   const [filtro, setFiltro] = useState<Filtro>('todas')
@@ -78,9 +82,19 @@ export default function Currencies({ auth }: { auth: AuthUser }) {
   const [guardando, setGuardando] = useState(false)
   const [confirmId, setConfirmId] = useState<number | null>(null)
 
+  // PI-71: registro de la tasa actual por moneda.
+  const [tasaTarget, setTasaTarget] = useState<Currency | null>(null)
+  const [tasaCompra, setTasaCompra] = useState('')
+  const [tasaVenta, setTasaVenta] = useState('')
+  const [tasaError, setTasaError] = useState('')
+  const [tasaGuardando, setTasaGuardando] = useState(false)
+
   useEffect(() => {
-    listarMonedas()
-      .then(setMonedas)
+    Promise.all([listarMonedas(), vigentes().catch(() => [] as Cotizacion[])])
+      .then(([ms, vs]) => {
+        setMonedas(ms)
+        setVigentesMap(Object.fromEntries(vs.map(v => [v.moneda, v])))
+      })
       .catch(() => setAviso('No se pudieron cargar las monedas. Recargá la página.'))
       .finally(() => setCargando(false))
   }, [])
@@ -165,6 +179,40 @@ export default function Currencies({ auth }: { auth: AuthUser }) {
   const handleToggle = (moneda: Currency) => {
     if (moneda.active) setConfirmId(moneda.id)
     else aplicarEstado(moneda, true)
+  }
+
+  const openTasa = (moneda: Currency) => {
+    const vigente = vigentesMap[moneda.code]
+    setTasaTarget(moneda)
+    setTasaCompra(vigente ? String(vigente.compra) : '')
+    setTasaVenta(vigente ? String(vigente.venta) : '')
+    setTasaError('')
+    setAviso('')
+  }
+
+  const guardarTasa = async () => {
+    if (!tasaTarget) return
+    const compra = Number(tasaCompra)
+    const venta = Number(tasaVenta)
+    if (!compra || !venta) {
+      setTasaError('Cargá compra y venta en guaraníes.')
+      return
+    }
+    if (venta < compra) {
+      setTasaError('La venta no puede ser menor que la compra.')
+      return
+    }
+    setTasaGuardando(true)
+    try {
+      const nueva = await crearCotizacion(tasaTarget.id, compra, venta)
+      setVigentesMap(prev => ({ ...prev, [nueva.moneda]: nueva }))
+      setAviso(`Tasa de ${nueva.moneda} registrada: C ₲${nueva.compra.toLocaleString()} / V ₲${nueva.venta.toLocaleString()}.`)
+      setTasaTarget(null)
+    } catch (err) {
+      setTasaError(err instanceof Error ? err.message : 'No se pudo registrar la tasa.')
+    } finally {
+      setTasaGuardando(false)
+    }
   }
 
   if (auth.role !== 'admin') {
@@ -255,39 +303,100 @@ export default function Currencies({ auth }: { auth: AuthUser }) {
         </div>
       ) : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {visibles.map(moneda => (
-            <div key={moneda.id} className={`bg-white rounded-xl border shadow-sm p-5 flex items-center gap-4 ${moneda.active ? 'border-slate-100' : 'border-slate-200 bg-slate-50/60'}`}>
-              <span className={`text-3xl shrink-0 ${moneda.active ? '' : 'grayscale opacity-60'}`}>{moneda.flag}</span>
-              <div className="flex-1 min-w-0">
-                <div className="font-bold text-slate-900 text-[15px]">{moneda.code}</div>
-                <div className="text-[12px] text-slate-400 truncate">{moneda.name}</div>
-                <div className="text-[12px] text-slate-400">
-                  {moneda.symbol} · {moneda.decimals === 0 ? 'sin decimales' : `${moneda.decimals} decimales`}
+          {visibles.map(moneda => {
+            const vigente = vigentesMap[moneda.code]
+            return (
+              <div key={moneda.id} data-testid={`moneda-${moneda.code}`} className={`bg-white rounded-xl border shadow-sm p-5 flex items-center gap-4 ${moneda.active ? 'border-slate-100' : 'border-slate-200 bg-slate-50/60'}`}>
+                <span className={`text-3xl shrink-0 ${moneda.active ? '' : 'grayscale opacity-60'}`}>{moneda.flag}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold text-slate-900 text-[15px]">{moneda.code}</div>
+                  <div className="text-[12px] text-slate-400 truncate">{moneda.name}</div>
+                  <div className="text-[12px] text-slate-400">
+                    {moneda.symbol} · {moneda.decimals === 0 ? 'sin decimales' : `${moneda.decimals} decimales`}
+                  </div>
+                  {moneda.code === 'PYG' ? (
+                    <div className="mt-1">
+                      <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">Moneda base</span>
+                    </div>
+                  ) : vigente ? (
+                    <div className="text-[12px] font-mono font-semibold text-emerald-700 mt-1">
+                      C ₲{vigente.compra.toLocaleString()} · V ₲{vigente.venta.toLocaleString()}
+                    </div>
+                  ) : (
+                    <div className="mt-1">
+                      <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">Sin cotización</span>
+                    </div>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {moneda.code !== 'PYG' && (
+                    <button
+                      onClick={() => openTasa(moneda)}
+                      aria-label={`Registrar tasa de ${moneda.code}`}
+                      title={vigente ? 'Actualizar tasa (crea un punto nuevo en el historial)' : 'Registrar primera tasa'}
+                      className="h-8 px-2 rounded-lg text-emerald-600 hover:bg-emerald-50 transition-colors text-[13px] font-bold"
+                    >
+                      ₲+
+                    </button>
+                  )}
+                  <button
+                    onClick={() => openEdit(moneda)}
+                    aria-label={`Editar ${moneda.code}`}
+                    title="Editar"
+                    className="w-8 h-8 rounded-lg text-slate-400 hover:text-[#0f3460] hover:bg-slate-100 transition-colors text-[15px]"
+                  >
+                    ✎
+                  </button>
+                  <button
+                    role="switch"
+                    aria-checked={moneda.active}
+                    aria-label={`${moneda.active ? 'Deshabilitar' : 'Habilitar'} ${moneda.code}`}
+                    onClick={() => handleToggle(moneda)}
+                    className={`w-11 h-6 rounded-full relative transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-300 ${moneda.active ? 'bg-emerald-500' : 'bg-slate-300'}`}
+                  >
+                    <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-all ${moneda.active ? 'right-0.5' : 'left-0.5'}`} />
+                  </button>
                 </div>
               </div>
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  onClick={() => openEdit(moneda)}
-                  aria-label={`Editar ${moneda.code}`}
-                  title="Editar"
-                  className="w-8 h-8 rounded-lg text-slate-400 hover:text-[#0f3460] hover:bg-slate-100 transition-colors text-[15px]"
-                >
-                  ✎
-                </button>
-                <button
-                  role="switch"
-                  aria-checked={moneda.active}
-                  aria-label={`${moneda.active ? 'Deshabilitar' : 'Habilitar'} ${moneda.code}`}
-                  onClick={() => handleToggle(moneda)}
-                  className={`w-11 h-6 rounded-full relative transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-300 ${moneda.active ? 'bg-emerald-500' : 'bg-slate-300'}`}
-                >
-                  <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-all ${moneda.active ? 'right-0.5' : 'left-0.5'}`} />
-                </button>
-              </div>
-            </div>
-          ))}
+            )
+          })}
         </div>
       )}
+
+      {/* Modal de tasa por moneda (PI-71) */}
+      {tasaTarget && createPortal((
+        <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50 p-4" onClick={() => setTasaTarget(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md animate-fadein" onClick={e => e.stopPropagation()}>
+            <h2 className="font-bold text-slate-900 text-lg mb-1" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>
+              Registrar tasa — {tasaTarget.code}
+            </h2>
+            <p className="text-slate-400 text-[13px] mb-6">
+              {vigentesMap[tasaTarget.code]
+                ? 'Se agrega un punto nuevo al historial con tu usuario y la fecha.'
+                : 'Es su primera cotización: con esto la moneda empieza a operar.'}
+            </p>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label htmlFor="tasa-compra" className={labelClass}>Compra (₲)</label>
+                <input id="tasa-compra" type="number" min={0} value={tasaCompra} onChange={e => setTasaCompra(e.target.value)} placeholder="7400" className={`${inputClass} font-mono`} />
+              </div>
+              <div>
+                <label htmlFor="tasa-venta" className={labelClass}>Venta (₲)</label>
+                <input id="tasa-venta" type="number" min={0} value={tasaVenta} onChange={e => setTasaVenta(e.target.value)} placeholder="7500" className={`${inputClass} font-mono`} />
+              </div>
+            </div>
+            {tasaError && <p role="alert" className="text-red-500 text-[12px] mt-3">{tasaError}</p>}
+            <div className="flex gap-3 mt-6">
+              <button onClick={() => setTasaTarget(null)} className="flex-1 py-3 rounded-xl border border-slate-200 text-[14px] font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
+                Cancelar
+              </button>
+              <button onClick={guardarTasa} disabled={tasaGuardando} className="flex-1 py-3 rounded-xl text-white text-[14px] font-semibold transition-all hover:-translate-y-0.5 disabled:opacity-60 disabled:hover:translate-y-0" style={{ background: '#0f3460' }}>
+                {tasaGuardando ? 'Guardando…' : 'Guardar tasa'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ), document.body)}
 
       {/* Modal de alta / edición */}
       {showForm && createPortal((
