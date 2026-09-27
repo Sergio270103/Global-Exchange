@@ -37,6 +37,15 @@ export interface Operacion {
   porcentaje_comision_aplicado: number
   monto_comision: number
   metodo_pago: string
+  /** Billetera destino vinculada (PI-66, solo registro). */
+  billetera_destino: number | null
+  billetera_destino_detalle: string
+  /** Cuenta origen vinculada (PI-66, solo registro). */
+  cuenta_origen: number | null
+  cuenta_origen_detalle: string
+  /** Billetera origen vinculada (PI-66c, se debita al confirmar). */
+  billetera_origen: number | null
+  billetera_origen_detalle: string
   fecha_creacion: string
   estado: EstadoOperacion
   fecha_cotizacion: string
@@ -74,6 +83,12 @@ export async function crearOperacion(input: {
   montoDivisa: number
   monedaContraparte?: string
   metodoPago?: string
+  /** Billetera destino vinculada (PI-66). */
+  billeteraDestinoId?: number | null
+  /** Cuenta origen vinculada (PI-66). */
+  cuentaOrigenId?: number | null
+  /** Billetera origen vinculada (PI-66c, se debita al confirmar). */
+  billeteraOrigenId?: number | null
 }): Promise<Operacion> {
   const cruda = await apiFetch<Record<string, unknown>>('/operaciones/', {
     method: 'POST',
@@ -84,6 +99,9 @@ export async function crearOperacion(input: {
       monto_divisa: input.montoDivisa,
       moneda_contraparte: input.monedaContraparte ?? 'PYG',
       metodo_pago: input.metodoPago ?? '',
+      billetera_destino: input.billeteraDestinoId ?? null,
+      cuenta_origen: input.cuentaOrigenId ?? null,
+      billetera_origen: input.billeteraOrigenId ?? null,
     }),
   })
   return mapear(cruda)
@@ -151,6 +169,12 @@ function mapear(o: Record<string, unknown>): Operacion {
     porcentaje_comision_aplicado: numero(o.porcentaje_comision_aplicado),
     monto_comision: numero(o.monto_comision),
     metodo_pago: String(o.metodo_pago ?? ''),
+    billetera_destino: o.billetera_destino == null ? null : numero(o.billetera_destino),
+    billetera_destino_detalle: String(o.billetera_destino_detalle ?? ''),
+    cuenta_origen: o.cuenta_origen == null ? null : numero(o.cuenta_origen),
+    cuenta_origen_detalle: String(o.cuenta_origen_detalle ?? ''),
+    billetera_origen: o.billetera_origen == null ? null : numero(o.billetera_origen),
+    billetera_origen_detalle: String(o.billetera_origen_detalle ?? ''),
     fecha_creacion: String(o.fecha_creacion ?? ''),
     estado: (['PENDIENTE', 'PAGADA', 'CANCELADA', 'ANULADA'].includes(String(o.estado))
       ? String(o.estado)

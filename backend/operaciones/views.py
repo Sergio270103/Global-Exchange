@@ -28,9 +28,11 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from billeteras.models import Billetera, Movimiento
 from clientes.models import Cliente, ClienteUsuario, Comision
 from cotizaciones.models import Cotizacion
 from monedas.models import Moneda
+from pagos.models import CuentaBancaria
 
 from .models import Operacion
 from .serializers import (
@@ -273,11 +275,73 @@ class OperacionViewSet(viewsets.ModelViewSet):
         except ErrorCotizacion as err:
             return Response({'detail': str(err)}, status=status.HTTP_400_BAD_REQUEST)
 
+        # PI-66: vinculación de billetera destino y cuenta origen.
+        # Solo registro: los fondos se mueven al confirmar (fuera de PI-66).
+        billetera_destino = None
+        if datos.get('billetera_destino') is not None:
+            try:
+                billetera_destino = Billetera.objects.select_related('moneda').get(
+                    pk=datos['billetera_destino'])
+            except (Billetera.DoesNotExist, ValueError, TypeError):
+                return Response(
+                    {'detail': 'La billetera indicada no existe.'},
+                    status=status.HTTP_400_BAD_REQUEST)
+            if billetera_destino.cliente_id != cliente.id:
+                return Response(
+                    {'detail': 'La billetera no pertenece al cliente.'},
+                    status=status.HTTP_400_BAD_REQUEST)
+            if billetera_destino.moneda_id != cotizacion['moneda_destino'].id:
+                return Response(
+                    {'detail': 'La billetera debe ser de la moneda destino.'},
+                    status=status.HTTP_400_BAD_REQUEST)
+        cuenta_origen = None
+        if datos.get('cuenta_origen') is not None:
+            try:
+                cuenta_origen = CuentaBancaria.objects.get(pk=datos['cuenta_origen'])
+            except (CuentaBancaria.DoesNotExist, ValueError, TypeError):
+                return Response(
+                    {'detail': 'La cuenta indicada no existe.'},
+                    status=status.HTTP_400_BAD_REQUEST)
+            if cuenta_origen.cliente_id != cliente.id:
+                return Response(
+                    {'detail': 'La cuenta no pertenece al cliente.'},
+                    status=status.HTTP_400_BAD_REQUEST)
+            if cuenta_origen.moneda_id != cotizacion['moneda_origen'].id:
+                return Response(
+                    {'detail': 'La cuenta debe ser de la moneda origen.'},
+                    status=status.HTTP_400_BAD_REQUEST)
+
+        # PI-66c: billetera origen con validación de fondos desde el alta.
+        billetera_origen = None
+        if datos.get('billetera_origen') is not None:
+            try:
+                billetera_origen = Billetera.objects.get(
+                    pk=datos['billetera_origen'])
+            except (Billetera.DoesNotExist, ValueError, TypeError):
+                return Response(
+                    {'detail': 'La billetera origen indicada no existe.'},
+                    status=status.HTTP_400_BAD_REQUEST)
+            if billetera_origen.cliente_id != cliente.id:
+                return Response(
+                    {'detail': 'La billetera origen no pertenece al cliente.'},
+                    status=status.HTTP_400_BAD_REQUEST)
+            if billetera_origen.moneda_id != cotizacion['moneda_origen'].id:
+                return Response(
+                    {'detail': 'La billetera origen debe ser de la moneda origen.'},
+                    status=status.HTTP_400_BAD_REQUEST)
+            if billetera_origen.saldo < cotizacion['monto_enviado']:
+                return Response(
+                    {'detail': 'No hay saldo suficiente en la billetera origen.'},
+                    status=status.HTTP_400_BAD_REQUEST)
+
         op = Operacion.objects.create(
             cliente=cliente,
             usuario_keycloak_id=sub[:64],
             tipo_operacion=tipo,
             metodo_pago=metodo_pago,
+            billetera_destino=billetera_destino,
+            cuenta_origen=cuenta_origen,
+            billetera_origen=billetera_origen,
             estado=Operacion.ESTADO_PENDIENTE,
             fecha_cotizacion=timezone.now(),
             **cotizacion,
@@ -342,6 +406,37 @@ class OperacionViewSet(viewsets.ModelViewSet):
         op.estado = Operacion.ESTADO_PAGADA
         op.fecha_confirmacion = timezone.now()
         op.save(update_fields=['estado', 'fecha_confirmacion'])
+        # PI-66b: acreditación atómica en la billetera vinculada (si hay).
+        # El movimiento real de fondos ocurre acá, no al crear. La rama de
+        # re-cotización nunca llega acá, así que no hay crédito parcial.
+        if op.billetera_destino_id:
+            billetera = Billetera.objects.select_for_update().get(
+                pk=op.billetera_destino_id)
+            billetera.saldo = billetera.saldo + op.monto_recibido
+            billetera.save(update_fields=['saldo', 'actualizado_en'])
+            Movimiento.objects.create(
+                billetera=billetera, operacion=op,
+                tipo=Movimiento.TIPO_CREDITO,
+                monto=op.monto_recibido, saldo_resultante=billetera.saldo,
+            )
+        # PI-66c: débito atómico de la billetera origen (opción B).
+        # Se re-valida el saldo con la fila bloqueada: si no alcanza, se
+        # marca rollback total (la operación sigue PENDIENTE) y va 400.
+        if op.billetera_origen_id:
+            origen = Billetera.objects.select_for_update().get(
+                pk=op.billetera_origen_id)
+            if origen.saldo < op.monto_enviado:
+                transaction.set_rollback(True)
+                return Response(
+                    {'detail': 'No hay saldo suficiente en la billetera origen.'},
+                    status=status.HTTP_400_BAD_REQUEST)
+            origen.saldo = origen.saldo - op.monto_enviado
+            origen.save(update_fields=['saldo', 'actualizado_en'])
+            Movimiento.objects.create(
+                billetera=origen, operacion=op,
+                tipo=Movimiento.TIPO_DEBITO,
+                monto=op.monto_enviado, saldo_resultante=origen.saldo,
+            )
         return Response({
             'resultado': RESULTADO_CONFIRMADA,
             'operacion': OperacionSerializer(op).data,

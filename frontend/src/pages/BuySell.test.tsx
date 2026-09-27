@@ -54,6 +54,22 @@ function mockFetch() {
     if (u.includes('/clientes/')) {
       return respuesta([{ id: 1, nombre: 'Carlos Martínez', activo: true, categoria: 'MINORISTA' }])
     }
+    if (u.includes('/billeteras/')) {
+      return respuesta([
+        { id: 2, cliente: 1, moneda: 2, moneda_codigo: 'USD', moneda_nombre: 'Dólar', saldo: '0.00' },
+        { id: 3, cliente: 1, moneda: 1, moneda_codigo: 'PYG', moneda_nombre: 'Guaraní', saldo: '0.00' },
+      ])
+    }
+    if (u.includes('/cuentas-bancarias/')) {
+      return respuesta([
+        { id: 5, cliente: 1, banco: 'Continental', numero_enmascarado: '•••• 4521', codigo_bancario: 'B', nombre: 'C', apellido: 'M', cedula: '1', moneda: 1, moneda_codigo: 'PYG', activa: true },
+      ])
+    }
+    if (u.includes('/medios-acreditacion/')) {
+      return respuesta([
+        { id: 1, cliente: 1, cliente_nombre: 'Carlos', tipo: 'BILLETERA', tipo_display: 'Billetera digital', billetera: 2, cuenta: null, destino_detalle: 'Billetera USD', es_default: true },
+      ])
+    }
     return respuesta([])
   })
 }
@@ -88,5 +104,17 @@ describe('BuySell PI-71 (selects según monedas activas)', () => {
     const ars = within(contraparte).getByRole('option', { name: /ARS/ }) as HTMLOptionElement
     expect(ars.disabled).toBe(true)
     expect(within(contraparte).queryByRole('option', { name: /BRL/ })).not.toBeInTheDocument()
+  })
+
+  it('PI-66: preselecciona el medio por defecto y lista pagar/acreditar', async () => {
+    render(<BuySell auth={auth} currentClient={{ id: 1, nombre: 'Carlos Martínez' }} />)
+    await screen.findByRole('heading', { name: 'Comprar divisas' })
+    // Destino USD = billetera 2 por defecto.
+    const destino = screen.getByLabelText(/Acreditar en/) as HTMLSelectElement
+    expect(destino.value).toBe('B:2')
+    // Origen PYG = cuenta 5 disponible + billetera PYG (PI-66c debita).
+    const origen = screen.getByLabelText(/Pagar con/) as HTMLSelectElement
+    expect(within(origen).getByRole('option', { name: /Continental/ })).toBeInTheDocument()
+    expect(within(origen).getByRole('option', { name: /Billetera PYG/ })).toBeInTheDocument()
   })
 })

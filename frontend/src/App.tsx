@@ -126,7 +126,7 @@ export default function App() {
       case 'cash-count':
         return <CashCountView /> // 👈 Pestaña de Arqueo y Dinero Recibido
       case 'wallets':
-        return <Wallets navigate={navigate} />
+        return <Wallets navigate={navigate} currentClient={currentClient} />
       case 'buy':
       case 'sell':
         return <BuySell auth={auth} currentClient={currentClient} />

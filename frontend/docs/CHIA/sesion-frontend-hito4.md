@@ -98,3 +98,29 @@ Asistente: Muse Spark (opencode). Sin commits ni push, solo trabajo local.
 - El guaraní es la moneda pivote: sus tasas serían 1/1 y no significan nada. Su tarjeta muestra 'Moneda base' sin botón de tasa.
 - Test: PYG sin aviso ni botón; resto igual. Currencies 3/3, área 29/29 (reverificado), tsc limpio.
 
+
+## 12. PI-71f alta movida a Monedas (2026-09-13)
+- El panel ambar en BuySell se quito: el admin no opera ahi. BuySell solo informa activas sin tasa (deshabilitadas).
+- El alta vive en Monedas (admin): vigente por tarjeta + modal Registrar tasa. Tests 16/16 en el area, tsc limpio, build OK.
+
+
+## 13. PI-66 vinculacion billetera/cuenta (2026-09-13, rama feature/PI-66)
+- Backend app billeteras: Billetera (saldo 0 lazy, unica por cliente+moneda) + MedioAcreditacion CRUD con default unico; Operacion suma billetera_destino/cuenta_origen (registro, validando cliente y moneda) + migracion 0004. Se registro INSTALLED_APPS a operaciones (tus compas la habian creado sin registrar).
+- Frontend: billeteras.ts, Wallets real (saldos + CRUD medios + link a Banks), BuySell con Pagar con (cuentas) y Acreditar en (billeteras) + default preseleccionado; operaciones.ts extendido.
+- Tests: backend 53/53 (8 billeteras + 4 vinculacion nuevos), frontend Wallets 3/3 + BuySell 3/3, area 32/32, tsc limpio, build OK. Sin push.
+
+
+## 14. PI-66 decision menu admin (2026-09-13)
+- Se evaluo agregar Billeteras al menu admin y se REVERTIO: ERS RF15/RF17 asigna billetera al cliente que opera (rol user); el admin cubre usuarios/monedas/tasas/ganancias. Para admin, Wallets mostraria 'Sin cliente asociado' (misClientes vacio).
+- Verificacion admin: Django admin (billeteras/medios/operaciones con vinculacion) + Clientes/Usuarios. Sidebar y App en verde.
+
+
+## 15. PI-66b acreditacion al confirmar (2026-09-13)
+- Movimiento real: _marcar_confirmada acredita billetera_destino += monto_recibido con select_for_update + Movimiento de auditoria (RNF6), todo en el atomic existente. Solo rama PAGADA; re-cotizacion no mueve; re-confirmar da 400 (idempotente); cuenta_origen externa no se toca; sin vinculo confirma igual.
+- Migracion billeteras.0002 en ambas BD. Tests backend 57/57 (4 acreditacion nuevos). Sin cambios frontend, sin push.
+
+
+## 16. PI-66c debito origen opcion B (2026-09-13)
+- Operacion suma billetera_origen (migracion 0005); alta valida existencia/dueno/moneda/fondos con 400 'No hay saldo suficiente...'; confirmar re-valida con lock y si no alcanza va 400 con rollback (sigue PENDIENTE); debito+credito con Movimiento CREDITO/DEBITO.
+- BuySell Pagar con ofrece cuentas y billeteras; operaciones.ts extendido. Tests backend 60/60 (3 debito nuevos), frontend area 35/35 + BuySell/Wallets, tsc limpio, build OK, ambas BD migradas. Sin push.
+
