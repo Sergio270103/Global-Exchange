@@ -68,3 +68,33 @@ Asistente: Muse Spark (opencode). Sin commits ni push, solo trabajo local.
 - Backend cotizaciones 5/5 OK tras aislar tests de los seeds (get_or_create + limpieza de historial + update_or_create en comisiones). Suite completa: 25/25.
 - Frontend: Rates 5/5, Banks 6/6, nuevo simulador.test.ts 3/3 (desglose, comisiones, error 404). Total módulo: 14/14. tsc limpio.
 
+
+## 7. PI-71 comprar/vender según monedas activas (rama feature/PI-71)
+- Bug: selects de divisa y pagar-con/recibir-en nacían solo de vigentes; el admin desactivaba y seguía apareciendo (y PYG fijo).
+- Fix en BuySell.tsx: carga listarMonedas(true); universo operable = vigentes n activas; PYG solo si activo; reseteo de selecciones inválidas; decimales del catálogo en formato/redondeo; aviso si no hay tasas operables.
+- Test BuySell.test.ts 2/2 (GBP activa visible, ARS con vigente pero inactiva oculta, PYG presente). Verificación: tsc limpio, 21/21 en suites del área.
+
+
+## 8. PI-71b activas sin tasa (2026-09-13)
+- Reporte: con ARS/USD/PYG activas solo salían USD/PYG y solo PYG como contraparte. Causa: ARS activa pero SIN cotización (verificado en BD); el filtro la ocultaba en silencio.
+- Fix: las activas sin vigente aparecen deshabilitadas '(sin cotización)' en ambos selects; BRL deshabilitada con vigente vieja sigue oculta.
+- OJO: las dos BD locales divergieron (contenedor 5433 vs local 5432); el runserver del usuario usa una sola. Recomendado reiniciar backend contra 5433.
+- Tests BuySell 2/2, área 19/19, tsc limpio.
+
+
+## 9. PI-71c registro de primera tasa in situ (2026-09-13)
+- Pedido: poder dar tasa a monedas sin cotización desde Comprar/Vender. Panel ámbar solo admin/analista (moneda + compra + venta) que POSTea y refresca vigentes.
+- Bug propio detectado por el test: el aviso de éxito vivía dentro del panel que se desmonta al quedar sin morosos; se movió fuera.
+- Tests BuySell 4/4, área 19/19, tsc limpio. Rama feature/PI-71 sin pushear.
+
+
+## 10. PI-71d alta de tasa en Monedas (2026-09-13)
+- El admin no opera en Comprar/Vender: se quitó el panel ámbar de BuySell (vuelve auth sin uso).
+- Currencies (admin) muestra por tarjeta la vigente (C/V) o badge 'Sin cotización' + botón Registrar tasa (modal con compra/venta, valida venta>=compra, refresca vigentes).
+- Tests: Currencies.test.ts nuevo 2/2, BuySell 2/2, área 29/29, tsc limpio, build OK. Rama feature/PI-71 sin pushear.
+
+
+## 11. PI-71e PYG moneda base (2026-09-13)
+- El guaraní es la moneda pivote: sus tasas serían 1/1 y no significan nada. Su tarjeta muestra 'Moneda base' sin botón de tasa.
+- Test: PYG sin aviso ni botón; resto igual. Currencies 3/3, área 29/29 (reverificado), tsc limpio.
+
