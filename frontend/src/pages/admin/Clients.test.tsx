@@ -108,10 +108,12 @@ describe('Clients (CRUD de clientes admin)', () => {
     render(<Clients />)
     await screen.findByText('Carlos Martínez')
     await createClient(user, 'Nueva Empresa S.A.')
-    expect(await screen.findByText('Nueva Empresa S.A.')).toBeInTheDocument()
+    // Timeout amplio: bajo carga paralela el tipeo puede superar
+    // los 5s por defecto (PI-72).
+    expect(await screen.findByText('Nueva Empresa S.A.', {}, { timeout: 15000 })).toBeInTheDocument()
     expect(screen.getByText('nuevo@email.com')).toBeInTheDocument()
     expect(screen.queryByText('Nuevo cliente')).not.toBeInTheDocument()
-  })
+  }, 30000)
 
   it('edita un cliente existente', async () => {
     const user = userEvent.setup()
