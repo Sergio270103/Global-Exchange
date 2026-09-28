@@ -2,7 +2,7 @@
 
 from rest_framework.test import APIRequestFactory, APITestCase, force_authenticate
 
-from clientes.models import Cliente, Comision
+from clientes.models import Cliente, ClienteUsuario, Comision
 from monedas.models import Moneda
 
 from .models import Cotizacion
@@ -12,6 +12,7 @@ from .views import CotizacionViewSet
 
 class UsuarioFake:
     def __init__(self, roles=('admin',), authenticated=True):
+        self.id = 'sub-simulador'
         self.roles = list(roles)
         self.is_superuser = 'admin' in [r.lower() for r in roles]
         self._authenticated = authenticated
@@ -82,17 +83,28 @@ class CotizacionTest(APITestCase):
         self.assertEqual(float(por_moneda['USD']['venta']), 7550.0)
         self.assertIn('EUR', por_moneda)
 
-    def test_simulador_aplica_tasa_y_comision(self):
+    def test_simulador_devuelve_solo_precio_final(self):
         Comision.objects.update_or_create(
             categoria=Cliente.CAT_VIP, defaults={'porcentaje': '1.00'})
+        cliente = Cliente.objects.create(
+            nombre='Cliente VIP', documento='vip-1', email='vip@test.com',
+            categoria=Cliente.CAT_VIP,
+        )
+        ClienteUsuario.objects.create(
+            cliente=cliente, keycloak_id='sub-simulador', username='tester',
+        )
         factory = APIRequestFactory()
-        req = factory.get('/api/simulador/?moneda=USD&monto=1000&operacion=compra&categoria=VIP')
+        req = factory.get(
+            f'/api/simulador/?moneda=USD&monto=1000&operacion=compra&cliente={cliente.pk}'
+        )
         force_authenticate(req, user=UsuarioFake(roles=['user']))
         from .views import simular
         resp = simular(req)
         self.assertEqual(resp.status_code, 200)
-        # compra -> tasa venta vigente 7550; bruto 7.550.000; comisión 1% = 75.500
-        self.assertEqual(resp.data['tasa_aplicada'], 7550.0)
-        self.assertEqual(resp.data['monto_bruto_pyg'], 7550000.0)
-        self.assertEqual(resp.data['comision_pyg'], 75500.0)
-        self.assertEqual(resp.data['monto_neto_pyg'], 7474500.0)
+        # El ajuste del 1% ya está incluido en el total que recibe el cliente.
+        self.assertEqual(resp.data['tasa_aplicada'], 7625.5)
+        self.assertEqual(resp.data['monto_total'], 7625500.0)
+        self.assertEqual(resp.data['total_tipo'], 'pagar')
+        self.assertNotIn('comision_porcentaje', resp.data)
+        self.assertNotIn('comision_pyg', resp.data)
+        self.assertNotIn('monto_neto_pyg', resp.data)

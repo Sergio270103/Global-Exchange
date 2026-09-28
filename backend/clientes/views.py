@@ -5,8 +5,8 @@
 - ``GET /api/asociaciones/?mine=1`` devuelve los clientes del usuario
   en sesión (según su ``sub`` de Keycloak) para el selector de cliente
   activo (RF10/RF11). Sin ``mine`` lista todo (admin).
-- ``GET/PUT /api/comisiones/`` y ``/api/comisiones/{categoria}/`` para
-  la configuración de porcentajes por tipo de cliente (Hito 4).
+- ``GET/PUT /api/ajustes-precios/`` para la configuración interna de
+  porcentajes por tipo de cliente (Hito 4). Solo administradores.
 """
 
 from django.db.models import Q
@@ -15,8 +15,8 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .models import Cliente, ClienteUsuario, Comision
-from .permisos import SoloAdminEscribe
-from .serializers import ClienteSerializer, ClienteUsuarioSerializer, ComisionSerializer
+from .permisos import SoloAdmin, SoloAdminEscribe
+from .serializers import ClienteSerializer, ClienteUsuarioSerializer, AjustePrecioSerializer
 
 
 class ClienteViewSet(viewsets.ModelViewSet):
@@ -73,14 +73,24 @@ class ClienteUsuarioViewSet(viewsets.ModelViewSet):
         return qs
 
 
-class ComisionViewSet(viewsets.ModelViewSet):
+class AjustePrecioViewSet(viewsets.ModelViewSet):
+    """CRUD interno de ajustes de precio por categoría.
+
+    El endpoint es solo para administradores: el cliente recibe el precio
+    final ya calculado y nunca consulta estos porcentajes.
+    """
+
     queryset = Comision.objects.all()
-    serializer_class = ComisionSerializer
-    permission_classes = [SoloAdminEscribe]
+    serializer_class = AjustePrecioSerializer
+    permission_classes = [SoloAdmin]
     lookup_field = 'categoria'
 
     @action(detail=False, methods=['get'], url_path='simulador')
     def para_simulador(self, request):
-        """Devuelve ``{categoria: porcentaje}`` para el simulador."""
+        """Devuelve ``{categoria: porcentaje}`` al panel de administración."""
         datos = {c.categoria: float(c.porcentaje) for c in self.get_queryset()}
         return Response(datos)
+
+
+# Alias para imports históricos durante la transición.
+ComisionViewSet = AjustePrecioViewSet

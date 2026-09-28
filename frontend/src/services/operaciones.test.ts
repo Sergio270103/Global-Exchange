@@ -35,8 +35,6 @@ function operacionApi(extra: Record<string, unknown> = {}): Record<string, unkno
     cotizacion_aplicada: '7500.000000',
     tasa_origen: null,
     tasa_destino: '7500.00',
-    porcentaje_comision_aplicado: '0.00',
-    monto_comision: '0.00',
     metodo_pago: 'transfer',
     fecha_creacion: '2026-09-25T20:00:00Z',
     estado: 'PENDIENTE',

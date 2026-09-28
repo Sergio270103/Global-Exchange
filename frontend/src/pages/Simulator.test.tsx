@@ -19,7 +19,6 @@ describe('Simulator (API)', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       const u = String(url)
-      if (u.includes('/comisiones/')) return respuesta({ MINORISTA: 1.0 })
       if (u.includes('/cotizaciones/vigentes/')) {
         return respuesta([
           { id: 1, moneda: 2, moneda_codigo: 'USD', moneda_nombre: 'Dólar', compra: '7400', venta: '7500', vigente_desde: new Date().toISOString(), creado_por: 'a' },
@@ -27,9 +26,9 @@ describe('Simulator (API)', () => {
       }
       if (u.includes('/simulador/')) {
         return respuesta({
-          moneda: 'USD', operacion: 'compra', monto_origen: 100, tasa_aplicada: 7500,
-          monto_bruto_pyg: 750000, categoria: 'MINORISTA', comision_porcentaje: 1.0,
-          comision_pyg: 7500, monto_neto_pyg: 742500, vigente_desde: new Date().toISOString(),
+          moneda: 'USD', moneda_contraparte: 'PYG', operacion: 'compra', monto_origen: 100,
+          tasa_aplicada: 7575, monto_total: 757500, total_tipo: 'pagar',
+          vigente_desde: new Date().toISOString(),
         })
       }
       return respuesta([])
@@ -39,15 +38,16 @@ describe('Simulator (API)', () => {
     vi.unstubAllGlobals()
   })
 
-  it('muestra encabezado, tasas del día y simula con desglose', async () => {
+  it('muestra encabezado, tasas del día y simula con precio final', async () => {
     const user = userEvent.setup()
-    render(<Simulator />)
+    render(<Simulator currentClient={{ id: 1, nombre: 'Cliente Prueba' }} />)
     expect(await screen.findByText('Simulador de conversión')).toBeInTheDocument()
     expect(screen.getByText('Tasas del día')).toBeInTheDocument()
     await user.clear(screen.getByLabelText('Monto'))
     await user.type(screen.getByLabelText('Monto'), '100')
     await user.click(screen.getByRole('button', { name: 'Simular conversión' }))
-    expect(await screen.findByText('Total a recibir')).toBeInTheDocument()
-    expect(screen.getByText('Tasa')).toBeInTheDocument()
+    expect(await screen.findByText('Total a pagar')).toBeInTheDocument()
+    expect(screen.getByText('Tasa final')).toBeInTheDocument()
+    expect(screen.queryByText(/Comisión/)).not.toBeInTheDocument()
   })
 })

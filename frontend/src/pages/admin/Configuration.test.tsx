@@ -1,5 +1,5 @@
 /**
- * Pruebas PI-72 de configuración (tabs + comisiones contra API).
+ * Pruebas PI-72 de configuración (tabs + ajustes de precio contra API).
  *
  * @module Configuration.test
  */
@@ -28,10 +28,10 @@ describe('Configuration (API + tabs)', () => {
       if (u.includes('/metodos-pago/')) {
         return respuesta([{ id: 1, codigo: 'transfer', nombre: 'Transferencia', activo: true }])
       }
-      if (u.includes('/comisiones/simulador/')) {
+      if (u.includes('/ajustes-precios/simulador/')) {
         return respuesta({ MINORISTA: 1.0, CORPORATIVO: 0.75, VIP: 0.5 })
       }
-      if (u.includes('/comisiones/') && method === 'PUT') return respuesta({ ok: true })
+      if (u.includes('/ajustes-precios/') && method === 'PUT') return respuesta({ ok: true })
       return respuesta([])
     }))
   })
@@ -49,15 +49,15 @@ describe('Configuration (API + tabs)', () => {
     expect(screen.getByText('Autenticación de dos factores (2FA)')).toBeInTheDocument()
   })
 
-  it('guarda una comisión por categoría', async () => {
+  it('guarda un ajuste de precio por categoría', async () => {
     const user = userEvent.setup()
     render(<Configuration />)
     await screen.findByText('Monedas admitidas')
-    await user.click(screen.getByRole('button', { name: 'Comisiones' }))
-    expect(screen.getByText('Comisiones por categoría de cliente')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Ajustes por categoría' }))
+    expect(screen.getByText('Ajustes de precio por categoría')).toBeInTheDocument()
     await user.clear(screen.getByLabelText('Porcentaje MINORISTA'))
     await user.type(screen.getByLabelText('Porcentaje MINORISTA'), '2')
     await user.click(screen.getAllByRole('button', { name: 'Guardar' })[0])
-    expect(await screen.findByText('Comisión minorista actualizada a 2%.')).toBeInTheDocument()
+    expect(await screen.findByText('Ajuste de minorista actualizado a 2%.')).toBeInTheDocument()
   })
 })

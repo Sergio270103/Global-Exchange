@@ -1,4 +1,4 @@
-"""Pruebas de clientes, asociaciones y comisiones."""
+"""Pruebas de clientes, asociaciones y ajustes de precio."""
 
 from django.db import IntegrityError, transaction
 from django.test import TestCase
@@ -90,3 +90,10 @@ class ComisionTest(APITestCase):
         resp = ComisionViewSet.as_view({'get': 'para_simulador'})(req)
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data['VIP'], 0.5)
+
+    def test_usuario_no_consulta_ajustes_internos(self):
+        factory = APIRequestFactory()
+        req = factory.get('/api/ajustes-precios/simulador/')
+        force_authenticate(req, user=UsuarioFake(roles=['user']))
+        resp = ComisionViewSet.as_view({'get': 'para_simulador'})(req)
+        self.assertEqual(resp.status_code, 403)

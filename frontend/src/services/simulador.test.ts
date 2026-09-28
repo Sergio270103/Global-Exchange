@@ -1,13 +1,13 @@
 /**
  * Pruebas del servicio del simulador (Sprint 2: RF20–RF22).
  *
- * Verifica que el desglose del backend (tasa, bruto, comisión, neto)
- * llegue intacto a la UI y que las comisiones por categoría se lean.
+ * Verifica que el backend entregue únicamente el precio final y que el
+ * administrador pueda consultar los ajustes internos por categoría.
  *
  * @module simulador.test
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { simular, listarComisiones } from '@/services/simulador'
+import { simular, listarAjustesPrecio } from '@/services/simulador'
 
 function respuesta(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -16,23 +16,21 @@ function respuesta(data: unknown, status = 200) {
   })
 }
 
-describe('simulador (conversión con tasa vigente y comisión)', () => {
+describe('simulador (precio final sin desglose interno)', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
-      if (String(url).includes('/comisiones/')) {
+      if (String(url).includes('/ajustes-precios/')) {
         return respuesta({ MINORISTA: 1.0, CORPORATIVO: 0.75, VIP: 0.5 })
       }
       if (String(url).includes('/simulador/')) {
         return respuesta({
           moneda: 'USD',
+          moneda_contraparte: 'PYG',
           operacion: 'compra',
           monto_origen: 1000,
-          tasa_aplicada: 7500,
-          monto_bruto_pyg: 7500000,
-          categoria: 'VIP',
-          comision_porcentaje: 0.5,
-          comision_pyg: 37500,
-          monto_neto_pyg: 7462500,
+          tasa_aplicada: 7537.5,
+          monto_total: 7537500,
+          total_tipo: 'pagar',
           vigente_desde: '2026-09-13T00:00:00Z',
         })
       }
@@ -43,16 +41,28 @@ describe('simulador (conversión con tasa vigente y comisión)', () => {
     vi.unstubAllGlobals()
   })
 
-  it('devuelve el desglose completo de la simulación', async () => {
-    const r = await simular({ moneda: 'USD', monto: 1000, operacion: 'compra', categoria: 'VIP' })
-    expect(r.tasa_aplicada).toBe(7500)
-    expect(r.monto_bruto_pyg).toBe(7500000)
-    expect(r.comision_pyg).toBe(37500)
-    expect(r.monto_neto_pyg).toBe(7462500)
+  it('devuelve la tasa y el total final', async () => {
+    const r = await simular({ moneda: 'USD', monto: 1000, operacion: 'compra', clienteId: 1 })
+    expect(r.tasa_aplicada).toBe(7537.5)
+    expect(r.monto_total).toBe(7537500)
+    expect(r.total_tipo).toBe('pagar')
+    expect(r).not.toHaveProperty('comision_porcentaje')
+    expect(r).not.toHaveProperty('comision_pyg')
   })
 
-  it('lista las comisiones configuradas por categoría', async () => {
-    const cs = await listarComisiones()
+  it('envía la contraparte para simular un cruce', async () => {
+    await simular({
+      moneda: 'USD',
+      monto: 100,
+      operacion: 'venta',
+      clienteId: 1,
+      monedaContraparte: 'EUR',
+    })
+    expect(String(vi.mocked(fetch).mock.calls[0][0])).toContain('moneda_contraparte=EUR')
+  })
+
+  it('lista los ajustes internos por categoría para administración', async () => {
+    const cs = await listarAjustesPrecio()
     expect(cs.VIP).toBe(0.5)
     expect(cs.MINORISTA).toBe(1.0)
   })
@@ -62,7 +72,7 @@ describe('simulador (conversión con tasa vigente y comisión)', () => {
       respuesta({ detail: 'Todavía no hay cotización para USD.' }, 404),
     ))
     await expect(
-      simular({ moneda: 'USD', monto: 100, operacion: 'compra', categoria: 'MINORISTA' }),
+      simular({ moneda: 'USD', monto: 100, operacion: 'compra', clienteId: 1 }),
     ).rejects.toThrow('Todavía no hay cotización para USD.')
   })
 })

@@ -27,10 +27,16 @@ class ClienteUsuarioSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'creado_en']
 
 
-class ComisionSerializer(serializers.ModelSerializer):
+class AjustePrecioSerializer(serializers.ModelSerializer):
+    """Configuración interna del ajuste de precio por categoría."""
+
     categoria_display = serializers.CharField(source='get_categoria_display', read_only=True)
 
     class Meta:
         model = Comision
         fields = ['id', 'categoria', 'categoria_display', 'porcentaje', 'actualizado_en']
         read_only_fields = ['id', 'actualizado_en']
+
+
+# Alias temporal para consumidores internos que aún importan el nombre viejo.
+ComisionSerializer = AjustePrecioSerializer

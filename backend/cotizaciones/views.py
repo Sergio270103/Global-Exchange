@@ -7,14 +7,17 @@
 - ``POST`` solo admin/analista; guarda el usuario creador (RNF26).
 """
 
+from decimal import Decimal
+
 from django.db.models import OuterRef, Subquery
+from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework import viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from clientes.models import Cliente, Comision
+from clientes.models import Cliente, ClienteUsuario, Comision
 from monedas.models import Moneda
 
 from .models import Cotizacion
@@ -60,55 +63,89 @@ class CotizacionViewSet(viewsets.ModelViewSet):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def simular(request):
-    """Simula una conversión sin concretar la operación (RF22).
+    """Simula una conversión y devuelve únicamente el precio final.
 
-    Parámetros: ``?moneda=USD&monto=1000&operacion=compra&categoria=VIP``.
-    - ``operacion=compra``: el cliente compra divisa (se aplica tasa venta).
-    - ``operacion=venta``: el cliente vende divisa (se aplica tasa compra).
-    Devuelve el desglose del cálculo exigido por RF21.
+    El ajuste interno por categoría se aplica para calcular el total, pero no
+    se devuelve su porcentaje ni su monto: el cliente ve la tasa y el total
+    final de la operación.
+
+    Parámetros:
+    ``?moneda=USD&moneda_contraparte=PYG&monto=1000&operacion=compra&cliente=1``.
     """
-    codigo = (request.query_params.get('moneda') or '').strip().upper()
+    codigo_div = (request.query_params.get('moneda') or '').strip().upper()
+    codigo_contra = (
+        request.query_params.get('moneda_contraparte') or 'PYG'
+    ).strip().upper()
     try:
-        monto = float(request.query_params.get('monto') or 0)
-    except ValueError:
-        monto = 0
+        monto = Decimal(str(request.query_params.get('monto') or 0))
+    except (TypeError, ValueError):
+        monto = Decimal('0')
     operacion = (request.query_params.get('operacion') or 'compra').strip().lower()
-    categoria = (request.query_params.get('categoria') or Cliente.CAT_MINORISTA).strip().upper()
+    cliente_id = request.query_params.get('cliente')
 
-    if not codigo or monto <= 0:
+    if not codigo_div or monto <= 0:
         return Response(
             {'detail': 'Indicá moneda y un monto mayor a cero.'}, status=400,
         )
+    if codigo_div == codigo_contra:
+        return Response(
+            {'detail': 'La moneda origen y destino deben ser distintas.'}, status=400,
+        )
     if operacion not in ('compra', 'venta'):
         return Response({'detail': 'operacion debe ser compra o venta.'}, status=400)
-
-    try:
-        moneda = Moneda.objects.get(codigo=codigo, activo=True)
-    except Moneda.DoesNotExist:
-        return Response({'detail': f'La moneda {codigo} no está admitida.'}, status=404)
-
-    cot = Cotizacion.objects.filter(moneda=moneda).order_by('-vigente_desde').first()
-    if not cot:
+    if not cliente_id:
         return Response(
-            {'detail': f'Todavía no hay cotización para {codigo}.'}, status=404,
+            {'detail': 'Seleccioná un cliente para simular la operación.'}, status=400,
         )
 
-    tasa = float(cot.venta if operacion == 'compra' else cot.compra)
-    bruto = monto * tasa
     try:
-        pct = float(Comision.objects.get(categoria=categoria).porcentaje)
+        cliente = Cliente.objects.get(pk=cliente_id, activo=True)
+    except (Cliente.DoesNotExist, ValueError, TypeError):
+        return Response({'detail': 'El cliente no está disponible.'}, status=400)
+
+    sub = getattr(request.user, 'id', '') or ''
+    if not ClienteUsuario.objects.filter(cliente=cliente, keycloak_id=sub).exists():
+        return Response(
+            {'detail': 'El usuario no está asociado a este cliente.'}, status=403,
+        )
+    categoria = cliente.categoria
+    try:
+        pct = Decimal(str(Comision.objects.get(categoria=categoria).porcentaje))
     except Comision.DoesNotExist:
-        pct = 0.0
-    comision = bruto * pct / 100
+        pct = Decimal('0')
+
+    # La misma rutina que usa POST /operaciones/ evita que el precio que ve
+    # el cliente difiera del precio que finalmente se congela.
+    from operaciones.views import ErrorCotizacion, _cotizar
+
+    try:
+        calculo = _cotizar(
+            operacion.upper(), codigo_div, codigo_contra, monto, pct,
+        )
+    except ErrorCotizacion as err:
+        return Response({'detail': str(err)}, status=400)
+
+    if operacion == 'compra':
+        monto_final = calculo['monto_enviado']
+        tipo_total = 'pagar'
+    else:
+        monto_final = calculo['monto_recibido']
+        tipo_total = 'recibir'
+
+    tasa_final = (monto_final / monto).quantize(Decimal('0.000001'))
+    ultima = Cotizacion.objects.filter(
+        moneda__in=[calculo['moneda_origen'], calculo['moneda_destino']],
+    ).order_by('-vigente_desde').first()
+
     return Response({
-        'moneda': moneda.codigo,
+        'moneda': codigo_div,
+        'moneda_contraparte': codigo_contra,
         'operacion': operacion,
-        'monto_origen': monto,
-        'tasa_aplicada': tasa,
-        'monto_bruto_pyg': round(bruto, 2),
-        'categoria': categoria,
-        'comision_porcentaje': pct,
-        'comision_pyg': round(comision, 2),
-        'monto_neto_pyg': round(bruto - comision, 2),
-        'vigente_desde': cot.vigente_desde,
+        'monto_origen': float(monto),
+        'tasa_aplicada': float(tasa_final),
+        'monto_total': float(monto_final),
+        'total_tipo': tipo_total,
+        'vigente_desde': (
+            ultima.vigente_desde if ultima is not None else timezone.now()
+        ),
     })

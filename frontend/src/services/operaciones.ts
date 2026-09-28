@@ -34,8 +34,6 @@ export interface Operacion {
   cotizacion_aplicada: number
   tasa_origen: number | null
   tasa_destino: number | null
-  porcentaje_comision_aplicado: number
-  monto_comision: number
   metodo_pago: string
   /** Billetera destino vinculada (PI-66, solo registro). */
   billetera_destino: number | null
@@ -166,8 +164,6 @@ function mapear(o: Record<string, unknown>): Operacion {
     cotizacion_aplicada: numero(o.cotizacion_aplicada),
     tasa_origen: o.tasa_origen == null ? null : numero(o.tasa_origen),
     tasa_destino: o.tasa_destino == null ? null : numero(o.tasa_destino),
-    porcentaje_comision_aplicado: numero(o.porcentaje_comision_aplicado),
-    monto_comision: numero(o.monto_comision),
     metodo_pago: String(o.metodo_pago ?? ''),
     billetera_destino: o.billetera_destino == null ? null : numero(o.billetera_destino),
     billetera_destino_detalle: String(o.billetera_destino_detalle ?? ''),

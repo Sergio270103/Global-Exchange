@@ -4,8 +4,8 @@
  * - Monedas admitidas: habilita/deshabilita del catálogo (`/api/monedas/`,
  *   la gestión completa está en Monedas Admitidas).
  * - Métodos de pago: habilita/deshabilita del catálogo global (RF42).
- * - Comisiones: porcentaje por categoría de cliente (Hito 4), usado por
- *   el simulador y las operaciones.
+ * - Ajustes de precio: porcentaje interno por categoría de cliente, aplicado
+ *   al precio final que ve el cliente sin mostrar el desglose.
  * - Seguridad y Notificaciones: preferencias locales de la interfaz.
  *
  * @module Configuration
@@ -14,12 +14,12 @@ import { useEffect, useState } from 'react'
 import { listarMonedas, cambiarEstado } from '@/services/monedas'
 import type { Currency } from '@/types'
 import { listarMetodos, cambiarEstadoMetodo, type MetodoPago } from '@/services/metodos'
-import { listarComisiones, actualizarComision, type CategoriaCliente } from '@/services/simulador'
+import { listarAjustesPrecio, actualizarAjustePrecio, type CategoriaCliente } from '@/services/simulador'
 
 const tabs = [
   { id: 'currencies', label: 'Monedas' },
   { id: 'payments', label: 'Métodos de pago' },
-  { id: 'commissions', label: 'Comisiones' },
+  { id: 'price-adjustments', label: 'Ajustes por categoría' },
   { id: 'security', label: 'Seguridad' },
   { id: 'notifications', label: 'Notificaciones' },
 ]
@@ -30,19 +30,19 @@ export default function Configuration() {
   const [tab, setTab] = useState('currencies')
   const [currencies, setCurrencies] = useState<Currency[]>([])
   const [paymentMethods, setPaymentMethods] = useState<MetodoPago[]>([])
-  const [comisiones, setComisiones] = useState<Record<string, number>>({})
-  const [comisionForm, setComisionForm] = useState<Record<string, string>>({})
+  const [ajustes, setAjustes] = useState<Record<string, number>>({})
+  const [ajusteForm, setAjusteForm] = useState<Record<string, string>>({})
   const [cargando, setCargando] = useState(true)
   const [aviso, setAviso] = useState('')
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
-    Promise.all([listarMonedas(), listarMetodos(), listarComisiones().catch(() => ({}))])
+    Promise.all([listarMonedas(), listarMetodos(), listarAjustesPrecio().catch(() => ({}))])
       .then(([ms, mps, cs]) => {
         setCurrencies(ms)
         setPaymentMethods(mps)
-        setComisiones(cs)
-        setComisionForm(Object.fromEntries(Object.entries(cs).map(([k, v]) => [k, String(v)])))
+        setAjustes(cs)
+        setAjusteForm(Object.fromEntries(Object.entries(cs).map(([k, v]) => [k, String(v)])))
       })
       .catch(() => setAviso('No se pudo cargar la configuración. Verificá que el backend esté corriendo.'))
       .finally(() => setCargando(false))
@@ -72,18 +72,18 @@ export default function Configuration() {
     }
   }
 
-  const guardarComision = async (categoria: CategoriaCliente) => {
-    const valor = Number((comisionForm[categoria] ?? '').replace(',', '.'))
+  const guardarAjuste = async (categoria: CategoriaCliente) => {
+    const valor = Number((ajusteForm[categoria] ?? '').replace(',', '.'))
     if (!Number.isFinite(valor) || valor < 0 || valor > 100) {
       setAviso('El porcentaje debe estar entre 0 y 100.')
       return
     }
     try {
-      await actualizarComision(categoria, valor)
-      setComisiones(prev => ({ ...prev, [categoria]: valor }))
-      setAviso(`Comisión ${categoria.toLowerCase()} actualizada a ${valor}%.`)
+      await actualizarAjustePrecio(categoria, valor)
+      setAjustes(prev => ({ ...prev, [categoria]: valor }))
+      setAviso(`Ajuste de ${categoria.toLowerCase()} actualizado a ${valor}%.`)
     } catch (err) {
-      setAviso(err instanceof Error ? err.message : 'No se pudo guardar la comisión.')
+      setAviso(err instanceof Error ? err.message : 'No se pudo guardar el ajuste.')
     }
   }
 
@@ -187,30 +187,30 @@ export default function Configuration() {
             </div>
           )}
 
-          {tab === 'commissions' && (
+          {tab === 'price-adjustments' && (
             <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-6">
-              <h3 className="font-semibold text-slate-800 text-[15px] mb-1" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Comisiones por categoría de cliente</h3>
-              <p className="text-[12px] text-slate-400 mb-5">Porcentaje aplicado sobre el monto convertido en el simulador y las operaciones.</p>
+              <h3 className="font-semibold text-slate-800 text-[15px] mb-1" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Ajustes de precio por categoría</h3>
+              <p className="text-[12px] text-slate-400 mb-5">Configuración interna. El ajuste se incorpora al precio final y no se muestra como una línea separada al cliente.</p>
               <div className="space-y-3">
                 {categorias.map(cat => (
                   <div key={cat} className="flex items-center gap-4 p-4 rounded-xl border border-slate-100">
                     <div className="flex-1">
                       <div className="font-semibold text-slate-800 text-[14px] capitalize">{cat.toLowerCase()}</div>
-                      <div className="text-[12px] text-slate-400">Actual: {comisiones[cat] ?? '—'}%</div>
+                      <div className="text-[12px] text-slate-400">Actual: {ajustes[cat] ?? '—'}%</div>
                     </div>
-                    <label htmlFor={`comision-${cat}`} className="sr-only">Porcentaje {cat}</label>
+                    <label htmlFor={`ajuste-${cat}`} className="sr-only">Porcentaje {cat}</label>
                     <input
-                      id={`comision-${cat}`}
+                      id={`ajuste-${cat}`}
                       type="number"
                       min={0}
                       max={100}
                       step={0.01}
-                      value={comisionForm[cat] ?? ''}
-                      onChange={e => setComisionForm(prev => ({ ...prev, [cat]: e.target.value }))}
+                      value={ajusteForm[cat] ?? ''}
+                      onChange={e => setAjusteForm(prev => ({ ...prev, [cat]: e.target.value }))}
                       className="w-28 border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-300"
                     />
                     <span className="text-slate-400 text-sm">%</span>
-                    <button onClick={() => guardarComision(cat)} className="px-4 py-2 rounded-lg text-white text-[13px] font-semibold" style={{ background: '#10b981' }}>
+                    <button onClick={() => guardarAjuste(cat)} className="px-4 py-2 rounded-lg text-white text-[13px] font-semibold" style={{ background: '#10b981' }}>
                       Guardar
                     </button>
                   </div>

@@ -1,31 +1,29 @@
 /**
  * Servicio del simulador de conversión (`GET /api/simulador/`).
  *
- * Calcula en el backend con la tasa vigente y la comisión de la
- * categoría del cliente (RF20–RF22) y devuelve el desglose exigido
- * por RF21.
+ * El backend aplica internamente el ajuste de precio de la categoría y
+ * devuelve únicamente el precio final. El cliente no recibe el porcentaje
+ * ni el monto del ajuste.
  *
  * @module services/simulador
  */
 import { apiFetch } from '@/services/api'
 
-/** Categorías de cliente con comisión configurada. */
+/** Categorías de cliente con ajuste de precio configurado. */
 export type CategoriaCliente = 'MINORISTA' | 'CORPORATIVO' | 'VIP'
 
 /** Operación a simular: compra (cliente compra divisa) o venta. */
 export type OperacionSimulada = 'compra' | 'venta'
 
-/** Desglose del cálculo devuelto por el backend. */
+/** Resultado público de la simulación, sin desglose del ajuste interno. */
 export interface Simulacion {
   moneda: string
+  moneda_contraparte: string
   operacion: OperacionSimulada
   monto_origen: number
   tasa_aplicada: number
-  monto_bruto_pyg: number
-  categoria: CategoriaCliente
-  comision_porcentaje: number
-  comision_pyg: number
-  monto_neto_pyg: number
+  monto_total: number
+  total_tipo: 'pagar' | 'recibir'
   vigente_desde: string
 }
 
@@ -36,33 +34,39 @@ export async function simular(params: {
   moneda: string
   monto: number
   operacion: OperacionSimulada
-  categoria: CategoriaCliente
+  clienteId: number
+  monedaContraparte?: string
 }): Promise<Simulacion> {
   const qs = new URLSearchParams({
     moneda: params.moneda,
     monto: String(params.monto),
     operacion: params.operacion,
-    categoria: params.categoria,
+    cliente: String(params.clienteId),
+    moneda_contraparte: params.monedaContraparte ?? 'PYG',
   })
   return apiFetch<Simulacion>(`/simulador/?${qs}`)
 }
 
 /**
- * Comisiones configuradas por categoría (`{MINORISTA: 1.0, ...}`).
+ * Ajustes internos de precio por categoría (`{MINORISTA: 1.0, ...}`).
+ * Solo el administrador puede consultar este recurso.
  */
-export async function listarComisiones(): Promise<Record<string, number>> {
-  return apiFetch<Record<string, number>>('/comisiones/simulador/')
+export async function listarAjustesPrecio(): Promise<Record<string, number>> {
+  return apiFetch<Record<string, number>>('/ajustes-precios/simulador/')
 }
 
-/**
- * Actualiza el porcentaje de una categoría (solo admin).
- */
-export async function actualizarComision(
+/** Actualiza el ajuste de una categoría (solo admin). */
+export async function actualizarAjustePrecio(
   categoria: CategoriaCliente,
   porcentaje: number,
 ): Promise<void> {
-  await apiFetch(`/comisiones/${categoria}/`, {
+  await apiFetch(`/ajustes-precios/${categoria}/`, {
     method: 'PUT',
     body: JSON.stringify({ categoria, porcentaje }),
   })
 }
+
+// Alias deprecated para no romper imports de código anterior durante la
+// transición. La interfaz y la API nuevas ya no usan el concepto de comisión.
+export const listarComisiones = listarAjustesPrecio
+export const actualizarComision = actualizarAjustePrecio

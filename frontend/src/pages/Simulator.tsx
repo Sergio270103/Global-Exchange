@@ -1,42 +1,38 @@
 /**
  * Simulador de conversión de divisas conectado a la API Django.
  *
- * Calcula con la tasa vigente del día y la comisión de la categoría
- * del cliente (RF20–RF22) y muestra el desglose exigido por RF21,
- * sin concretar la operación.
+ * Calcula con la tasa vigente del día y el precio final de la categoría
+ * del cliente (RF20–RF22), sin mostrar el ajuste interno por separado.
  *
  * @module Simulator
  */
 import { useEffect, useState } from 'react'
 import { vigentes, type Cotizacion } from '@/services/cotizaciones'
-import { simular, listarComisiones, type CategoriaCliente, type OperacionSimulada, type Simulacion } from '@/services/simulador'
-import { type Page } from '@/types'
+import { simular, type OperacionSimulada, type Simulacion } from '@/services/simulador'
+import { type ClienteActivo, type Page } from '@/types'
 
 export interface SimulatorProps {
   navigate?: (p: Page) => void
+  currentClient?: ClienteActivo | null
 }
 
-const categorias: CategoriaCliente[] = ['MINORISTA', 'CORPORATIVO', 'VIP']
 
-export default function Simulator({ navigate }: SimulatorProps) {
+export default function Simulator({ navigate, currentClient }: SimulatorProps) {
   const [tasas, setTasas] = useState<Cotizacion[]>([])
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState('')
-  const [comisiones, setComisiones] = useState<Record<string, number>>({})
 
   const [simFrom, setSimFrom] = useState('USD')
   const [simAmount, setSimAmount] = useState('1000')
   const [operacion, setOperacion] = useState<OperacionSimulada>('compra')
-  const [categoria, setCategoria] = useState<CategoriaCliente>('MINORISTA')
   const [simResult, setSimResult] = useState<Simulacion | null>(null)
   const [simulando, setSimulando] = useState(false)
   const [simError, setSimError] = useState('')
 
   useEffect(() => {
-    Promise.all([vigentes(), listarComisiones().catch(() => ({}))])
-      .then(([t, c]) => {
+    vigentes()
+      .then(t => {
         setTasas(t)
-        setComisiones(c)
         if (t.length > 0 && !t.some(x => x.moneda === 'USD')) setSimFrom(t[0].moneda)
       })
       .catch(() => setError('No se pudieron cargar las tasas. Verificá que el backend esté corriendo.'))
@@ -47,7 +43,12 @@ export default function Simulator({ navigate }: SimulatorProps) {
     setSimError('')
     setSimulando(true)
     try {
-      const r = await simular({ moneda: simFrom, monto: parseFloat(simAmount) || 0, operacion, categoria })
+      const r = await simular({
+        moneda: simFrom,
+        monto: parseFloat(simAmount) || 0,
+        operacion,
+        clienteId: currentClient?.id ?? 0,
+      })
       setSimResult(r)
     } catch (err) {
       setSimResult(null)
@@ -66,7 +67,7 @@ export default function Simulator({ navigate }: SimulatorProps) {
           Simulador de conversión
         </h2>
         <p className="text-slate-500 text-[14px]">
-          Calculá el tipo de cambio y las comisiones estimadas antes de realizar tu operación.
+          Calculá el tipo de cambio y el precio final antes de realizar tu operación.
         </p>
       </div>
 
@@ -147,22 +148,14 @@ export default function Simulator({ navigate }: SimulatorProps) {
                 </div>
 
                 <div>
-                  <label htmlFor="sim-cat" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                  <span className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
                     Categoría del cliente
-                  </label>
-                  <select
-                    id="sim-cat"
-                    value={categoria}
-                    onChange={e => setCategoria(e.target.value as CategoriaCliente)}
-                    className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300"
-                  >
-                    {categorias.map(c => (
-                      <option key={c} value={c}>
-                        {c.charAt(0) + c.slice(1).toLowerCase()}
-                        {comisiones[c] !== undefined ? ` (${comisiones[c]}%)` : ''}
-                      </option>
-                    ))}
-                  </select>
+                  </span>
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm text-slate-600">
+                    {currentClient
+                      ? 'Se aplica automáticamente según tu cliente.'
+                      : 'Seleccioná un cliente para simular.'}
+                  </div>
                 </div>
               </div>
 
@@ -175,35 +168,29 @@ export default function Simulator({ navigate }: SimulatorProps) {
 
               <button
                 onClick={simulate}
-                disabled={simulando}
+                disabled={simulando || !currentClient}
                 className="w-full py-3 rounded-xl text-white font-semibold text-[15px] transition-all hover:-translate-y-0.5 hover:shadow-lg disabled:opacity-60"
                 style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}
               >
-                {simulando ? 'Simulando…' : 'Simular conversión'}
+                {simulando ? 'Simulando…' : currentClient ? 'Simular conversión' : 'Seleccioná un cliente'}
               </button>
 
               {simError && <p role="alert" className="mt-4 text-red-500 text-[13px]">{simError}</p>}
 
               {simResult && (
                 <div className="mt-6 rounded-xl bg-emerald-50 border border-emerald-100 p-5 animate-fadein">
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center mb-4">
+                  <div className="grid grid-cols-2 gap-4 text-center mb-4">
                     <div>
-                      <div className="text-[11px] text-slate-400 font-semibold uppercase tracking-wider mb-1">Tasa</div>
+                      <div className="text-[11px] text-slate-400 font-semibold uppercase tracking-wider mb-1">Tasa final</div>
                       <div className="font-mono font-bold text-slate-800">₲ {simResult.tasa_aplicada.toLocaleString()}</div>
                     </div>
                     <div>
-                      <div className="text-[11px] text-slate-400 font-semibold uppercase tracking-wider mb-1">Bruto</div>
-                      <div className="font-mono font-bold text-slate-800">₲ {simResult.monto_bruto_pyg.toLocaleString('es', { maximumFractionDigits: 0 })}</div>
-                    </div>
-                    <div>
-                      <div className="text-[11px] text-slate-400 font-semibold uppercase tracking-wider mb-1">
-                        Comisión ({simResult.comision_porcentaje}%)
+                      <div className="text-[11px] text-emerald-600 font-semibold uppercase tracking-wider mb-1">
+                        Total a {simResult.total_tipo === 'pagar' ? 'pagar' : 'recibir'}
                       </div>
-                      <div className="font-mono font-bold text-slate-800">₲ {simResult.comision_pyg.toLocaleString('es', { maximumFractionDigits: 0 })}</div>
-                    </div>
-                    <div>
-                      <div className="text-[11px] text-emerald-600 font-semibold uppercase tracking-wider mb-1">Total a recibir</div>
-                      <div className="font-mono font-bold text-emerald-700 text-lg">₲ {simResult.monto_neto_pyg.toLocaleString('es', { maximumFractionDigits: 0 })}</div>
+                      <div className="font-mono font-bold text-emerald-700 text-lg">
+                        ₲ {simResult.monto_total.toLocaleString('es', { maximumFractionDigits: 0 })}
+                      </div>
                     </div>
                   </div>
 

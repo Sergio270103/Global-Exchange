@@ -69,6 +69,21 @@ class OperacionSerializer(serializers.ModelSerializer):
         return max(0, int(tolerancia_segundos() - transcurrido))
 
 
+class OperacionPublicSerializer(OperacionSerializer):
+    """Respuesta para el cliente: precio final, sin desglose del ajuste.
+
+    El porcentaje y el monto del ajuste se conservan en el modelo para
+    auditoría interna, pero no se exponen en el contrato público.
+    """
+
+    class Meta(OperacionSerializer.Meta):
+        fields = [
+            field for field in OperacionSerializer.Meta.fields
+            if field not in ('porcentaje_comision_aplicado', 'monto_comision')
+        ]
+        read_only_fields = fields
+
+
 class CrearOperacionSerializer(serializers.Serializer):
     """Entrada del POST /api/operaciones/.
 

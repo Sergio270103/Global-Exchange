@@ -67,6 +67,18 @@ class OperacionTests(TestCase):
         # Comisión en destino: 7500 PYG / 7500 = 1 USD.
         self.assertEqual(op.monto_comision, Decimal('1'))
 
+    def test_respuesta_publica_no_expone_ajuste_interno(self):
+        vista = OperacionViewSet.as_view({'post': 'create'})
+        req = self.factory.post('/api/operaciones/', {
+            'cliente': self.cliente.id, 'tipo_operacion': 'COMPRA',
+            'moneda': 'USD', 'monto_divisa': '100',
+        }, format='json')
+        res = _auth(vista, req)
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertNotIn('porcentaje_comision_aplicado', res.data)
+        self.assertNotIn('monto_comision', res.data)
+        self.assertEqual(res.data['monto_enviado'], '757500.00')
+
     def test_venta_resta_comision(self):
         vista = OperacionViewSet.as_view({'post': 'create'})
         req = self.factory.post('/api/operaciones/', {
@@ -166,6 +178,23 @@ class VinculacionTests(TestCase):
             codigo_bancario='ITAU-PY', moneda=self.pyg)
         res = self._crear({'cuenta_origen': ajena.id})
         self.assertEqual(res.status_code, 400)
+
+    def test_cuenta_bancaria_rechazada_en_venta(self):
+        # Cuenta en USD para que pase el chequeo de moneda y aísle el de tipo.
+        cuenta_usd = CuentaBancaria.objects.create(
+            cliente=self.cliente, nombre='C', apellido='V', cedula='2',
+            banco='Itaú', numero_cuenta='87654321',
+            codigo_bancario='ITAU-PY', moneda=self.usd)
+        vista = OperacionViewSet.as_view({'post': 'create'})
+        req = self.factory.post('/api/operaciones/', {
+            'cliente': self.cliente.id, 'tipo_operacion': 'VENTA',
+            'moneda': 'USD', 'monto_divisa': '10',
+            'cuenta_origen': cuenta_usd.id,
+        }, format='json')
+        res = _auth(vista, req)
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('compra', str(res.data['detail']).lower())
+        self.assertFalse(Operacion.objects.exists())
 
     def test_sin_vinculacion_tambien_vale(self):
         res = self._crear({})

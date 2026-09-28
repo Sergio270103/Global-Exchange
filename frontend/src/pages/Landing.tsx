@@ -18,7 +18,7 @@ const faqs = [
   { q: '¿Las tasas se actualizan en tiempo real?', a: 'Sí. Nuestros analistas cambiarios monitorean el mercado continuamente y actualizan las tasas varias veces al día para ofrecerte el mejor tipo de cambio disponible.' },
   { q: '¿Cómo puedo retirar mis fondos?', a: 'Podés retirar tus fondos mediante transferencia bancaria a cualquiera de tus cuentas registradas. El proceso es inmediato para las cuentas verificadas.' },
   { q: '¿Qué documentos necesito para registrarme?', a: 'Para personas físicas: Cédula de identidad. Para empresas: RUC, estatutos y documentación del representante legal.' },
-  { q: '¿Hay comisiones ocultas?', a: 'No. El diferencial entre el precio de compra y venta es nuestra única forma de remuneración. Lo que ves en pantalla es lo que pagás.' },
+  { q: '¿El precio mostrado es final?', a: 'Sí. El monto que ves en pantalla es el precio final de la operación; no se agrega ningún porcentaje después.' },
 ]
 
 const steps = [
@@ -30,7 +30,7 @@ const steps = [
 const benefits = [
   { icon: '🔒', title: 'Seguridad de nivel bancario', desc: 'Cifrado AES-256, autenticación de dos factores y monitoreo 24/7.' },
   { icon: '⚡', title: 'Operaciones instantáneas', desc: 'Tus fondos se acreditan en minutos, no en días hábiles.' },
-  { icon: '📊', title: 'Transparencia total', desc: 'Sin comisiones ocultas. Tasas en tiempo real y comprobantes digitales.' },
+  { icon: '📊', title: 'Precios transparentes', desc: 'Tasas en tiempo real y comprobantes digitales.' },
   { icon: '🌐', title: 'Múltiples divisas', desc: 'USD, EUR, BRL, ARS, GBP y más. Todo desde una sola plataforma.' },
   { icon: '📱', title: 'Desde cualquier dispositivo', desc: 'Plataforma 100% web, optimizada para escritorio, tablet y móvil.' },
   { icon: '🏆', title: 'Respaldo institucional', desc: 'Empresa regulada con más de 10 años de trayectoria en el mercado.' },
@@ -49,7 +49,7 @@ export default function Landing({ navigate }: LandingProps) {
   const [simFrom, setSimFrom] = useState('USD')
   const [simTo, setSimTo] = useState('PYG')
   const [simAmount, setSimAmount] = useState('1000')
-  const [simResult, setSimResult] = useState<{ rate: number; converted: number; commission: number } | null>(null)
+  const [simResult, setSimResult] = useState<{ rate: number; converted: number } | null>(null)
 
   const currencyOptions = exchangeRates.map(r => r.currency).concat(['PYG'])
 
@@ -57,8 +57,7 @@ export default function Landing({ navigate }: LandingProps) {
     const amount = parseFloat(simAmount) || 0
     const rate = exchangeRates.find(r => r.currency === simFrom)?.sell || 7650
     const converted = amount * rate
-    const commission = converted * 0.001
-    setSimResult({ rate, converted, commission })
+    setSimResult({ rate, converted })
   }
 
   const tickerRates = [...exchangeRates, ...exchangeRates]
@@ -319,14 +318,10 @@ export default function Landing({ navigate }: LandingProps) {
             </button>
             {simResult && (
               <div className="mt-6 rounded-xl bg-emerald-50 border border-emerald-100 p-5 animate-fadein">
-                <div className="grid grid-cols-3 gap-4 text-center mb-4">
+                <div className="grid grid-cols-2 gap-4 text-center mb-4">
                   <div>
-                    <div className="text-[11px] text-slate-400 font-semibold uppercase tracking-wider mb-1">Tasa</div>
+                    <div className="text-[11px] text-slate-400 font-semibold uppercase tracking-wider mb-1">Tasa final</div>
                     <div className="font-mono font-bold text-slate-800">₲ {simResult.rate.toLocaleString()}</div>
-                  </div>
-                  <div>
-                    <div className="text-[11px] text-slate-400 font-semibold uppercase tracking-wider mb-1">Comisión</div>
-                    <div className="font-mono font-bold text-slate-800">₲ {simResult.commission.toLocaleString('es', { maximumFractionDigits: 0 })}</div>
                   </div>
                   <div>
                     <div className="text-[11px] text-emerald-600 font-semibold uppercase tracking-wider mb-1">Total a recibir</div>

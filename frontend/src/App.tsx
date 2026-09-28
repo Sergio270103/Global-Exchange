@@ -138,7 +138,7 @@ export default function App() {
       case 'notifications':
         return <Notifications />
       case 'simulator':
-        return <Simulator />
+        return <Simulator navigate={navigate} currentClient={currentClient} />
       case 'invoices':
         return <Invoices />
       case 'payments':

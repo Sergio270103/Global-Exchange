@@ -6,8 +6,9 @@ Cubre ERS RF7-RF12 y RF43:
 - Asociación de usuarios Keycloak a clientes (un usuario puede operar
   en nombre de varios clientes; el frontend guarda el cliente activo
   de la sesión — RF10/RF11).
-- Comisión configurada por categoría de cliente (Hito 4: el simulador
-  y las operaciones aplican este porcentaje).
+- Ajuste interno de precio por categoría de cliente (Hito 4): el
+  simulador y las operaciones aplican este porcentaje al precio final,
+  pero no se muestra como una línea separada al cliente.
 """
 
 from django.core.validators import MaxValueValidator, MinValueValidator
@@ -86,10 +87,10 @@ class ClienteUsuario(models.Model):
 
 
 class Comision(models.Model):
-    """Porcentaje de comisión por categoría de cliente (Hito 4).
+    """Ajuste interno de precio por categoría (Hito 4).
 
-    El simulador y las operaciones aplican este porcentaje sobre el monto
-    convertido. Una fila por categoría.
+    El nombre histórico se conserva para no romper la base de datos. El
+    porcentaje se aplica al precio final y no se expone al cliente.
     """
 
     categoria = models.CharField(

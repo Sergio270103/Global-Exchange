@@ -2,8 +2,8 @@
  * Vista de compra y venta de divisas conectada al backend (Hito Operaciones).
  *
  * - Tasas vigentes desde `GET /cotizaciones/vigentes/`.
- * - Resumen con comisión desde `GET /simulador/` (contraparte PYG) o cálculo
- *   local vía PYG como pivote (cruces divisa-divisa).
+ * - Resumen con precio final desde `GET /simulador/`, con el ajuste por
+ *   categoría aplicado en el backend y sin mostrar su desglose.
  * - Inicio con `POST /api/operaciones/` (queda PENDIENTE con la tasa
  *   congelada) y validación cliente activo + asociación (`detail` 400)
  *   mostrada inline en rojo, bloqueando el botón.
@@ -22,7 +22,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { vigentes, type Cotizacion } from '@/services/cotizaciones'
 import { listarMonedas } from '@/services/monedas'
-import { simular, listarComisiones, type CategoriaCliente } from '@/services/simulador'
+import { simular } from '@/services/simulador'
 import {
   crearOperacion,
   confirmarOperacion,
@@ -47,10 +47,8 @@ type Step = 'form' | 'confirm' | 'receipt' | 'cancelled'
 
 interface Resumen {
   tasaEfectiva: number
-  bruto: number
-  comisionPct: number
-  comision: number
   total: number
+  totalTipo: 'pagar' | 'recibir'
   monedaOrigen: string
   monedaDestino: string
 }
@@ -58,13 +56,6 @@ interface Resumen {
 function formatoMonto(valor: number, codigo: string, decimales?: Map<string, number>): string {
   const dec = decimales?.get(codigo) ?? (codigo === 'PYG' ? 0 : 2)
   return `${valor.toLocaleString('es-PY', { minimumFractionDigits: dec, maximumFractionDigits: dec })} ${codigo}`
-}
-
-function redondear(valor: number, codigo: string, decimales?: Map<string, number>): number {
-  const dec = decimales?.get(codigo) ?? (codigo === 'PYG' ? 0 : 2)
-  if (dec === 0) return Math.round(valor)
-  const factor = 10 ** dec
-  return Math.round(valor * factor) / factor
 }
 
 export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
@@ -87,11 +78,9 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
   const [monedas, setMonedas] = useState<Currency[]>([])
   const [cargando, setCargando] = useState(true)
   const [errorCarga, setErrorCarga] = useState('')
-  const [comisiones, setComisiones] = useState<Record<string, number>>({})
 
   const [clienteOk, setClienteOk] = useState(false)
   const [clienteMotivo, setClienteMotivo] = useState('')
-  const [clienteCategoria, setClienteCategoria] = useState<CategoriaCliente>('MINORISTA')
   const [verificandoCliente, setVerificandoCliente] = useState(false)
 
   const [resumen, setResumen] = useState<Resumen | null>(null)
@@ -129,18 +118,16 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
   }, [monedas])
   const pygCatalogo = useMemo(() => monedas.find(m => m.code === 'PYG'), [monedas])
 
-  // Carga inicial: tasas, métodos, comisiones y catálogo de activas.
+  // Carga inicial: tasas, métodos de pago y catálogo de monedas activas.
   useEffect(() => {
     Promise.all([
       vigentes(),
       listarMetodos().catch(() => [] as MetodoPago[]),
-      listarComisiones().catch(() => ({})),
       listarMonedas(true).catch(() => [] as Currency[]),
     ])
-      .then(([t, m, c, cm]) => {
+      .then(([t, m, cm]) => {
         setTasas(t)
         setMetodos(m.filter(x => x.activo))
-        setComisiones(c)
         setMonedas(cm)
         // PI-71: solo operan las monedas activas del catálogo. Si el
         // catálogo no cargó, se usa vigentes como respaldo.
@@ -167,7 +154,6 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
         if (!vivo) return
         setClienteOk(r.ok)
         setClienteMotivo(r.ok ? '' : (r.motivo ?? ERROR_CLIENTE_INACTIVO))
-        if (r.ok && r.cliente) setClienteCategoria(r.cliente.categoria)
       })
       .catch(() => {
         if (!vivo) return
@@ -215,7 +201,8 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentClient?.id])
 
-  // Resumen: simulador si contraparte es PYG, cálculo local si es cruce.
+  // El backend devuelve el precio final; el ajuste por categoría no se
+  // descarga ni se muestra en el cliente.
   useEffect(() => {
     if (amountNum <= 0 || tasasUtiles.length === 0) {
       setResumen(null)
@@ -230,82 +217,33 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
 
     const correr = async () => {
       try {
-        if (contraparte === 'PYG') {
-          const s = await simular({
-            moneda: divisa,
-            monto: amountNum,
-            operacion: mode === 'buy' ? 'compra' : 'venta',
-            categoria: clienteCategoria,
-          })
-          if (!vivo) return
-          if (mode === 'buy') {
-            // Hito Operaciones: en compra el cliente paga bruto + comisión.
-            const totalPagar = s.monto_bruto_pyg + s.comision_pyg
-            setResumen({
-              tasaEfectiva: s.tasa_aplicada,
-              bruto: s.monto_bruto_pyg,
-              comisionPct: s.comision_porcentaje,
-              comision: s.comision_pyg,
-              total: totalPagar,
-              monedaOrigen: 'PYG',
-              monedaDestino: divisa,
-            })
-          } else {
-            setResumen({
-              tasaEfectiva: s.tasa_aplicada,
-              bruto: s.monto_bruto_pyg,
-              comisionPct: s.comision_porcentaje,
-              comision: s.comision_pyg,
-              total: s.monto_neto_pyg,
-              monedaOrigen: divisa,
-              monedaDestino: 'PYG',
-            })
-          }
-        } else {
-          // Cruce divisa-divisa vía PYG como pivote.
-          const tDiv = tasasUtiles.find(t => t.moneda === divisa)
-          const tContra = tasasUtiles.find(t => t.moneda === contraparte)
-          if (!tDiv || !tContra) throw new Error(`Sin cotización vigente para el par ${divisa}/${contraparte}.`)
-          const pct = comisiones[clienteCategoria] ?? 0
-          if (mode === 'buy') {
-            const pygNecesarios = amountNum * tDiv.venta
-            const brutoOrigen = pygNecesarios / tContra.compra
-            const comisionOrigen = (brutoOrigen * pct) / 100
-            setResumen({
-              tasaEfectiva: brutoOrigen / amountNum,
-              bruto: redondear(brutoOrigen, contraparte, decimales),
-              comisionPct: pct,
-              comision: redondear(comisionOrigen, contraparte, decimales),
-              total: redondear(brutoOrigen + comisionOrigen, contraparte, decimales),
-              monedaOrigen: contraparte,
-              monedaDestino: divisa,
-            })
-          } else {
-            const pyg = amountNum * tDiv.compra
-            const brutoDest = pyg / tContra.venta
-            const comisionDest = (brutoDest * pct) / 100
-            setResumen({
-              tasaEfectiva: brutoDest / amountNum,
-              bruto: redondear(brutoDest, contraparte, decimales),
-              comisionPct: pct,
-              comision: redondear(comisionDest, contraparte, decimales),
-              total: redondear(brutoDest - comisionDest, contraparte, decimales),
-              monedaOrigen: divisa,
-              monedaDestino: contraparte,
-            })
-          }
-        }
+        const s = await simular({
+          moneda: divisa,
+          monto: amountNum,
+          operacion: mode === 'buy' ? 'compra' : 'venta',
+          clienteId: currentClient?.id ?? 0,
+          monedaContraparte: contraparte,
+        })
+        if (!vivo) return
+        setResumen({
+          tasaEfectiva: s.tasa_aplicada,
+          total: s.monto_total,
+          totalTipo: s.total_tipo,
+          monedaOrigen: mode === 'buy' ? contraparte : divisa,
+          monedaDestino: mode === 'buy' ? divisa : contraparte,
+        })
       } catch (err) {
         if (!vivo) return
         setResumen(null)
-        setSimError(err instanceof Error ? err.message : 'No se pudo calcular la tasa.')
+        setSimError(err instanceof Error ? err.message : 'No se pudo calcular el precio final.')
       } finally {
         if (vivo) setSimulando(false)
       }
     }
     const timer = setTimeout(correr, 350)
     return () => { vivo = false; clearTimeout(timer) }
-  }, [amountNum, divisa, contraparte, mode, tasasUtiles, comisiones, clienteCategoria, decimales])
+  }, [amountNum, divisa, contraparte, mode, tasasUtiles, currentClient?.id])
+
 
   // Cuenta regresiva de la tasa garantizada (solo visual: el backend decide).
   useEffect(() => {
@@ -319,9 +257,11 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
   const codigoOrigen = mode === 'buy' ? contraparte : divisa
   const codigoDestino = mode === 'buy' ? divisa : contraparte
   // PI-66c: pagar con cuenta o billetera; acreditar solo en billetera.
-  const opcionesOrigenCuenta = cuentasCli.filter(
-    c => c.status === 'Activa' && c.currency === codigoOrigen,
-  )
+  // La cuenta bancaria es externa y no tiene saldo en el sistema, por eso
+  // solo puede ser origen de una compra: en la venta se debita la billetera.
+  const opcionesOrigenCuenta = mode === 'buy'
+    ? cuentasCli.filter(c => c.status === 'Activa' && c.currency === codigoOrigen)
+    : []
   const opcionesOrigenBilletera = billeteras.filter(b => b.moneda_codigo === codigoOrigen)
   const opcionesDestino = billeteras.filter(b => b.moneda_codigo === codigoDestino)
 
@@ -483,7 +423,6 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
               ['Origen', `${operacion.monto_enviado.toLocaleString()} ${operacion.moneda_origen_codigo}`],
               ['Destino (neto)', `${operacion.monto_recibido.toLocaleString()} ${operacion.moneda_destino_codigo}`],
               ['Tipo efectivo', `${Number(operacion.cotizacion_aplicada).toLocaleString()}`],
-              [`Comisión (${operacion.porcentaje_comision_aplicado}%)`, `${operacion.monto_comision.toLocaleString()} ${operacion.moneda_destino_codigo}`],
               ['Fecha', fecha],
               ['Cliente', operacion.cliente_nombre || nombreCliente],
             ].map(([label, value]) => (
@@ -603,7 +542,6 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
               ['Envías', formatoMonto(op.monto_enviado, op.moneda_origen_codigo, decimales)],
               ['Recibís', formatoMonto(op.monto_recibido, op.moneda_destino_codigo, decimales)],
               ['Tipo efectivo', `${op.cotizacion_aplicada.toLocaleString('es-PY')} ${op.moneda_origen_codigo}/${op.moneda_destino_codigo}`],
-              [`Comisión (${op.porcentaje_comision_aplicado}%)`, formatoMonto(op.monto_comision, op.moneda_destino_codigo, decimales)],
             ].map(([label, value]) => (
               <div key={label as string} className="flex justify-between py-2 border-b border-slate-50 last:border-0">
                 <span className="text-[13px] text-slate-500">{label}</span>
@@ -809,7 +747,7 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
           )}
 
           {simulando && amountNum > 0 && (
-            <p className="text-slate-400 text-[13px]">Calculando tasa vigente con comisión…</p>
+            <p className="text-slate-400 text-[13px]">Calculando precio final…</p>
           )}
           {simError && <p role="alert" className="text-red-600 text-[13px] font-medium">{simError}</p>}
 
@@ -817,9 +755,7 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
             <div className="rounded-xl border border-slate-100 bg-slate-50 p-4 space-y-2.5 animate-fadein">
               <h4 className="font-semibold text-slate-700 text-[13px] mb-3">Resumen de la operación</h4>
               {[
-                ['Tipo efectivo', `${resumen.tasaEfectiva.toLocaleString()} ${resumen.monedaOrigen}/${resumen.monedaDestino}`],
-                ['Subtotal', `${resumen.bruto.toLocaleString()}`],
-                [`Comisión (${resumen.comisionPct}%)`, `${resumen.comision.toLocaleString()}`],
+                ['Tasa final', `${resumen.tasaEfectiva.toLocaleString()} ${resumen.monedaOrigen}/${resumen.monedaDestino}`],
               ].map(([label, value]) => (
                 <div key={label as string} className="flex justify-between">
                   <span className="text-[12px] text-slate-400">{label}</span>
@@ -827,8 +763,8 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
                 </div>
               ))}
               <div className="border-t border-slate-200 pt-2.5 flex justify-between">
-                <span className="text-[13px] font-bold text-slate-700">Total a {mode === 'buy' ? 'pagar' : 'recibir'}</span>
-                <span className="font-mono font-extrabold text-emerald-600 text-[15px]">{resumen.total.toLocaleString()} {mode === 'buy' ? resumen.monedaOrigen : resumen.monedaDestino}</span>
+                <span className="text-[13px] font-bold text-slate-700">Total a {resumen.totalTipo === 'pagar' ? 'pagar' : 'recibir'}</span>
+                <span className="font-mono font-extrabold text-emerald-600 text-[15px]">{resumen.total.toLocaleString()} {resumen.totalTipo === 'pagar' ? resumen.monedaOrigen : resumen.monedaDestino}</span>
               </div>
             </div>
           )}

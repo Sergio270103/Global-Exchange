@@ -5,7 +5,7 @@
   (para Transactions.tsx).
 - ``POST /api/operaciones/`` inicia una compra/venta (estado PENDIENTE)
   con validaciones: cliente activo + asociación Keycloak, monedas activas,
-  última cotización vigente y comisión por categoría. Congela las tasas.
+  última cotización vigente y ajuste interno por categoría. Congela las tasas.
 - ``POST /api/operaciones/{id}/confirmar/`` confirma el pago (RF27, PI-64)
   y pasa la operación a PAGADA:
     * dentro de la ventana de tolerancia -> confirma con la tasa congelada,
@@ -38,7 +38,7 @@ from .models import Operacion
 from .serializers import (
     CancelarOperacionSerializer,
     CrearOperacionSerializer,
-    OperacionSerializer,
+    OperacionPublicSerializer,
     tolerancia_segundos,
 )
 
@@ -84,7 +84,7 @@ def _cliente_operable(cliente: Cliente, sub: str) -> bool:
     return bool(cliente.activo and asociado)
 
 
-def _porcentaje_comision(cliente: Cliente) -> Decimal:
+def _porcentaje_ajuste(cliente: Cliente) -> Decimal:
     try:
         return Decimal(str(Comision.objects.get(categoria=cliente.categoria).porcentaje))
     except Comision.DoesNotExist:
@@ -213,7 +213,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
     queryset = Operacion.objects.select_related(
         'cliente', 'moneda_origen', 'moneda_destino',
     ).all()
-    serializer_class = OperacionSerializer
+    serializer_class = OperacionPublicSerializer
     permission_classes = [IsAuthenticated]
     http_method_names = ['get', 'post', 'head', 'options']
 
@@ -270,7 +270,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
 
         try:
             cotizacion = _cotizar(
-                tipo, codigo_div, codigo_contra, monto_div, _porcentaje_comision(cliente),
+                tipo, codigo_div, codigo_contra, monto_div, _porcentaje_ajuste(cliente),
             )
         except ErrorCotizacion as err:
             return Response({'detail': str(err)}, status=status.HTTP_400_BAD_REQUEST)
@@ -296,6 +296,13 @@ class OperacionViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST)
         cuenta_origen = None
         if datos.get('cuenta_origen') is not None:
+            # La cuenta bancaria es el origen de la transferencia en la compra.
+            # No tiene saldo en el sistema (cuenta externa), así que no puede
+            # ser origen de una venta: esa se debita de la billetera.
+            if tipo != 'COMPRA':
+                return Response(
+                    {'detail': 'La cuenta bancaria solo puede usarse en una compra.'},
+                    status=status.HTTP_400_BAD_REQUEST)
             try:
                 cuenta_origen = CuentaBancaria.objects.get(pk=datos['cuenta_origen'])
             except (CuentaBancaria.DoesNotExist, ValueError, TypeError):
@@ -346,7 +353,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
             fecha_cotizacion=timezone.now(),
             **cotizacion,
         )
-        return Response(OperacionSerializer(op).data, status=status.HTTP_201_CREATED)
+        return Response(OperacionPublicSerializer(op).data, status=status.HTTP_201_CREATED)
 
     # ------------------------------------------------------------------
     # Confirmar (PI-64)
@@ -381,7 +388,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
             try:
                 nueva = _cotizar(
                     op.tipo_operacion, codigo_div, codigo_contra, monto_div,
-                    _porcentaje_comision(op.cliente),
+                    _porcentaje_ajuste(op.cliente),
                 )
             except ErrorCotizacion as err:
                 return Response({'detail': str(err)}, status=status.HTTP_400_BAD_REQUEST)
@@ -390,7 +397,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
                 return self._marcar_confirmada(op)
 
             # 3) La tasa cambió: se re-cotiza y se abre una nueva ventana.
-            anterior = OperacionSerializer(op).data
+            anterior = OperacionPublicSerializer(op).data
             for campo, valor in nueva.items():
                 setattr(op, campo, valor)
             op.fecha_cotizacion = timezone.now()
@@ -399,7 +406,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
                 'resultado': RESULTADO_COTIZACION_CAMBIADA,
                 'detail': 'La cotización cambió. Revisá la nueva antes de continuar.',
                 'anterior': anterior,
-                'operacion': OperacionSerializer(op).data,
+                'operacion': OperacionPublicSerializer(op).data,
             })
 
     def _marcar_confirmada(self, op: Operacion) -> Response:
@@ -439,7 +446,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
             )
         return Response({
             'resultado': RESULTADO_CONFIRMADA,
-            'operacion': OperacionSerializer(op).data,
+            'operacion': OperacionPublicSerializer(op).data,
         })
 
     # ------------------------------------------------------------------
@@ -466,7 +473,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
                 return Response({'detail': ERROR_CLIENTE}, status=status.HTTP_400_BAD_REQUEST)
             if op.estado == Operacion.ESTADO_CANCELADA:
                 # Idempotente: un doble clic no debe dar error.
-                return Response(OperacionSerializer(op).data)
+                return Response(OperacionPublicSerializer(op).data)
             if op.estado != Operacion.ESTADO_PENDIENTE:
                 return Response(
                     {'detail': 'Solo se pueden cancelar operaciones pendientes.'},
@@ -482,4 +489,4 @@ class OperacionViewSet(viewsets.ModelViewSet):
                 'estado', 'fecha_cancelacion', 'cancelada_por',
                 'cancelada_por_nombre', 'motivo_cancelacion',
             ])
-        return Response(OperacionSerializer(op).data)
+        return Response(OperacionPublicSerializer(op).data)

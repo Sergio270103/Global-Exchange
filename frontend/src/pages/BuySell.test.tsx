@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import BuySell from '@/pages/BuySell'
 
 const vigentes = ['USD', 'EUR', 'GBP', 'BRL'].map((code, i) => ({
@@ -47,7 +48,6 @@ function mockFetch() {
     if (u.includes('/metodos-pago/')) {
       return respuesta([{ id: 1, codigo: 'transfer', nombre: 'Transferencia', activo: true }])
     }
-    if (u.includes('/comisiones/')) return respuesta({})
     if (u.includes('/asociaciones/')) {
       return respuesta([{ id: 1, cliente: 1, cliente_nombre: 'Carlos Martínez' }])
     }
@@ -63,6 +63,8 @@ function mockFetch() {
     if (u.includes('/cuentas-bancarias/')) {
       return respuesta([
         { id: 5, cliente: 1, banco: 'Continental', numero_enmascarado: '•••• 4521', codigo_bancario: 'B', nombre: 'C', apellido: 'M', cedula: '1', moneda: 1, moneda_codigo: 'PYG', activa: true },
+        // Cuenta en USD: en venta es el origen, pero no debe ofrecerse.
+        { id: 6, cliente: 1, banco: 'Itaú', numero_enmascarado: '•••• 7788', codigo_bancario: 'C', nombre: 'C', apellido: 'M', cedula: '1', moneda: 2, moneda_codigo: 'USD', activa: true },
       ])
     }
     if (u.includes('/medios-acreditacion/')) {
@@ -116,5 +118,19 @@ describe('BuySell PI-71 (selects según monedas activas)', () => {
     const origen = screen.getByLabelText(/Pagar con/) as HTMLSelectElement
     expect(within(origen).getByRole('option', { name: /Continental/ })).toBeInTheDocument()
     expect(within(origen).getByRole('option', { name: /Billetera PYG/ })).toBeInTheDocument()
+  })
+
+  it('la cuenta bancaria no se ofrece como origen en la venta', async () => {
+    const user = userEvent.setup()
+    render(<BuySell auth={auth} currentClient={{ id: 1, nombre: 'Carlos Martínez' }} />)
+    await screen.findByRole('heading', { name: 'Comprar divisas' })
+    // En compra la cuenta en USD tampoco aplica: el origen es PYG.
+    await user.click(screen.getByRole('button', { name: /Vender divisas/ }))
+    await screen.findByRole('heading', { name: 'Vender divisas' })
+    const origen = screen.getByLabelText(/Pagar con/) as HTMLSelectElement
+    // La venta se debita de la billetera, nunca de una cuenta externa.
+    expect(within(origen).getByRole('option', { name: /Billetera USD/ })).toBeInTheDocument()
+    expect(within(origen).queryByRole('option', { name: /Itaú/ })).not.toBeInTheDocument()
+    expect(within(origen).queryByRole('option', { name: /Continental/ })).not.toBeInTheDocument()
   })
 })
