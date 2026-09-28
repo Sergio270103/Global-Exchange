@@ -2,15 +2,17 @@
  * Dashboard principal del usuario autenticado.
  *
  * Muestra el resumen de la billetera, las tasas de cambio vigentes, las
- * últimas transacciones y el desempeño de ganancias del período. Para el
+ * últimas transacciones (datos reales, ver {@link OperacionesRecientes}) y
+ * el desempeño de ganancias del período. Para el
  * rol `cashier` se delega en el {@link CashierDashboard}.
  *
  * @module Dashboard
  */
 import { type AuthUser, type Page, type ClienteActivo } from '@/types'
-import { wallets, transactions, exchangeRates, earningsData } from '@/data/mockData'
+import { wallets, exchangeRates, earningsData } from '@/data/mockData'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import CashierDashboard from './cashier/CashierDashboard'
+import OperacionesRecientes from '@/components/OperacionesRecientes'
 
 export interface DashboardProps {
   auth: AuthUser
@@ -19,12 +21,6 @@ export interface DashboardProps {
 }
 
 const portfolioData = earningsData.monthly.map(m => ({ month: m.month, value: m.total * 280 }))
-
-const statusColor: Record<string, string> = {
-  Completada: 'bg-emerald-50 text-emerald-700',
-  Pendiente: 'bg-amber-50 text-amber-700',
-  Cancelada: 'bg-red-50 text-red-600',
-}
 
 export default function Dashboard({ auth, currentClient, navigate }: DashboardProps) {
   if (auth.role === 'cashier') {
@@ -173,32 +169,8 @@ export default function Dashboard({ auth, currentClient, navigate }: DashboardPr
           </div>
         </div>
 
-        {/* Recent transactions */}
-        <div className="lg:col-span-3 bg-white rounded-xl border border-slate-100 shadow-sm p-6">
-          <div className="flex items-center justify-between mb-5">
-            <h3 className="font-semibold text-slate-800 text-[15px]" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Operaciones recientes</h3>
-            <button onClick={() => navigate('transactions')} className="text-[12px] text-emerald-600 font-semibold hover:text-emerald-700">Ver todo →</button>
-          </div>
-          <div className="space-y-3">
-            {transactions.slice(0, 5).map(trx => (
-              <div key={trx.id} className="flex items-center gap-3 py-2 border-b border-slate-50 last:border-0">
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm shrink-0 ${trx.type === 'Compra' ? 'bg-emerald-50 text-emerald-600' : 'bg-blue-50 text-blue-600'}`}>
-                  {trx.type === 'Compra' ? '↑' : '↓'}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="text-[13px] font-semibold text-slate-800">{trx.type} {trx.currency}</div>
-                  <div className="text-[11px] text-slate-400">{trx.id} · {trx.date}</div>
-                </div>
-                <div className="text-right shrink-0">
-                  <div className="font-mono font-semibold text-slate-800 text-[13px]">{trx.amount.toLocaleString()} {trx.currency}</div>
-                  <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${statusColor[trx.status] || 'bg-slate-100 text-slate-500'}`}>
-                    {trx.status}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+        {/* Recent transactions: datos reales (PI-65) */}
+        <OperacionesRecientes auth={auth} currentClient={currentClient} navigate={navigate} />
       </div>
 
       {/* Featured rates */}

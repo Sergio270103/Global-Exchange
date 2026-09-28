@@ -24,6 +24,8 @@ export interface Operacion {
   cliente: number
   cliente_nombre: string
   usuario_keycloak_id: string
+  /** Usuario (funcionario del cliente) que realizó la operación. */
+  usuario_nombre: string
   tipo_operacion: 'COMPRA' | 'VENTA'
   moneda_origen: number
   moneda_origen_codigo: string
@@ -154,6 +156,7 @@ function mapear(o: Record<string, unknown>): Operacion {
     cliente: numero(o.cliente),
     cliente_nombre: String(o.cliente_nombre ?? ''),
     usuario_keycloak_id: String(o.usuario_keycloak_id ?? ''),
+    usuario_nombre: String(o.usuario_nombre ?? ''),
     tipo_operacion: String(o.tipo_operacion) === 'COMPRA' ? 'COMPRA' : 'VENTA',
     moneda_origen: numero(o.moneda_origen),
     moneda_origen_codigo: String(o.moneda_origen_codigo ?? ''),
@@ -188,12 +191,20 @@ function mapear(o: Record<string, unknown>): Operacion {
 
 /**
  * Historial de operaciones del usuario/cliente.
+ *
+ * El backend ya restringe el resultado a los clientes del usuario; los
+ * filtros de RF35 (fecha, tipo, moneda, estado) también se aplican allá.
  */
 export async function listarOperaciones(params: {
   mine?: boolean
   clienteId?: number
   tipo?: string
   estado?: EstadoOperacion
+  moneda?: string
+  /** Fecha inicial inclusive, `AAAA-MM-DD`. */
+  desde?: string
+  /** Fecha final inclusive, `AAAA-MM-DD`. */
+  hasta?: string
   buscar?: string
 } = {}): Promise<Operacion[]> {
   const qs = new URLSearchParams()
@@ -201,6 +212,9 @@ export async function listarOperaciones(params: {
   if (params.clienteId) qs.set('cliente', String(params.clienteId))
   if (params.tipo) qs.set('tipo', params.tipo)
   if (params.estado) qs.set('estado', params.estado)
+  if (params.moneda) qs.set('moneda', params.moneda)
+  if (params.desde) qs.set('desde', params.desde)
+  if (params.hasta) qs.set('hasta', params.hasta)
   if (params.buscar) qs.set('buscar', params.buscar)
   const sufijo = qs.toString() ? `?${qs}` : ''
   const datos = await apiFetch<Record<string, unknown>[]>(`/operaciones/${sufijo}`)
