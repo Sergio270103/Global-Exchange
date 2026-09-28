@@ -3,14 +3,25 @@
  *
  * @module Dashboard.test
  */
-import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { afterEach, describe, it, expect, vi } from 'vitest'
+import { cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+
+// PI-65: "Operaciones recientes" usa datos reales; en el test se simula la API.
+vi.mock('@/services/historial', async importOriginal => {
+  const real = await importOriginal<typeof import('@/services/historial')>()
+  return { ...real, listarHistorial: vi.fn().mockResolvedValue([]) }
+})
+
 import Dashboard from '@/pages/Dashboard'
 
 const auth = { name: 'Ana López', email: 'ana@email.com', role: 'user' as const, avatar: '' }
 
 describe('Dashboard (mock local)', () => {
+  afterEach(() => {
+    cleanup()
+  })
+
   function renderDash() {
     const navigate = vi.fn()
     render(<Dashboard auth={auth} currentClient={{ id: 1, nombre: 'Carlos' }} navigate={navigate} />)
@@ -33,5 +44,7 @@ describe('Dashboard (mock local)', () => {
     expect(navigate).toHaveBeenCalledWith('buy')
     await user.click(screen.getAllByText('Ver todo →')[0])
     expect(navigate).toHaveBeenCalledWith('wallets')
+    await user.click(screen.getAllByText('Ver todo →')[1])
+    expect(navigate).toHaveBeenCalledWith('transactions')
   })
 })

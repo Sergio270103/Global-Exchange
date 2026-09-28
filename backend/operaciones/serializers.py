@@ -1,9 +1,10 @@
-
 """Serializers del módulo de operaciones."""
 
 from django.conf import settings
 from django.utils import timezone
 from rest_framework import serializers
+
+from clientes.models import ClienteUsuario
 
 from .models import Operacion
 
@@ -25,11 +26,13 @@ class OperacionSerializer(serializers.ModelSerializer):
     billetera_origen_detalle = serializers.SerializerMethodField()
     tolerancia_segundos = serializers.SerializerMethodField()
     segundos_restantes = serializers.SerializerMethodField()
+    usuario_nombre = serializers.SerializerMethodField()
+    cancelada_por_nombre = serializers.SerializerMethodField()
 
     class Meta:
         model = Operacion
         fields = [
-            'id', 'cliente', 'cliente_nombre', 'usuario_keycloak_id',
+            'id', 'cliente', 'cliente_nombre', 'usuario_keycloak_id', 'usuario_nombre',
             'tipo_operacion', 'moneda_origen', 'moneda_origen_codigo',
             'moneda_destino', 'moneda_destino_codigo',
             'monto_enviado', 'monto_recibido', 'cotizacion_aplicada',
@@ -45,6 +48,36 @@ class OperacionSerializer(serializers.ModelSerializer):
             'tolerancia_segundos', 'segundos_restantes',
         ]
         read_only_fields = fields
+
+    def get_usuario_nombre(self, obj: Operacion) -> str:
+        """Usuario (funcionario del cliente) que realizó la operación (PI-65).
+
+        Sale de la asociación ``ClienteUsuario``. En el listado viene
+        anotado desde la vista para no hacer una consulta por fila.
+        """
+        anotado = getattr(obj, 'usuario_nombre_anotado', None)
+        if anotado is not None:
+            return anotado
+        nombre = ClienteUsuario.objects.filter(
+            cliente_id=obj.cliente_id, keycloak_id=obj.usuario_keycloak_id,
+        ).values_list('username', flat=True).first()
+        return nombre or ''
+
+    def get_cancelada_por_nombre(self, obj: Operacion) -> str:
+        """Nombre de quien canceló, igual que ``usuario_nombre`` (PI-65).
+
+        Se busca en ``ClienteUsuario``; si ya no está asociado, se usa el
+        usuario guardado al cancelar.
+        """
+        anotado = getattr(obj, 'cancelada_por_nombre_anotado', None)
+        if anotado is not None:
+            return anotado
+        if not obj.cancelada_por:
+            return obj.cancelada_por_nombre
+        nombre = ClienteUsuario.objects.filter(
+            cliente_id=obj.cliente_id, keycloak_id=obj.cancelada_por,
+        ).values_list('username', flat=True).first()
+        return nombre or obj.cancelada_por_nombre
 
     def get_tolerancia_segundos(self, obj: Operacion) -> int:
         return tolerancia_segundos()

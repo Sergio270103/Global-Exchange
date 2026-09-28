@@ -1,8 +1,12 @@
 """Vistas del módulo de operaciones (Hito Operaciones).
 
-- ``GET /api/operaciones/`` historial con filtros ``?cliente=`` ``?mine=1``
-  ``?tipo=COMPRA|VENTA`` ``?estado=PENDIENTE|PAGADA|CANCELADA|ANULADA``
-  (para Transactions.tsx).
+- ``GET /api/operaciones/`` historial (PI-65, RF34/RF35), solo consulta.
+  Un usuario ve **únicamente** las operaciones de los clientes a los que
+  está asociado; la restricción se aplica acá, no en el frontend. El
+  administrador ve todas, salvo que pida ``?mine=1``.
+  Filtros: ``?desde=AAAA-MM-DD`` ``?hasta=AAAA-MM-DD`` ``?tipo=COMPRA|VENTA``
+  ``?moneda=USD`` ``?estado=PENDIENTE|PAGADA|CANCELADA|ANULADA``
+  ``?cliente=<id>`` ``?buscar=``.
 - ``POST /api/operaciones/`` inicia una compra/venta (estado PENDIENTE)
   con validaciones: cliente activo + asociación Keycloak, monedas activas,
   última cotización vigente y ajuste interno por categoría. Congela las tasas.
@@ -21,7 +25,9 @@
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import CharField, F, OuterRef, Q, Subquery, Value
+from django.db.models.functions import Coalesce
+from django.utils.dateparse import parse_date
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -32,6 +38,7 @@ from billeteras.models import Billetera, Movimiento
 from clientes.models import Cliente, ClienteUsuario, Comision
 from cotizaciones.models import Cotizacion
 from monedas.models import Moneda
+from monedas.permisos import es_admin
 from pagos.models import CuentaBancaria
 
 from .models import Operacion
@@ -76,6 +83,23 @@ def _sub(request) -> str:
 
 def _nombre_usuario(request) -> str:
     return (getattr(request.user, 'username', '') or str(request.user))[:160]
+
+
+def _es_personal_autorizado(usuario) -> bool:
+    """¿Puede ver el historial de TODOS los clientes? Solo el administrador.
+
+    El cajero y el analista no: sus tareas (arqueo de caja, tasas) no
+    requieren ver las operaciones de todos los clientes.
+    """
+    if usuario is None or not getattr(usuario, 'is_authenticated', False):
+        return False
+    return bool(getattr(usuario, 'is_superuser', False) or es_admin(usuario))
+
+
+def _clientes_del_usuario(request):
+    return ClienteUsuario.objects.filter(
+        keycloak_id=_sub(request),
+    ).values_list('cliente_id', flat=True)
 
 
 def _cliente_operable(cliente: Cliente, sub: str) -> bool:
@@ -219,23 +243,58 @@ class OperacionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         qs = super().get_queryset()
-        if self.request.query_params.get('mine') in ('1', 'true', 'si', 'sí'):
-            sub = _sub(self.request)
-            clientes_ids = ClienteUsuario.objects.filter(
-                keycloak_id=sub,
-            ).values_list('cliente_id', flat=True)
-            qs = qs.filter(cliente_id__in=clientes_ids)
-        else:
-            cliente = self.request.query_params.get('cliente')
-            if cliente:
-                qs = qs.filter(cliente_id=cliente)
-        tipo = self.request.query_params.get('tipo')
+        params = self.request.query_params
+
+        # Nombres de quien realizó y de quien canceló cada operación, con el
+        # mismo origen (ClienteUsuario) y sin una consulta por fila.
+        def nombre_asociado(campo_sub):
+            return Subquery(
+                ClienteUsuario.objects.filter(
+                    cliente_id=OuterRef('cliente_id'),
+                    keycloak_id=OuterRef(campo_sub),
+                ).values('username')[:1],
+            )
+
+        qs = qs.annotate(
+            usuario_nombre_anotado=Coalesce(
+                nombre_asociado('usuario_keycloak_id'), Value(''),
+                output_field=CharField(),
+            ),
+            cancelada_por_nombre_anotado=Coalesce(
+                nombre_asociado('cancelada_por'), F('cancelada_por_nombre'),
+                output_field=CharField(),
+            ),
+        )
+
+        # Seguridad (PI-65): un usuario ve solo lo de sus clientes asociados,
+        # aunque llame a la API sin ?mine=1. Aplica también al detalle
+        # GET /operaciones/{id}/ (una operación ajena da 404).
+        solo_propias = params.get('mine') in ('1', 'true', 'si', 'sí')
+        if solo_propias or not _es_personal_autorizado(self.request.user):
+            qs = qs.filter(cliente_id__in=_clientes_del_usuario(self.request))
+
+        cliente = params.get('cliente')
+        if cliente:
+            qs = qs.filter(cliente_id=cliente)
+
+        # RF35: fecha, tipo de operación, moneda y estado.
+        desde = parse_date(params.get('desde') or '')
+        if desde:
+            qs = qs.filter(fecha_creacion__date__gte=desde)
+        hasta = parse_date(params.get('hasta') or '')
+        if hasta:
+            qs = qs.filter(fecha_creacion__date__lte=hasta)
+        tipo = params.get('tipo')
         if tipo:
             qs = qs.filter(tipo_operacion=tipo.strip().upper())
-        estado = self.request.query_params.get('estado')
+        moneda = params.get('moneda')
+        if moneda:
+            codigo = moneda.strip().upper()
+            qs = qs.filter(Q(moneda_origen__codigo=codigo) | Q(moneda_destino__codigo=codigo))
+        estado = params.get('estado')
         if estado:
             qs = qs.filter(estado=estado.strip().upper())
-        buscar = self.request.query_params.get('buscar')
+        buscar = params.get('buscar')
         if buscar:
             qs = qs.filter(
                 Q(moneda_origen__codigo__icontains=buscar)

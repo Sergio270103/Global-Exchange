@@ -38,10 +38,12 @@ class UsuarioFalso:
     is_authenticated = True
     is_anonymous = False
 
-    def __init__(self, sub: str, username: str):
+    def __init__(self, sub: str, username: str, roles=None, is_superuser: bool = False):
         self.id = sub
         self.pk = sub
         self.username = username
+        self.roles = list(roles or [])
+        self.is_superuser = is_superuser
 
     def __str__(self) -> str:
         return self.username
@@ -57,6 +59,7 @@ def crear_moneda(codigo: str, nombre: str) -> Moneda:
         codigo=codigo, defaults={'nombre': nombre, 'activo': True},
     )
     return moneda
+
 
 def crear_cotizacion(moneda: Moneda, compra: str, venta: str) -> Cotizacion:
     """Crea una tasa y la deja como la más reciente de forma determinista."""
