@@ -23,6 +23,25 @@ describe('CashierDashboard (mock local)', () => {
     expect(screen.getByText('📋 Historial de Comprobantes & API DNIT')).toBeInTheDocument()
   })
 
+  it('permite seleccionar divisa origen y destino', async () => {
+    const user = userEvent.setup()
+    renderCajero()
+
+    const origen = screen.getByLabelText('Divisa origen')
+    const destino = screen.getByLabelText('Divisa destino')
+
+    expect(origen).toHaveValue('PYG')
+    expect(destino).toHaveValue('USD')
+    expect(within(origen).getByRole('option', { name: /EUR/ })).toBeInTheDocument()
+    expect(within(destino).getByRole('option', { name: /GBP/ })).toBeInTheDocument()
+
+    await user.selectOptions(origen, 'EUR')
+    await user.selectOptions(destino, 'GBP')
+
+    expect(origen).toHaveValue('EUR')
+    expect(destino).toHaveValue('GBP')
+  })
+
   it('avisa cuando el documento no existe', async () => {
     const user = userEvent.setup()
     renderCajero()

@@ -9,6 +9,7 @@
  */
 import React, { useState } from 'react'
 import { type AuthUser, type Page, type ClienteActivo } from '../../types'
+import { currencies } from '@/data/mockData'
 
 export interface Props {
   auth: AuthUser
@@ -22,6 +23,22 @@ interface Client {
   document: string
   email: string
   phone: string
+}
+
+type DivisaCodigo = (typeof currencies)[number]['code']
+
+/** Tasas de referencia para mostrar el equivalente en guaraníes. */
+const tasasPyg: Record<DivisaCodigo, number> = {
+  PYG: 1,
+  USD: 7350,
+  EUR: 8250,
+  BRL: 1380,
+  ARS: 5.2,
+  GBP: 9520,
+}
+
+function tasaEnPyg(codigo: DivisaCodigo): number {
+  return tasasPyg[codigo] ?? 1
 }
 
 export default function CashierDashboard({ auth, currentClient }: Props) {
@@ -43,10 +60,23 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
   const [newClient, setNewClient] = useState({ name: '', document: '', email: '', phone: '' })
 
   const [operationType, setOperationType] = useState<'buy' | 'sell'>('buy')
-  const [currency, setCurrency] = useState('USD')
+  const [originCurrency, setOriginCurrency] = useState<DivisaCodigo>('PYG')
+  const [destinationCurrency, setDestinationCurrency] = useState<DivisaCodigo>('USD')
   const [amount, setAmount] = useState<number | ''>('')
   const [docType, setDocType] = useState<'Factura' | 'Nota de Crédito'>('Factura')
-  const exchangeRate = 7350
+
+  const handleOperationTypeChange = (value: 'buy' | 'sell') => {
+    setOperationType(value)
+    if (value === 'buy') {
+      setOriginCurrency('PYG')
+      setDestinationCurrency((previous) => (previous === 'PYG' ? 'USD' : previous))
+    } else {
+      setOriginCurrency((previous) => (previous === 'PYG' ? 'USD' : previous))
+      setDestinationCurrency('PYG')
+    }
+  }
+
+  const totalPyg = Number(amount || 0) * tasaEnPyg(originCurrency)
 
   const [invoices, setInvoices] = useState([
     {
@@ -87,18 +117,22 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
       alert('Seleccione un cliente antes de procesar.')
       return
     }
+    if (originCurrency === destinationCurrency) {
+      alert('La divisa origen y la divisa destino deben ser distintas.')
+      return
+    }
     if (!amount || amount <= 0) {
       alert('Ingrese un monto válido.')
       return
     }
 
-    const totalPyg = (Number(amount) * exchangeRate).toLocaleString('es-PY') + ' ₲'
+    const totalPyg = (Number(amount) * tasaEnPyg(originCurrency)).toLocaleString('es-PY') + ' ₲'
     const newInv = {
       id: `INV-00${invoices.length + 1}`,
       client: selectedClient.name,
       doc: selectedClient.document,
       type: docType,
-      amount: `${currency === 'USD' ? '$' : '€'} ${amount}`,
+      amount: `${amount} ${originCurrency} → ${destinationCurrency}`,
       totalPyg,
       dnitStatus: 'Enviado API',
       emailStatus: 'Enviado',
@@ -171,26 +205,63 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
 
           <div className="grid md:grid-cols-2 gap-4">
             <div>
-              <label className="text-xs font-semibold text-slate-500">Tipo Operación</label>
-              <select value={operationType} onChange={(e) => setOperationType(e.target.value as any)} className="w-full mt-1 p-2 border rounded-lg text-sm">
+              <label htmlFor="divisa-origen" className="text-xs font-semibold text-slate-500">Divisa origen</label>
+              <select
+                id="divisa-origen"
+                value={originCurrency}
+                onChange={(e) => setOriginCurrency(e.target.value as DivisaCodigo)}
+                className="w-full mt-1 p-2 border rounded-lg text-sm"
+              >
+                {currencies
+                  .filter((currency) => currency.active && currency.code !== destinationCurrency)
+                  .map((currency) => (
+                    <option key={currency.code} value={currency.code}>
+                      {currency.code} - {currency.name}
+                    </option>
+                  ))}
+              </select>
+            </div>
+
+            <div>
+              <label htmlFor="divisa-destino" className="text-xs font-semibold text-slate-500">Divisa destino</label>
+              <select
+                id="divisa-destino"
+                value={destinationCurrency}
+                onChange={(e) => setDestinationCurrency(e.target.value as DivisaCodigo)}
+                className="w-full mt-1 p-2 border rounded-lg text-sm"
+              >
+                {currencies
+                  .filter((currency) => currency.active && currency.code !== originCurrency)
+                  .map((currency) => (
+                    <option key={currency.code} value={currency.code}>
+                      {currency.code} - {currency.name}
+                    </option>
+                  ))}
+              </select>
+            </div>
+
+            <div>
+              <label htmlFor="tipo-operacion" className="text-xs font-semibold text-slate-500">Tipo Operación</label>
+              <select
+                id="tipo-operacion"
+                value={operationType}
+                onChange={(e) => handleOperationTypeChange(e.target.value as 'buy' | 'sell')}
+                className="w-full mt-1 p-2 border rounded-lg text-sm"
+              >
                 <option value="buy">Compra de Divisas</option>
                 <option value="sell">Venta de Divisas</option>
               </select>
             </div>
 
             <div>
-              <label className="text-xs font-semibold text-slate-500">Divisa</label>
-              <select value={currency} onChange={(e) => setCurrency(e.target.value)} className="w-full mt-1 p-2 border rounded-lg text-sm">
-                <option value="USD">USD - Dólares</option>
-                <option value="EUR">EUR - Euros</option>
-                <option value="BRL">BRL - Reales</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="text-xs font-semibold text-slate-500">Monto</label>
+              <label htmlFor="monto-operacion" className="text-xs font-semibold text-slate-500">
+                Monto ({originCurrency})
+              </label>
               <input
+                id="monto-operacion"
                 type="number"
+                min="0"
+                step="any"
                 placeholder="100"
                 value={amount}
                 onChange={(e) => setAmount(e.target.value ? Number(e.target.value) : '')}
@@ -198,20 +269,27 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
               />
             </div>
 
-            <div>
-              <label className="text-xs font-semibold text-slate-500">Comprobante Legal</label>
-              <select value={docType} onChange={(e) => setDocType(e.target.value as any)} className="w-full mt-1 p-2 border rounded-lg text-sm font-semibold">
+            <div className="md:col-span-2">
+              <label htmlFor="comprobante-legal" className="text-xs font-semibold text-slate-500">Comprobante Legal</label>
+              <select
+                id="comprobante-legal"
+                value={docType}
+                onChange={(e) => setDocType(e.target.value as 'Factura' | 'Nota de Crédito')}
+                className="w-full mt-1 p-2 border rounded-lg text-sm font-semibold"
+              >
                 <option value="Factura">Factura Electrónica</option>
                 <option value="Nota de Crédito">Nota de Crédito</option>
               </select>
             </div>
           </div>
 
-          {amount && (
+          {amount && originCurrency !== destinationCurrency && (
             <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-right">
-              <span className="text-xs text-slate-500 block">Total equivalente Guaraníes:</span>
+              <span className="text-xs text-slate-500 block">
+                {originCurrency} → {destinationCurrency} · Total equivalente Guaraníes:
+              </span>
               <span className="text-2xl font-bold text-emerald-700">
-                {(Number(amount) * exchangeRate).toLocaleString('es-PY')} ₲
+                {totalPyg.toLocaleString('es-PY')} ₲
               </span>
             </div>
           )}
