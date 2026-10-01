@@ -98,6 +98,22 @@ describe('confirmarOperacion', () => {
     expect(r.operacion.monto_enviado).toBe(770000)
     expect(r.operacion.estado).toBe('PENDIENTE')
   })
+
+  it('devuelve FONDOS_INSUFICIENTES con la operación cancelada (PI-73)', async () => {
+    apiFetchMock.mockResolvedValue({
+      resultado: 'FONDOS_INSUFICIENTES',
+      detail: 'Fondos insuficientes en la billetera origen. La operación fue cancelada.',
+      operacion: operacionApi({ estado: 'CANCELADA', motivo_cancelacion: 'FONDOS_INSUFICIENTES' }),
+    })
+
+    const r = await confirmarOperacion(7)
+
+    expect(r.resultado).toBe('FONDOS_INSUFICIENTES')
+    if (r.resultado !== 'FONDOS_INSUFICIENTES') return
+    expect(r.operacion.estado).toBe('CANCELADA')
+    expect(r.operacion.motivo_cancelacion).toBe('FONDOS_INSUFICIENTES')
+    expect(r.detail).toContain('Fondos insuficientes')
+  })
 })
 
 describe('cancelarOperacion', () => {

@@ -80,6 +80,8 @@ class OperacionTests(TestCase):
         self.assertEqual(res.data['monto_enviado'], '757500.00')
 
     def test_venta_resta_comision(self):
+        # PI-73: la venta se debita de la billetera USD, así que necesita saldo.
+        Billetera.objects.create(cliente=self.cliente, moneda=self.usd, saldo=Decimal('100'))
         vista = OperacionViewSet.as_view({'post': 'create'})
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'VENTA',
@@ -196,11 +198,12 @@ class VinculacionTests(TestCase):
         self.assertIn('compra', str(res.data['detail']).lower())
         self.assertFalse(Operacion.objects.exists())
 
-    def test_sin_vinculacion_tambien_vale(self):
+    def test_sin_vinculacion_usa_billetera_de_moneda_destino(self):
+        # PI-73: sin billetera elegida se usa la del cliente en la moneda destino.
         res = self._crear({})
         self.assertEqual(res.status_code, 201, res.data)
         op = Operacion.objects.get()
-        self.assertIsNone(op.billetera_destino_id)
+        self.assertEqual(op.billetera_destino_id, self.billetera.id)
         self.assertIsNone(op.cuenta_origen_id)
 
 
@@ -269,7 +272,8 @@ class AcreditacionTests(TestCase):
         self.billetera.refresh_from_db()
         self.assertEqual(self.billetera.saldo, Decimal('100'))
 
-    def test_sin_vinculo_no_mueve(self):
+    def test_sin_vinculo_acredita_billetera_por_defecto(self):
+        # PI-73: los fondos se acreditan siempre en la billetera destino.
         from billeteras.models import Movimiento
 
         vista = OperacionViewSet.as_view({'post': 'create'})
@@ -282,8 +286,8 @@ class AcreditacionTests(TestCase):
         op = Operacion.objects.get(pk=res.data['id'])
         self._confirmar(op)
         self.billetera.refresh_from_db()
-        self.assertEqual(self.billetera.saldo, Decimal('0'))
-        self.assertEqual(Movimiento.objects.count(), 0)
+        self.assertEqual(self.billetera.saldo, Decimal('10'))
+        self.assertEqual(Movimiento.objects.count(), 1)
 
     def test_recotizacion_no_mueve(self):
         from datetime import timedelta
@@ -362,28 +366,120 @@ class DebitoTests(TestCase):
         self.assertEqual(
             res.data['operacion']['billetera_origen_detalle'], str(self.billetera_usd))
 
-    def test_sin_saldo_en_alta_400_con_mensaje(self):
+    def test_sin_saldo_en_alta_queda_cancelada(self):
+        """PI-73: sin saldo al iniciar, se registra CANCELADA por fondos."""
         self.billetera_usd.saldo = Decimal('10')
         self.billetera_usd.save(update_fields=['saldo'])
         res = self._crear_venta({'billetera_origen': self.billetera_usd.id})
-        self.assertEqual(res.status_code, 400)
-        self.assertEqual(res.data['detail'], 'No hay saldo suficiente en la billetera origen.')
-        self.assertEqual(Operacion.objects.count(), 0)
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data['estado'], 'CANCELADA')
+        self.assertEqual(res.data['motivo_cancelacion'], 'FONDOS_INSUFICIENTES')
+        self.billetera_usd.refresh_from_db()
+        self.assertEqual(self.billetera_usd.saldo, Decimal('10'))
 
-    def test_sin_saldo_en_confirm_sigue_pendiente(self):
+    def test_sin_saldo_en_confirm_cancela(self):
+        """PI-73: sin fondos al confirmar, queda CANCELADA y no mueve saldos."""
         from billeteras.models import Movimiento
 
         res = self._crear_venta({'billetera_origen': self.billetera_usd.id,
                                  'billetera_destino': self.billetera_pyg.id})
         op = Operacion.objects.get(pk=res.data['id'])
-        # Fondeo retirado entre el alta y la confirmación.
+        # Otra operación gastó el saldo entre el alta y la confirmación.
         self.billetera_usd.saldo = Decimal('0')
         self.billetera_usd.save(update_fields=['saldo'])
         res = self._confirmar(op)
-        self.assertEqual(res.status_code, 400)
-        self.assertEqual(res.data['detail'], 'No hay saldo suficiente en la billetera origen.')
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data['resultado'], 'FONDOS_INSUFICIENTES')
         op.refresh_from_db()
-        self.assertEqual(op.estado, Operacion.ESTADO_PENDIENTE)
+        self.assertEqual(op.estado, Operacion.ESTADO_CANCELADA)
+        self.assertEqual(op.motivo_cancelacion, Operacion.MOTIVO_FONDOS)
+        self.assertIsNotNone(op.fecha_cancelacion)
+        self.billetera_usd.refresh_from_db()
         self.billetera_pyg.refresh_from_db()
+        self.assertEqual(self.billetera_usd.saldo, Decimal('0'))
         self.assertEqual(self.billetera_pyg.saldo, Decimal('0'))
         self.assertEqual(Movimiento.objects.count(), 0)
+
+    def test_venta_sin_destino_acredita_billetera_pyg(self):
+        """PI-73: la venta acredita en la billetera PYG aunque no se elija."""
+        res = self._crear_venta({'billetera_origen': self.billetera_usd.id})
+        self.assertEqual(res.status_code, 201, res.data)
+        op = Operacion.objects.get(pk=res.data['id'])
+        self.assertEqual(op.billetera_destino_id, self.billetera_pyg.id)
+        self.assertEqual(self._confirmar(op).data['resultado'], 'CONFIRMADA')
+        self.billetera_usd.refresh_from_db()
+        self.billetera_pyg.refresh_from_db()
+        self.assertEqual(self.billetera_usd.saldo, Decimal('400'))
+        self.assertEqual(self.billetera_pyg.saldo, Decimal('732600'))
+
+    def test_venta_sin_billetera_elegida_debita_la_de_la_moneda(self):
+        """PI-73: la venta siempre se debita de la billetera de la moneda vendida."""
+        res = self._crear_venta({})
+        self.assertEqual(res.status_code, 201, res.data)
+        op = Operacion.objects.get(pk=res.data['id'])
+        self.assertEqual(op.billetera_origen_id, self.billetera_usd.id)
+        self.assertEqual(self._confirmar(op).data['resultado'], 'CONFIRMADA')
+        self.billetera_usd.refresh_from_db()
+        self.assertEqual(self.billetera_usd.saldo, Decimal('400'))
+
+    def test_venta_sin_billetera_elegida_y_sin_saldo_cancela(self):
+        """PI-73: sin saldo en la billetera de la moneda vendida, se cancela."""
+        self.billetera_usd.saldo = Decimal('0')
+        self.billetera_usd.save(update_fields=['saldo'])
+        res = self._crear_venta({})
+        self.assertEqual(res.status_code, 201, res.data)
+        op = Operacion.objects.get(pk=res.data['id'])
+        self.assertEqual(op.estado, Operacion.ESTADO_CANCELADA)
+        self.assertEqual(op.motivo_cancelacion, Operacion.MOTIVO_FONDOS)
+
+    def _crear_compra(self, extra):
+        vista = OperacionViewSet.as_view({'post': 'create'})
+        base = {'cliente': self.cliente.id, 'tipo_operacion': 'COMPRA',
+                'moneda': 'USD', 'monto_divisa': '100'}
+        req = self.factory.post('/api/operaciones/', {**base, **extra}, format='json')
+        return _auth(vista, req)
+
+    def test_compra_con_billetera_sin_guaranies_cancela(self):
+        """PI-73: comprar pagando con la billetera PYG en cero se cancela."""
+        res = self._crear_compra({'metodo_pago': 'wallet'})
+        self.assertEqual(res.status_code, 201, res.data)
+        op = Operacion.objects.get(pk=res.data['id'])
+        self.assertEqual(op.billetera_origen_id, self.billetera_pyg.id)
+        self.assertEqual(op.estado, Operacion.ESTADO_CANCELADA)
+        self.assertEqual(op.motivo_cancelacion, Operacion.MOTIVO_FONDOS)
+        self.billetera_usd.refresh_from_db()
+        self.assertEqual(self.billetera_usd.saldo, Decimal('500'))
+
+    def test_compra_con_billetera_con_guaranies_debita_y_acredita(self):
+        """PI-73: con saldo PYG, debita guaraníes y acredita los dólares."""
+        self.billetera_pyg.saldo = Decimal('1000000')
+        self.billetera_pyg.save(update_fields=['saldo'])
+        res = self._crear_compra({'metodo_pago': 'wallet'})
+        op = Operacion.objects.get(pk=res.data['id'])
+        self.assertEqual(op.estado, Operacion.ESTADO_PENDIENTE)
+        self.assertEqual(self._confirmar(op).data['resultado'], 'CONFIRMADA')
+        self.billetera_pyg.refresh_from_db()
+        self.billetera_usd.refresh_from_db()
+        self.assertEqual(self.billetera_pyg.saldo, Decimal('1000000') - op.monto_enviado)
+        self.assertEqual(self.billetera_usd.saldo, Decimal('600'))
+
+    def test_compra_por_transferencia_no_toca_billetera_pyg(self):
+        """PI-73: pagando por transferencia no se debita la billetera."""
+        res = self._crear_compra({'metodo_pago': 'transfer'})
+        op = Operacion.objects.get(pk=res.data['id'])
+        self.assertIsNone(op.billetera_origen_id)
+        self.assertEqual(self._confirmar(op).data['resultado'], 'CONFIRMADA')
+        self.billetera_usd.refresh_from_db()
+        self.assertEqual(self.billetera_usd.saldo, Decimal('600'))
+
+    def test_motivo_fondos_no_se_puede_elegir_a_mano(self):
+        """PI-73: FONDOS_INSUFICIENTES solo lo asigna el sistema."""
+        res = self._crear_venta({'billetera_origen': self.billetera_usd.id})
+        op = Operacion.objects.get(pk=res.data['id'])
+        vista = OperacionViewSet.as_view({'post': 'cancelar'})
+        req = self.factory.post(f'/api/operaciones/{op.pk}/cancelar/',
+                                {'motivo': 'FONDOS_INSUFICIENTES'}, format='json')
+        res = _auth(vista, req, pk=op.pk)
+        self.assertEqual(res.status_code, 400)
+        op.refresh_from_db()
+        self.assertEqual(op.estado, Operacion.ESTADO_PENDIENTE)

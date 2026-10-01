@@ -61,12 +61,14 @@ export interface Operacion {
 }
 
 export type EstadoOperacion = 'PENDIENTE' | 'PAGADA' | 'CANCELADA' | 'ANULADA'
-export type MotivoCancelacion = 'COTIZACION_CAMBIADA' | 'DESISTIO'
+export type MotivoCancelacion = 'COTIZACION_CAMBIADA' | 'DESISTIO' | 'FONDOS_INSUFICIENTES'
 
 /** Resultado de `confirmarOperacion()`. */
 export type ResultadoConfirmacion =
   | { resultado: 'CONFIRMADA'; operacion: Operacion }
   | { resultado: 'COTIZACION_CAMBIADA'; operacion: Operacion; anterior: Operacion; detail: string }
+  /** PI-73: sin saldo al confirmar, el backend la deja CANCELADA. */
+  | { resultado: 'FONDOS_INSUFICIENTES'; operacion: Operacion; detail: string }
 
 export type TipoOperacion = 'COMPRA' | 'VENTA'
 
@@ -127,6 +129,9 @@ export async function confirmarOperacion(id: number): Promise<ResultadoConfirmac
       anterior: mapear(r.anterior as Record<string, unknown>),
       detail: String(r.detail ?? ''),
     }
+  }
+  if (r.resultado === 'FONDOS_INSUFICIENTES') {
+    return { resultado: 'FONDOS_INSUFICIENTES', operacion, detail: String(r.detail ?? '') }
   }
   return { resultado: 'CONFIRMADA', operacion }
 }

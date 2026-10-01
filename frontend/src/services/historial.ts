@@ -55,6 +55,7 @@ export const ETIQUETA_TIPO: Record<TipoOperacion, string> = {
 const ETIQUETA_MOTIVO: Record<MotivoCancelacion, string> = {
   COTIZACION_CAMBIADA: 'No aceptó la nueva cotización',
   DESISTIO: 'Desistió',
+  FONDOS_INSUFICIENTES: 'Fondos insuficientes',
 }
 
 /** Clases Tailwind del badge de cada estado (historial y dashboard admin). */
