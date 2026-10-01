@@ -67,12 +67,11 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
   const [paymentMethod, setPaymentMethod] = useState('transfer')
   const [metodos, setMetodos] = useState<MetodoPago[]>([])
 
-  // PI-66: vinculación billetera/cuenta (solo registro, sin mover fondos).
-  // "Pagar con" solo admite cuentas; "Acreditar en" solo billeteras.
+  // PI-73: la compra se paga por transferencia (cuenta bancaria obligatoria)
+  // o con la billetera PYG; lo recibido se acredita siempre en la billetera.
   const [billeteras, setBilleteras] = useState<Billetera[]>([])
   const [cuentasCli, setCuentasCli] = useState<BankAccount[]>([])
   const [origenSel, setOrigenSel] = useState('')
-  const [destinoSel, setDestinoSel] = useState('')
 
   const [tasas, setTasas] = useState<Cotizacion[]>([])
   const [monedas, setMonedas] = useState<Currency[]>([])
@@ -172,7 +171,6 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
       setBilleteras([])
       setCuentasCli([])
       setOrigenSel('')
-      setDestinoSel('')
       return
     }
     let vivo = true
@@ -187,14 +185,9 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
       const def = ms.find(m => m.es_default)
       // Los códigos vigentes al cargar (divisa/contraparte por defecto).
       const codOrigen = mode === 'buy' ? contraparte : divisa
-      const codDestino = mode === 'buy' ? divisa : contraparte
       if (def?.cuenta) {
         const c = cs.find(x => x.id === def.cuenta)
         if (c && c.currency === codOrigen && c.status === 'Activa') setOrigenSel(`C:${c.id}`)
-      }
-      if (def?.billetera) {
-        const b = bs.find(x => x.id === def.billetera)
-        if (b && b.moneda_codigo === codDestino) setDestinoSel(`B:${b.id}`)
       }
     })
     return () => { vivo = false }
@@ -256,34 +249,26 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
   // PI-66: códigos de cada pata según el modo.
   const codigoOrigen = mode === 'buy' ? contraparte : divisa
   const codigoDestino = mode === 'buy' ? divisa : contraparte
-  // PI-66c: pagar con cuenta o billetera; acreditar solo en billetera.
-  // La cuenta bancaria es externa y no tiene saldo en el sistema, por eso
-  // solo puede ser origen de una compra: en la venta se debita la billetera.
+  // PI-73: la cuenta bancaria solo se usa al comprar por transferencia; las
+  // billeteras (origen y destino) las resuelve el backend según la moneda.
   const opcionesOrigenCuenta = mode === 'buy'
     ? cuentasCli.filter(c => c.status === 'Activa' && c.currency === codigoOrigen)
     : []
-  const opcionesOrigenBilletera = billeteras.filter(b => b.moneda_codigo === codigoOrigen)
-  const opcionesDestino = billeteras.filter(b => b.moneda_codigo === codigoDestino)
+  const billeteraOrigen = billeteras.find(b => b.moneda_codigo === codigoOrigen)
+  const billeteraDestino = billeteras.find(b => b.moneda_codigo === codigoDestino)
+  const pagaConBilletera = mode === 'sell' || paymentMethod === 'wallet'
+  const requiereCuenta = mode === 'buy' && paymentMethod === 'transfer'
 
-  // Si el par cambia y lo elegido ya no vale, se limpia (sin pelear ediciones).
+  // Si el par cambia y la cuenta elegida ya no vale, se limpia.
   useEffect(() => {
-    if (origenSel) {
-      const [kind, idRaw] = origenSel.split(':')
-      const id = Number(idRaw)
-      const ok = kind === 'B'
-        ? billeteras.some(b => b.id === id && b.moneda_codigo === codigoOrigen)
-        : cuentasCli.some(c => c.id === id && c.currency === codigoOrigen && c.status === 'Activa')
-      if (!ok) setOrigenSel('')
-    }
-    if (destinoSel) {
-      const id = Number(destinoSel.split(':')[1])
-      if (!billeteras.some(b => b.id === id && b.moneda_codigo === codigoDestino)) {
-        setDestinoSel('')
-      }
-    }
-  }, [codigoOrigen, codigoDestino, cuentasCli, billeteras, origenSel, destinoSel])
+    if (!origenSel) return
+    const id = Number(origenSel.split(':')[1])
+    const ok = cuentasCli.some(c => c.id === id && c.currency === codigoOrigen && c.status === 'Activa')
+    if (!ok) setOrigenSel('')
+  }, [codigoOrigen, cuentasCli, origenSel])
 
   const bloqueado = !clienteOk || amountNum <= 0 || !resumen || simulando
+    || (requiereCuenta && !origenSel)
   const mostrarErrorCliente = !verificandoCliente && !clienteOk
 
   /** "Continuar": crea la operación PENDIENTE y congela la cotización. */
@@ -298,11 +283,17 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
         moneda: divisa,
         montoDivisa: amountNum,
         monedaContraparte: contraparte,
-        metodoPago: paymentMethod,
-        cuentaOrigenId: origenSel.startsWith('C:') ? Number(origenSel.slice(2)) : null,
-        billeteraDestinoId: destinoSel.startsWith('B:') ? Number(destinoSel.slice(2)) : null,
-        billeteraOrigenId: origenSel.startsWith('B:') ? Number(origenSel.slice(2)) : null,
+        metodoPago: mode === 'buy' ? paymentMethod : '',
+        cuentaOrigenId: requiereCuenta && origenSel ? Number(origenSel.slice(2)) : null,
+        billeteraDestinoId: null,
+        billeteraOrigenId: null,
       })
+      if (op.estado === 'CANCELADA') {
+        // PI-73: sin fondos en la billetera, el backend la registra cancelada.
+        setOperacion(op)
+        setStep('cancelled')
+        return
+      }
       setPendiente(op)
       setAnterior(null)
       setStep('confirm')
@@ -325,6 +316,12 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
         setPendiente(null)
         setAnterior(null)
         setStep('receipt')
+      } else if (r.resultado === 'FONDOS_INSUFICIENTES') {
+        // PI-73: el backend ya la canceló; mostramos la pantalla de cancelada.
+        setOperacion(r.operacion)
+        setPendiente(null)
+        setAnterior(null)
+        setStep('cancelled')
       } else {
         // Guardamos la primera cotización que vio el usuario para comparar.
         setAnterior(prev => prev ?? r.anterior)
@@ -457,6 +454,11 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
             <svg width="28" height="28" viewBox="0 0 28 28" fill="none"><path d="M8 8l12 12M20 8L8 20" stroke="#64748b" strokeWidth="3" strokeLinecap="round" /></svg>
           </div>
           <h2 className="text-xl font-bold text-slate-900 mb-2" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Transacción cancelada</h2>
+          {operacion.motivo_cancelacion === 'FONDOS_INSUFICIENTES' && (
+            <p className="text-red-600 text-[14px] font-semibold mb-2">
+              Fondos insuficientes en la billetera origen.
+            </p>
+          )}
           <p className="text-slate-500 text-[14px] mb-6">
             No se te cobró nada. La operación #{operacion.id} queda en tu historial como cancelada.
           </p>
@@ -679,47 +681,6 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
             )}
           </div>
 
-          {/* PI-66: vinculación de fondos (billetera origen se debita al confirmar). */}
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label htmlFor="fondos-origen" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
-                Pagar con ({codigoOrigen})
-              </label>
-              <select
-                id="fondos-origen"
-                value={origenSel}
-                onChange={e => setOrigenSel(e.target.value)}
-                disabled={!currentClient}
-                className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] font-medium text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300 disabled:opacity-60"
-              >
-                <option value="">Sin vincular (informativo)</option>
-                {opcionesOrigenBilletera.map(b => (
-                  <option key={`b-${b.id}`} value={`B:${b.id}`}>👛 Billetera {b.moneda_codigo} — {b.saldo.toLocaleString()}</option>
-                ))}
-                {opcionesOrigenCuenta.map(c => (
-                  <option key={`c-${c.id}`} value={`C:${c.id}`}>🏦 {c.bank} · {c.account}</option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label htmlFor="fondos-destino" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
-                Acreditar en ({codigoDestino})
-              </label>
-              <select
-                id="fondos-destino"
-                value={destinoSel}
-                onChange={e => setDestinoSel(e.target.value)}
-                disabled={!currentClient}
-                className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] font-medium text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300 disabled:opacity-60"
-              >
-                <option value="">Sin vincular (informativo)</option>
-                {opcionesDestino.map(b => (
-                  <option key={b.id} value={`B:${b.id}`}>👛 Billetera {b.moneda_codigo} — {b.saldo.toLocaleString()}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-
           {mode === 'buy' && (
             <div>
               <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Método de pago</label>
@@ -745,6 +706,42 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
               </div>
             </div>
           )}
+
+          {/* PI-73: de dónde salen y adónde van los fondos. */}
+          <div className="space-y-3">
+            {requiereCuenta && (
+              <div>
+                <label htmlFor="fondos-origen" className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                  Cuenta bancaria ({codigoOrigen})
+                </label>
+                <select
+                  id="fondos-origen"
+                  value={origenSel}
+                  onChange={e => setOrigenSel(e.target.value)}
+                  disabled={!currentClient}
+                  className="w-full border border-slate-200 rounded-xl px-4 py-3 text-[14px] font-medium text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300 disabled:opacity-60"
+                >
+                  <option value="">Elegí tu cuenta bancaria</option>
+                  {opcionesOrigenCuenta.map(c => (
+                    <option key={c.id} value={`C:${c.id}`}>🏦 {c.bank} · {c.account}</option>
+                  ))}
+                </select>
+                {opcionesOrigenCuenta.length === 0 && (
+                  <p className="mt-2 text-amber-600 text-[12px]">No tenés cuentas activas en {codigoOrigen}. Vinculá una en Bancos.</p>
+                )}
+              </div>
+            )}
+            {pagaConBilletera && (
+              <p className="text-[13px] text-slate-600">
+                👛 Se descontará de tu billetera {codigoOrigen}
+                {billeteraOrigen ? ` (saldo ${billeteraOrigen.saldo.toLocaleString()})` : ''}.
+              </p>
+            )}
+            <p className="text-[13px] text-slate-600">
+              👛 Lo recibido se acreditará en tu billetera {codigoDestino}
+              {billeteraDestino ? ` (saldo ${billeteraDestino.saldo.toLocaleString()})` : ''}.
+            </p>
+          </div>
 
           {simulando && amountNum > 0 && (
             <p className="text-slate-400 text-[13px]">Calculando precio final…</p>

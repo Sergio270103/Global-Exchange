@@ -57,9 +57,11 @@ class Operacion(models.Model):
 
     MOTIVO_COTIZACION = 'COTIZACION_CAMBIADA'
     MOTIVO_DESISTIO = 'DESISTIO'
+    MOTIVO_FONDOS = 'FONDOS_INSUFICIENTES'
     MOTIVOS_CANCELACION = (
         (MOTIVO_COTIZACION, 'No aceptó la nueva cotización'),
         (MOTIVO_DESISTIO, 'El cliente desistió'),
+        (MOTIVO_FONDOS, 'Fondos insuficientes'),
     )
 
     cliente = models.ForeignKey(

@@ -151,6 +151,7 @@ class CancelarOperacionSerializer(serializers.Serializer):
     """Entrada del POST /api/operaciones/{id}/cancelar/."""
 
     motivo = serializers.ChoiceField(
-        choices=[m for m, _ in Operacion.MOTIVOS_CANCELACION],
+        # FONDOS_INSUFICIENTES lo asigna solo el sistema al confirmar (PI-73).
+        choices=[Operacion.MOTIVO_COTIZACION, Operacion.MOTIVO_DESISTIO],
         default=Operacion.MOTIVO_DESISTIO,
     )

@@ -108,29 +108,27 @@ describe('BuySell PI-71 (selects según monedas activas)', () => {
     expect(within(contraparte).queryByRole('option', { name: /BRL/ })).not.toBeInTheDocument()
   })
 
-  it('PI-66: preselecciona el medio por defecto y lista pagar/acreditar', async () => {
+  it('PI-73: compra por transferencia pide la cuenta y acredita en billetera', async () => {
     render(<BuySell auth={auth} currentClient={{ id: 1, nombre: 'Carlos Martínez' }} />)
     await screen.findByRole('heading', { name: 'Comprar divisas' })
-    // Destino USD = billetera 2 por defecto.
-    const destino = screen.getByLabelText(/Acreditar en/) as HTMLSelectElement
-    expect(destino.value).toBe('B:2')
-    // Origen PYG = cuenta 5 disponible + billetera PYG (PI-66c debita).
-    const origen = screen.getByLabelText(/Pagar con/) as HTMLSelectElement
-    expect(within(origen).getByRole('option', { name: /Continental/ })).toBeInTheDocument()
-    expect(within(origen).getByRole('option', { name: /Billetera PYG/ })).toBeInTheDocument()
+    // Transferencia: solo cuentas en PYG, sin billeteras como opción.
+    const cuenta = await screen.findByLabelText(/Cuenta bancaria/) as HTMLSelectElement
+    expect(within(cuenta).getByRole('option', { name: /Continental/ })).toBeInTheDocument()
+    expect(within(cuenta).queryByRole('option', { name: /Itaú/ })).not.toBeInTheDocument()
+    expect(within(cuenta).queryByRole('option', { name: /Billetera/ })).not.toBeInTheDocument()
+    // Lo comprado se acredita siempre en la billetera USD.
+    expect(screen.getByText(/se acreditará en tu billetera USD/)).toBeInTheDocument()
   })
 
-  it('la cuenta bancaria no se ofrece como origen en la venta', async () => {
+  it('PI-73: la venta se debita de la billetera y no ofrece cuentas', async () => {
     const user = userEvent.setup()
     render(<BuySell auth={auth} currentClient={{ id: 1, nombre: 'Carlos Martínez' }} />)
     await screen.findByRole('heading', { name: 'Comprar divisas' })
-    // En compra la cuenta en USD tampoco aplica: el origen es PYG.
     await user.click(screen.getByRole('button', { name: /Vender divisas/ }))
     await screen.findByRole('heading', { name: 'Vender divisas' })
-    const origen = screen.getByLabelText(/Pagar con/) as HTMLSelectElement
-    // La venta se debita de la billetera, nunca de una cuenta externa.
-    expect(within(origen).getByRole('option', { name: /Billetera USD/ })).toBeInTheDocument()
-    expect(within(origen).queryByRole('option', { name: /Itaú/ })).not.toBeInTheDocument()
-    expect(within(origen).queryByRole('option', { name: /Continental/ })).not.toBeInTheDocument()
+    // La venta se debita de la billetera USD, nunca de una cuenta externa.
+    expect(screen.queryByLabelText(/Cuenta bancaria/)).not.toBeInTheDocument()
+    expect(screen.getByText(/Se descontará de tu billetera USD/)).toBeInTheDocument()
+    expect(screen.getByText(/se acreditará en tu billetera PYG/)).toBeInTheDocument()
   })
 })

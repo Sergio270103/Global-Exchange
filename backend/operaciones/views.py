@@ -56,6 +56,9 @@ ERROR_CLIENTE = (
 
 RESULTADO_CONFIRMADA = 'CONFIRMADA'
 RESULTADO_COTIZACION_CAMBIADA = 'COTIZACION_CAMBIADA'
+RESULTADO_FONDOS_INSUFICIENTES = 'FONDOS_INSUFICIENTES'
+ERROR_FONDOS = 'Fondos insuficientes en la billetera origen. La operación fue cancelada.'
+METODO_BILLETERA = 'wallet'
 
 
 class ErrorCotizacion(Exception):
@@ -353,6 +356,11 @@ class OperacionViewSet(viewsets.ModelViewSet):
                 return Response(
                     {'detail': 'La billetera debe ser de la moneda destino.'},
                     status=status.HTTP_400_BAD_REQUEST)
+        else:
+            # PI-73: si no se eligió, se acredita siempre en la billetera
+            # del cliente en la moneda destino (se crea en cero si no existe).
+            billetera_destino, _ = Billetera.objects.get_or_create(
+                cliente=cliente, moneda=cotizacion['moneda_destino'])
         cuenta_origen = None
         if datos.get('cuenta_origen') is not None:
             # La cuenta bancaria es el origen de la transferencia en la compra.
@@ -395,11 +403,20 @@ class OperacionViewSet(viewsets.ModelViewSet):
                 return Response(
                     {'detail': 'La billetera origen debe ser de la moneda origen.'},
                     status=status.HTTP_400_BAD_REQUEST)
-            if billetera_origen.saldo < cotizacion['monto_enviado']:
-                return Response(
-                    {'detail': 'No hay saldo suficiente en la billetera origen.'},
-                    status=status.HTTP_400_BAD_REQUEST)
+        elif tipo == 'VENTA' or metodo_pago == METODO_BILLETERA:
+            # PI-73: se debita de la billetera del cliente en la moneda origen
+            # cuando vende divisas (siempre) o cuando compra pagando con su
+            # billetera (método "wallet").
+            billetera_origen, _ = Billetera.objects.get_or_create(
+                cliente=cliente, moneda=cotizacion['moneda_origen'])
 
+        # PI-73: sin saldo suficiente la operación queda registrada como
+        # CANCELADA por fondos insuficientes (visible en el historial).
+        sin_fondos = (
+            billetera_origen is not None
+            and billetera_origen.saldo < cotizacion['monto_enviado']
+        )
+        ahora = timezone.now()
         op = Operacion.objects.create(
             cliente=cliente,
             usuario_keycloak_id=sub[:64],
@@ -408,8 +425,11 @@ class OperacionViewSet(viewsets.ModelViewSet):
             billetera_destino=billetera_destino,
             cuenta_origen=cuenta_origen,
             billetera_origen=billetera_origen,
-            estado=Operacion.ESTADO_PENDIENTE,
-            fecha_cotizacion=timezone.now(),
+            estado=Operacion.ESTADO_CANCELADA if sin_fondos else Operacion.ESTADO_PENDIENTE,
+            fecha_cotizacion=ahora,
+            fecha_cancelacion=ahora if sin_fondos else None,
+            motivo_cancelacion=Operacion.MOTIVO_FONDOS if sin_fondos else '',
+            cancelada_por_nombre='Sistema' if sin_fondos else '',
             **cotizacion,
         )
         return Response(OperacionPublicSerializer(op).data, status=status.HTTP_201_CREATED)
@@ -469,33 +489,38 @@ class OperacionViewSet(viewsets.ModelViewSet):
             })
 
     def _marcar_confirmada(self, op: Operacion) -> Response:
-        op.estado = Operacion.ESTADO_PAGADA
-        op.fecha_confirmacion = timezone.now()
-        op.save(update_fields=['estado', 'fecha_confirmacion'])
-        # PI-66b: acreditación atómica en la billetera vinculada (si hay).
-        # El movimiento real de fondos ocurre acá, no al crear. La rama de
-        # re-cotización nunca llega acá, así que no hay crédito parcial.
-        if op.billetera_destino_id:
-            billetera = Billetera.objects.select_for_update().get(
-                pk=op.billetera_destino_id)
-            billetera.saldo = billetera.saldo + op.monto_recibido
-            billetera.save(update_fields=['saldo', 'actualizado_en'])
-            Movimiento.objects.create(
-                billetera=billetera, operacion=op,
-                tipo=Movimiento.TIPO_CREDITO,
-                monto=op.monto_recibido, saldo_resultante=billetera.saldo,
-            )
-        # PI-66c: débito atómico de la billetera origen (opción B).
-        # Se re-valida el saldo con la fila bloqueada: si no alcanza, se
-        # marca rollback total (la operación sigue PENDIENTE) y va 400.
+        """Marca PAGADA y mueve los saldos, o cancela si no hay fondos (PI-73).
+
+        El débito se valida ANTES de tocar cualquier saldo: si la billetera
+        origen no alcanza (otra operación gastó el saldo entre el alta y la
+        confirmación), la operación pasa a CANCELADA con motivo
+        FONDOS_INSUFICIENTES y no se registra ningún movimiento. Corre dentro
+        del ``transaction.atomic()`` de ``confirmar``.
+        """
+        origen = None
         if op.billetera_origen_id:
             origen = Billetera.objects.select_for_update().get(
                 pk=op.billetera_origen_id)
             if origen.saldo < op.monto_enviado:
-                transaction.set_rollback(True)
-                return Response(
-                    {'detail': 'No hay saldo suficiente en la billetera origen.'},
-                    status=status.HTTP_400_BAD_REQUEST)
+                op.estado = Operacion.ESTADO_CANCELADA
+                op.fecha_cancelacion = timezone.now()
+                op.motivo_cancelacion = Operacion.MOTIVO_FONDOS
+                op.cancelada_por_nombre = 'Sistema'
+                op.save(update_fields=[
+                    'estado', 'fecha_cancelacion', 'motivo_cancelacion',
+                    'cancelada_por_nombre',
+                ])
+                return Response({
+                    'resultado': RESULTADO_FONDOS_INSUFICIENTES,
+                    'detail': ERROR_FONDOS,
+                    'operacion': OperacionPublicSerializer(op).data,
+                })
+
+        op.estado = Operacion.ESTADO_PAGADA
+        op.fecha_confirmacion = timezone.now()
+        op.save(update_fields=['estado', 'fecha_confirmacion'])
+
+        if origen:
             origen.saldo = origen.saldo - op.monto_enviado
             origen.save(update_fields=['saldo', 'actualizado_en'])
             Movimiento.objects.create(
@@ -503,6 +528,18 @@ class OperacionViewSet(viewsets.ModelViewSet):
                 tipo=Movimiento.TIPO_DEBITO,
                 monto=op.monto_enviado, saldo_resultante=origen.saldo,
             )
+
+        if op.billetera_destino_id:
+            destino = Billetera.objects.select_for_update().get(
+                pk=op.billetera_destino_id)
+            destino.saldo = destino.saldo + op.monto_recibido
+            destino.save(update_fields=['saldo', 'actualizado_en'])
+            Movimiento.objects.create(
+                billetera=destino, operacion=op,
+                tipo=Movimiento.TIPO_CREDITO,
+                monto=op.monto_recibido, saldo_resultante=destino.saldo,
+            )
+
         return Response({
             'resultado': RESULTADO_CONFIRMADA,
             'operacion': OperacionPublicSerializer(op).data,
