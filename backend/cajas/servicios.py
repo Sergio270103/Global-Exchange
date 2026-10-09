@@ -5,7 +5,8 @@ así el saldo y su movimiento de auditoría se guardan juntos o no se
 guarda ninguno. Las historias que mueven efectivo reutilizan esta
 función:
 
-- PI-43 (registrar billetes entregados): ``tipo=ENTREGA``.
+- PI-43 (registrar billetes entregados): ``tipo=ENTREGA``, solo a
+  través de :func:`confirmar_entrega`.
 - PI-75 (operación cambiaria presencial): ``INGRESO`` por lo que trae
   el cliente y ``RETIRO`` por lo que se le entrega.
 """
@@ -13,12 +14,13 @@ función:
 from collections import OrderedDict
 from decimal import Decimal
 
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import transaction
+from django.utils import timezone
 
 from .models import (
-    ArqueoCaja, Caja, DetalleArqueo, DetalleMovimiento, Denominacion,
-    MovimientoCaja, SaldoBillete,
+    ArqueoCaja, Caja, DetalleArqueo, DetalleEntrega, DetalleMovimiento,
+    Denominacion, EntregaBilletes, MovimientoCaja, SaldoBillete,
 )
 
 
@@ -39,6 +41,7 @@ def registrar_movimiento(
     usuario_id: str,
     usuario_nombre: str = '',
     observacion: str = '',
+    entrega: EntregaBilletes | None = None,
 ) -> MovimientoCaja:
     """Registra un movimiento y actualiza el saldo de la caja.
 
@@ -85,7 +88,7 @@ def registrar_movimiento(
     movimiento = MovimientoCaja.objects.create(
         caja=caja, tipo=tipo, moneda=moneda, total=total,
         usuario_keycloak_id=usuario_id or '', usuario_nombre=usuario_nombre[:160],
-        observacion=observacion[:255],
+        observacion=observacion[:255], entrega=entrega,
     )
     for saldo, denominacion, cantidad in saldos:
         saldo.cantidad = saldo.cantidad + cantidad if suma else saldo.cantidad - cantidad
@@ -194,3 +197,139 @@ def registrar_arqueo(
         arqueo.con_diferencias = True
         arqueo.save(update_fields=['con_diferencias'])
     return arqueo
+
+
+# --- Entregas de billetes (PI-43, RF57) --------------------------------
+
+def _validar_detalle_entrega(detalle: list[tuple[Denominacion, int]]) -> None:
+    if not detalle:
+        raise ValidationError('Indicá al menos una denominación.')
+    vistos = set()
+    for denominacion, cantidad in detalle:
+        if denominacion.pk in vistos:
+            raise ValidationError(f'La denominación {denominacion} está repetida.')
+        if cantidad <= 0:
+            raise ValidationError('Las cantidades deben ser mayores a cero.')
+        if not denominacion.activa or not denominacion.moneda.activo:
+            raise ValidationError(f'La denominación {denominacion} no está habilitada.')
+        vistos.add(denominacion.pk)
+
+
+def totales_entrega(entrega: EntregaBilletes) -> list[dict]:
+    """Total entregado por divisa."""
+    grupos: dict[int, dict] = {}
+    for linea in entrega.detalle.all():
+        moneda = linea.denominacion.moneda
+        grupo = grupos.setdefault(moneda.pk, {
+            'moneda': moneda.pk,
+            'moneda_codigo': moneda.codigo,
+            'simbolo': moneda.simbolo,
+            'decimales': moneda.decimales,
+            'total': Decimal('0'),
+            'cantidad_billetes': 0,
+        })
+        grupo['total'] += linea.subtotal
+        grupo['cantidad_billetes'] += linea.cantidad
+    resultado = sorted(grupos.values(), key=lambda g: g['moneda_codigo'])
+    for grupo in resultado:
+        grupo['total'] = _formatear(grupo['total'])
+    return resultado
+
+
+@transaction.atomic
+def crear_entrega(
+    caja: Caja,
+    detalle: list[tuple[Denominacion, int]],
+    usuario_id: str,
+    usuario_nombre: str = '',
+    observacion: str = '',
+) -> EntregaBilletes:
+    """Registra una entrega PENDIENTE. Todavía no modifica el saldo."""
+    if not caja.activa:
+        raise ValidationError('La caja está inactiva.')
+    _validar_detalle_entrega(detalle)
+    entrega = EntregaBilletes.objects.create(
+        caja=caja, entregado_por_id=usuario_id or '',
+        entregado_por_nombre=usuario_nombre[:160], observacion=observacion[:255],
+    )
+    DetalleEntrega.objects.bulk_create([
+        DetalleEntrega(entrega=entrega, denominacion=d, cantidad=c) for d, c in detalle
+    ])
+    return entrega
+
+
+def _tomar_pendiente(entrega: EntregaBilletes) -> EntregaBilletes:
+    """Bloquea la entrega y verifica que siga pendiente (evita responder dos veces)."""
+    entrega = EntregaBilletes.objects.select_for_update().get(pk=entrega.pk)
+    if entrega.estado != EntregaBilletes.ESTADO_PENDIENTE:
+        raise ValidationError(
+            f'La entrega ya está {entrega.get_estado_display().lower()}.')
+    return entrega
+
+
+def _no_es_quien_entrego(entrega: EntregaBilletes, usuario_id: str) -> None:
+    if usuario_id and usuario_id == entrega.entregado_por_id:
+        raise PermissionDenied('Quien entregó los billetes no puede responder su propia entrega.')
+
+
+@transaction.atomic
+def confirmar_entrega(
+    entrega: EntregaBilletes, usuario_id: str, usuario_nombre: str = '',
+) -> EntregaBilletes:
+    """El cajero confirma que recibió y contó los billetes: se suman al saldo.
+
+    Genera un movimiento ``ENTREGA`` por cada divisa, todos en la misma
+    transacción: o se suma todo o no se suma nada.
+    """
+    entrega = _tomar_pendiente(entrega)
+    _no_es_quien_entrego(entrega, usuario_id)
+
+    por_moneda: dict[int, list[DetalleEntrega]] = {}
+    for linea in entrega.detalle.select_related('denominacion__moneda'):
+        por_moneda.setdefault(linea.denominacion.moneda_id, []).append(linea)
+
+    referencia = f'Entrega #{entrega.pk}'
+    if entrega.entregado_por_nombre:
+        referencia += f' de {entrega.entregado_por_nombre}'
+    for lineas in por_moneda.values():
+        registrar_movimiento(
+            caja=entrega.caja, tipo=MovimientoCaja.TIPO_ENTREGA,
+            moneda=lineas[0].denominacion.moneda,
+            detalle=[(l.denominacion, l.cantidad) for l in lineas],
+            usuario_id=usuario_id, usuario_nombre=usuario_nombre,
+            observacion=referencia, entrega=entrega,
+        )
+    return _responder(entrega, EntregaBilletes.ESTADO_CONFIRMADA, '', usuario_id, usuario_nombre)
+
+
+@transaction.atomic
+def rechazar_entrega(
+    entrega: EntregaBilletes, motivo: str, usuario_id: str, usuario_nombre: str = '',
+) -> EntregaBilletes:
+    """El cajero rechaza la entrega (por ejemplo, lo contado no coincide)."""
+    entrega = _tomar_pendiente(entrega)
+    _no_es_quien_entrego(entrega, usuario_id)
+    return _responder(entrega, EntregaBilletes.ESTADO_RECHAZADA, motivo, usuario_id, usuario_nombre)
+
+
+@transaction.atomic
+def cancelar_entrega(
+    entrega: EntregaBilletes, motivo: str, usuario_id: str, usuario_nombre: str = '',
+) -> EntregaBilletes:
+    """El administrador anula una entrega que todavía no se confirmó."""
+    entrega = _tomar_pendiente(entrega)
+    return _responder(entrega, EntregaBilletes.ESTADO_CANCELADA, motivo, usuario_id, usuario_nombre)
+
+
+def _responder(entrega, estado, motivo, usuario_id, usuario_nombre) -> EntregaBilletes:
+    motivo = (motivo or '').strip()
+    if estado != EntregaBilletes.ESTADO_CONFIRMADA and not motivo:
+        raise ValidationError('Indicá el motivo.')
+    entrega.estado = estado
+    entrega.motivo = motivo[:255]
+    entrega.respondido_por_id = usuario_id or ''
+    entrega.respondido_por_nombre = usuario_nombre[:160]
+    entrega.fecha_respuesta = timezone.now()
+    entrega.save(update_fields=[
+        'estado', 'motivo', 'respondido_por_id', 'respondido_por_nombre', 'fecha_respuesta'])
+    return entrega

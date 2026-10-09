@@ -6,7 +6,12 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
+  cancelarEntrega,
+  confirmarEntrega,
+  crearEntrega,
   formatearMonto,
+  listarEntregas,
+  rechazarEntrega,
   listarArqueos,
   listarCajas,
   listarMovimientos,
@@ -33,6 +38,66 @@ const movimientoApi = {
   usuario_nombre: 'Ana', observacion: '', creado_en: '2026-10-08T12:00:00-03:00',
   detalle: [{ denominacion: 20, valor: '100', cantidad: 1, saldo_resultante: 3 }],
 }
+
+const entregaApi = {
+  id: 12, caja: 1, caja_nombre: 'Central · Caja 1', estado: 'PENDIENTE', estado_display: 'Pendiente',
+  entregado_por_nombre: 'Admin', observacion: 'Apertura', creado_en: '2026-10-09T08:00:00-03:00',
+  respondido_por_nombre: '', fecha_respuesta: null, motivo: '',
+  totales: [{ moneda: 2, moneda_codigo: 'USD', simbolo: '$', decimales: 2, total: '1100', cantidad_billetes: 15 }],
+  detalle: [
+    { denominacion: 20, moneda_codigo: 'USD', valor: '100', cantidad: 10, subtotal: '1000' },
+    { denominacion: 21, moneda_codigo: 'USD', valor: '20', cantidad: 5, subtotal: '100' },
+  ],
+}
+
+describe('entregas de billetes (PI-43)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async (url: string, init: RequestInit = {}) => {
+      const u = String(url)
+      const method = (init.method ?? 'GET').toUpperCase()
+      if (u.includes('/confirmar/')) return respuesta({ entrega: { ...entregaApi, estado: 'CONFIRMADA' }, monedas: saldoApi.monedas })
+      if (u.includes('/rechazar/') || u.includes('/cancelar/')) {
+        const { motivo } = JSON.parse(String(init.body))
+        if (!motivo) return respuesta({ motivo: ['Indicá el motivo.'] }, 400)
+        return respuesta({ ...entregaApi, estado: u.includes('rechazar') ? 'RECHAZADA' : 'CANCELADA', motivo })
+      }
+      if (u.includes('/entregas/') && method === 'POST') return respuesta({ ...entregaApi, ...JSON.parse(String(init.body)) }, 201)
+      if (u.includes('/entregas/')) return respuesta([entregaApi])
+      return respuesta({}, 404)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('lista con filtros y convierte montos a números', async () => {
+    const [e] = await listarEntregas({ caja: 1, estado: 'PENDIENTE' })
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/entregas/?caja=1&estado=PENDIENTE')
+    expect(e.cajaNombre).toBe('Central · Caja 1')
+    expect(e.totales[0]).toEqual({ moneda: 2, monedaCodigo: 'USD', simbolo: '$', decimales: 2, total: 1100, cantidadBilletes: 15 })
+    expect(e.detalle[1].subtotal).toBe(100)
+  })
+
+  it('crea una entrega sin enviar líneas en cero', async () => {
+    await crearEntrega(1, [{ denominacion: 20, cantidad: 10 }, { denominacion: 21, cantidad: 0 }], 'Apertura')
+    const cuerpo = JSON.parse(String(fetchMock.mock.calls[0][1].body))
+    expect(cuerpo).toEqual({ caja: 1, detalle: [{ denominacion: 20, cantidad: 10 }], observacion: 'Apertura' })
+  })
+
+  it('confirma y devuelve el saldo nuevo', async () => {
+    const res = await confirmarEntrega(12)
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/entregas/12/confirmar/')
+    expect(res.entrega.estado).toBe('CONFIRMADA')
+    expect(res.saldo[0].total).toBe(400)
+  })
+
+  it('rechaza y cancela con motivo', async () => {
+    expect((await rechazarEntrega(12, 'Faltan billetes')).estado).toBe('RECHAZADA')
+    expect((await cancelarEntrega(12, 'Caja equivocada')).motivo).toBe('Caja equivocada')
+    await expect(rechazarEntrega(12, '')).rejects.toThrow('Indicá el motivo.')
+  })
+})
 
 describe('cajas (servicio API)', () => {
   let fetchMock: ReturnType<typeof vi.fn>

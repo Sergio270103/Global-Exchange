@@ -8,6 +8,10 @@
  *   Devuelve el saldo ya actualizado.
  * - `listarArqueos` / `registrarArqueo`: registro de auditoría del
  *   estado de caja para cierres de turno y arqueos.
+ * - Entregas de billetes (PI-43, RF57): el admin las registra
+ *   (`crearEntrega`) y quedan pendientes; el cajero las confirma
+ *   (`confirmarEntrega`, se suman al saldo) o rechaza con motivo; el admin
+ *   puede cancelar una pendiente.
  *
  * @module services/cajas
  */
@@ -79,6 +83,36 @@ export interface Arqueo {
   detalle: LineaArqueo[]
 }
 
+/** Estados de una entrega de billetes. */
+export type EstadoEntrega = 'PENDIENTE' | 'CONFIRMADA' | 'RECHAZADA' | 'CANCELADA'
+
+/** Total entregado de una divisa. */
+export interface TotalEntrega {
+  moneda: number
+  monedaCodigo: string
+  simbolo: string
+  decimales: number
+  total: number
+  cantidadBilletes: number
+}
+
+/** Entrega de billetes del administrador a una caja (PI-43). */
+export interface Entrega {
+  id: number
+  caja: number
+  cajaNombre: string
+  estado: EstadoEntrega
+  estadoDisplay: string
+  entregadoPorNombre: string
+  observacion: string
+  creadoEn: string
+  respondidoPorNombre: string
+  fechaRespuesta: string | null
+  motivo: string
+  totales: TotalEntrega[]
+  detalle: { denominacion: number; monedaCodigo: string; valor: number; cantidad: number; subtotal: number }[]
+}
+
 /** Billetes que se cargan en un movimiento o arqueo. */
 export interface LineaBilletes {
   denominacion: number
@@ -124,6 +158,56 @@ interface ArqueoApi {
     cantidad_contada: number
     diferencia: number
   }[]
+}
+
+interface EntregaApi {
+  id: number
+  caja: number
+  caja_nombre: string
+  estado: EstadoEntrega
+  estado_display: string
+  entregado_por_nombre: string
+  observacion: string
+  creado_en: string
+  respondido_por_nombre: string
+  fecha_respuesta: string | null
+  motivo: string
+  totales: {
+    moneda: number; moneda_codigo: string; simbolo: string; decimales: number
+    total: string; cantidad_billetes: number
+  }[]
+  detalle: { denominacion: number; moneda_codigo: string; valor: string; cantidad: number; subtotal: string }[]
+}
+
+function mapearEntrega(e: EntregaApi): Entrega {
+  return {
+    id: e.id,
+    caja: e.caja,
+    cajaNombre: e.caja_nombre,
+    estado: e.estado,
+    estadoDisplay: e.estado_display,
+    entregadoPorNombre: e.entregado_por_nombre,
+    observacion: e.observacion,
+    creadoEn: e.creado_en,
+    respondidoPorNombre: e.respondido_por_nombre,
+    fechaRespuesta: e.fecha_respuesta,
+    motivo: e.motivo,
+    totales: e.totales.map(t => ({
+      moneda: t.moneda,
+      monedaCodigo: t.moneda_codigo,
+      simbolo: t.simbolo,
+      decimales: t.decimales,
+      total: Number(t.total),
+      cantidadBilletes: t.cantidad_billetes,
+    })),
+    detalle: e.detalle.map(d => ({
+      denominacion: d.denominacion,
+      monedaCodigo: d.moneda_codigo,
+      valor: Number(d.valor),
+      cantidad: d.cantidad,
+      subtotal: Number(d.subtotal),
+    })),
+  }
 }
 
 function mapearSaldo(m: SaldoMonedaApi): SaldoMoneda {
@@ -208,14 +292,15 @@ export async function listarMovimientos(
 }
 
 /**
- * Registra un ingreso, entrega o retiro y devuelve el saldo actualizado (RF58).
+ * Registra un ingreso o retiro y devuelve el saldo actualizado (RF58).
+ * Las entregas de billetes van por `crearEntrega` (requieren confirmación).
  *
  * @throws {ApiError} Con el mensaje del backend, por ejemplo si un retiro
  *   pide más billetes de los que hay.
  */
 export async function registrarMovimiento(
   cajaId: number,
-  datos: { tipo: TipoMovimiento; moneda: number; detalle: LineaBilletes[]; observacion?: string },
+  datos: { tipo: 'INGRESO' | 'RETIRO'; moneda: number; detalle: LineaBilletes[]; observacion?: string },
 ): Promise<{ movimiento: MovimientoCaja; saldo: SaldoMoneda[] }> {
   const res = await apiFetch<{ movimiento: MovimientoApi; monedas: SaldoMonedaApi[] }>(
     `/cajas/${cajaId}/movimientos/`,
@@ -252,6 +337,57 @@ export async function registrarArqueo(
     body: JSON.stringify({ conteo, observacion }),
   })
   return mapearArqueo(datos)
+}
+
+/** Lista entregas de billetes, de la más reciente a la más antigua. */
+export async function listarEntregas(
+  filtros: { caja?: number; estado?: EstadoEntrega; limite?: number } = {},
+): Promise<Entrega[]> {
+  const qs = new URLSearchParams()
+  if (filtros.caja) qs.set('caja', String(filtros.caja))
+  if (filtros.estado) qs.set('estado', filtros.estado)
+  if (filtros.limite) qs.set('limite', String(filtros.limite))
+  const sufijo = qs.toString() ? `?${qs}` : ''
+  const datos = await apiFetch<EntregaApi[]>(`/entregas/${sufijo}`)
+  return datos.map(mapearEntrega)
+}
+
+/**
+ * Registra una entrega de billetes a una caja (solo admin). Queda
+ * pendiente: no modifica el saldo hasta que el cajero la confirme.
+ */
+export async function crearEntrega(
+  cajaId: number, detalle: LineaBilletes[], observacion = '',
+): Promise<Entrega> {
+  const datos = await apiFetch<EntregaApi>('/entregas/', {
+    method: 'POST',
+    body: JSON.stringify({ caja: cajaId, detalle: detalle.filter(l => l.cantidad > 0), observacion }),
+  })
+  return mapearEntrega(datos)
+}
+
+/** El cajero confirma la recepción: devuelve la entrega y el saldo actualizado. */
+export async function confirmarEntrega(id: number): Promise<{ entrega: Entrega; saldo: SaldoMoneda[] }> {
+  const res = await apiFetch<{ entrega: EntregaApi; monedas: SaldoMonedaApi[] }>(
+    `/entregas/${id}/confirmar/`, { method: 'POST', body: '{}' },
+  )
+  return { entrega: mapearEntrega(res.entrega), saldo: res.monedas.map(mapearSaldo) }
+}
+
+/** El cajero rechaza la entrega indicando el motivo. */
+export async function rechazarEntrega(id: number, motivo: string): Promise<Entrega> {
+  const datos = await apiFetch<EntregaApi>(`/entregas/${id}/rechazar/`, {
+    method: 'POST', body: JSON.stringify({ motivo }),
+  })
+  return mapearEntrega(datos)
+}
+
+/** El admin cancela una entrega que todavía no se confirmó. */
+export async function cancelarEntrega(id: number, motivo: string): Promise<Entrega> {
+  const datos = await apiFetch<EntregaApi>(`/entregas/${id}/cancelar/`, {
+    method: 'POST', body: JSON.stringify({ motivo }),
+  })
+  return mapearEntrega(datos)
 }
 
 /**

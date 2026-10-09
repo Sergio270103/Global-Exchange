@@ -2,34 +2,41 @@
  * Control de caja del rol cajero (PI-44, ERS RF56/RF58).
  *
  * Muestra el saldo de billetes de la caja agrupado por divisa y
- * denominación, con el total por moneda. Permite registrar ingresos,
- * retiros (y entregas, solo admin) que actualizan el saldo al confirmar,
- * y registrar arqueos / cierres de turno como respaldo de auditoría.
- * El saldo se refresca solo cada 30 segundos.
+ * denominación, con el total por moneda. Permite registrar ingresos y
+ * retiros que actualizan el saldo al confirmar, y registrar arqueos /
+ * cierres de turno como respaldo de auditoría.
+ *
+ * PI-43: muestra las entregas de billetes del administrador pendientes de
+ * confirmar. El cajero cuenta los billetes y confirma (se suman al saldo)
+ * o rechaza con un motivo. Todo se refresca solo cada 30 segundos.
  *
  * @module CashCountView
  */
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { createPortal } from 'react-dom'
 import type { AuthUser } from '@/types'
 import {
+  confirmarEntrega,
   formatearMonto,
   listarArqueos,
   listarCajas,
+  listarEntregas,
   listarMovimientos,
   obtenerSaldo,
+  rechazarEntrega,
   registrarArqueo,
   registrarMovimiento,
   type Arqueo,
   type Caja,
+  type Entrega,
   type MovimientoCaja,
   type SaldoMoneda,
   type TipoMovimiento,
 } from '@/services/cajas'
+import { BotonesModal, CampoCantidad, Modal, TablaEntrega, fechaCorta, textoBillete } from './ComponentesCaja'
 
 /** Propiedades de la vista de control de caja. */
 export interface CashCountViewProps {
-  /** Usuario autenticado; las entregas de billetes son solo para admin. */
+  /** Usuario autenticado. */
   auth?: AuthUser
 }
 
@@ -42,24 +49,14 @@ const ESTILO_TIPO: Record<TipoMovimiento, { signo: string; clase: string }> = {
   RETIRO: { signo: '−', clase: 'bg-rose-50 text-rose-700' },
 }
 
-function fechaCorta(iso: string): string {
-  return new Date(iso).toLocaleString('es-PY', {
-    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
-  })
-}
-
-function textoBillete(m: Pick<SaldoMoneda, 'simbolo' | 'codigo' | 'decimales'>, valor: number): string {
-  return `${m.simbolo || m.codigo} ${formatearMonto(valor, m.decimales)}`
-}
-
-export default function CashCountView({ auth }: CashCountViewProps) {
-  const esAdmin = auth?.role === 'admin'
-
+export default function CashCountView(_props: CashCountViewProps) {
   const [cajas, setCajas] = useState<Caja[]>([])
   const [cajaId, setCajaId] = useState<number | null>(null)
   const [saldo, setSaldo] = useState<SaldoMoneda[]>([])
   const [movimientos, setMovimientos] = useState<MovimientoCaja[]>([])
   const [arqueos, setArqueos] = useState<Arqueo[]>([])
+  const [pendientes, setPendientes] = useState<Entrega[]>([])
+  const [entregaSel, setEntregaSel] = useState<Entrega | null>(null)
   const [monedaSel, setMonedaSel] = useState<string | null>(null)
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState('')
@@ -82,14 +79,16 @@ export default function CashCountView({ auth }: CashCountViewProps) {
 
   const recargar = useCallback(async (id: number) => {
     try {
-      const [s, m, a] = await Promise.all([
+      const [s, m, a, e] = await Promise.all([
         obtenerSaldo(id),
         listarMovimientos(id, { limite: 10 }),
         listarArqueos(id, 5),
+        listarEntregas({ caja: id, estado: 'PENDIENTE' }),
       ])
       setSaldo(s)
       setMovimientos(m)
       setArqueos(a)
+      setPendientes(e)
       setActualizado(new Date())
       setError('')
     } catch (e) {
@@ -122,6 +121,19 @@ export default function CashCountView({ auth }: CashCountViewProps) {
     setActualizado(new Date())
     setModal(null)
     setAviso(`${mov.tipoDisplay} registrado. Saldo actualizado.`)
+  }
+
+  const alResponderEntrega = (entrega: Entrega, nuevoSaldo?: SaldoMoneda[]) => {
+    setEntregaSel(null)
+    setPendientes(prev => prev.filter(e => e.id !== entrega.id))
+    if (nuevoSaldo) {
+      setSaldo(nuevoSaldo)
+      setActualizado(new Date())
+      setAviso(`Entrega #${entrega.id} confirmada. Los billetes se sumaron al saldo.`)
+      if (cajaId !== null) listarMovimientos(cajaId, { limite: 10 }).then(setMovimientos).catch(() => {})
+    } else {
+      setAviso(`Entrega #${entrega.id} rechazada. El administrador verá el motivo.`)
+    }
   }
 
   const alRegistrarArqueo = (arqueo: Arqueo) => {
@@ -199,6 +211,34 @@ export default function CashCountView({ auth }: CashCountViewProps) {
       )}
       {aviso && (
         <div role="status" className="bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg p-3 text-xs">{aviso}</div>
+      )}
+
+      {/* ENTREGAS PENDIENTES DE CONFIRMAR (PI-43) */}
+      {pendientes.length > 0 && (
+        <section aria-label="Entregas pendientes" className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-3">
+          <h3 className="font-semibold text-sm text-amber-900">
+            📦 {pendientes.length === 1 ? 'Tenés 1 entrega de billetes pendiente' : `Tenés ${pendientes.length} entregas de billetes pendientes`} de confirmar
+          </h3>
+          {pendientes.map(e => (
+            <div key={e.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white rounded-lg border border-amber-100 p-3 text-xs">
+              <div className="space-y-0.5">
+                <div className="font-bold text-slate-800">
+                  Entrega #{e.id} · {e.totales.map(t => `${t.simbolo || t.monedaCodigo} ${formatearMonto(t.total, t.decimales)} ${t.monedaCodigo}`).join(' + ')}
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  {fechaCorta(e.creadoEn)} · de {e.entregadoPorNombre || 'Administrador'}
+                  {e.observacion && ` · ${e.observacion}`}
+                </div>
+              </div>
+              <button
+                onClick={() => { setAviso(''); setEntregaSel(e) }}
+                className="shrink-0 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white font-semibold rounded-lg"
+              >
+                Revisar y confirmar
+              </button>
+            </div>
+          ))}
+        </section>
       )}
 
       {/* TOTALES POR MONEDA */}
@@ -317,9 +357,15 @@ export default function CashCountView({ auth }: CashCountViewProps) {
           cajaId={cajaId}
           saldo={saldo}
           monedaInicial={monedaActiva.codigo}
-          permitirEntrega={esAdmin}
           onCerrar={() => setModal(null)}
           onRegistrado={alRegistrarMovimiento}
+        />
+      )}
+      {entregaSel && (
+        <ModalEntrega
+          entrega={entregaSel}
+          onCerrar={() => setEntregaSel(null)}
+          onRespondida={alResponderEntrega}
         />
       )}
       {modal === 'arqueo' && cajaId !== null && (
@@ -337,102 +383,16 @@ export default function CashCountView({ auth }: CashCountViewProps) {
 // ----------------------------------------------------------------------
 
 
-/**
- * Ventana modal con encabezado y botones fijos: solo se desplaza el
- * contenido del medio, así "Guardar" queda siempre a la vista. Mientras
- * está abierta, la página de fondo no scrollea (un solo scroll).
- */
-function Modal({
-  titulo, onCerrar, onSubmit, pie, children,
-}: {
-  titulo: string
-  onCerrar: () => void
-  onSubmit: (e: React.FormEvent) => void
-  pie: React.ReactNode
-  children: React.ReactNode
-}) {
-  useEffect(() => {
-    const anterior = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => { document.body.style.overflow = anterior }
-  }, [])
-
-  // Portal a <body>: la página usa una animación con transform, y eso
-  // hace que `fixed` se ubique respecto de la página y no de la ventana.
-  return createPortal(
-    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4">
-      <form
-        role="dialog"
-        aria-label={titulo}
-        onSubmit={onSubmit}
-        className="bg-white rounded-xl shadow-xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden text-xs"
-      >
-        <div className="flex justify-between items-center px-6 py-4 border-b border-slate-200 shrink-0">
-          <h3 className="font-bold text-slate-900 text-sm">{titulo}</h3>
-          <button type="button" onClick={onCerrar} aria-label="Cerrar" className="text-slate-400 hover:text-slate-600 text-sm">✕</button>
-        </div>
-        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4 space-y-4">
-          {children}
-        </div>
-        <div className="shrink-0 border-t border-slate-200 bg-slate-50 px-6 py-4 space-y-3">
-          {pie}
-        </div>
-      </form>
-    </div>,
-    document.body,
-  )
-}
-
-function BotonesModal({ onCerrar, textoConfirmar, deshabilitado }: {
-  onCerrar: () => void
-  textoConfirmar: string
-  deshabilitado: boolean
-}) {
-  return (
-    <div className="flex gap-2">
-      <button type="button" onClick={onCerrar} className="flex-1 py-2.5 border border-slate-300 rounded-lg bg-white text-slate-600 font-semibold">Cancelar</button>
-      <button type="submit" disabled={deshabilitado} className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg disabled:opacity-50">
-        {textoConfirmar}
-      </button>
-    </div>
-  )
-}
-
-/** Campo numérico de cantidad de billetes (enteros, sin negativos). */
-function CampoCantidad({ id, valor, onCambio, error = false, mostrarCero = false }: {
-  id: string
-  valor: number
-  onCambio: (n: number) => void
-  error?: boolean
-  mostrarCero?: boolean
-}) {
-  return (
-    <input
-      id={id}
-      type="number"
-      min="0"
-      step="1"
-      inputMode="numeric"
-      value={mostrarCero ? valor : valor || ''}
-      placeholder="0"
-      onChange={e => onCambio(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
-      onFocus={e => e.target.select()}
-      className={`w-20 px-2 py-1.5 border rounded-lg text-right font-mono font-semibold bg-white ${error ? 'border-rose-400' : 'border-slate-200'}`}
-    />
-  )
-}
-
 function ModalMovimiento({
-  cajaId, saldo, monedaInicial, permitirEntrega, onCerrar, onRegistrado,
+  cajaId, saldo, monedaInicial, onCerrar, onRegistrado,
 }: {
   cajaId: number
   saldo: SaldoMoneda[]
   monedaInicial: string
-  permitirEntrega: boolean
   onCerrar: () => void
   onRegistrado: (mov: MovimientoCaja, saldo: SaldoMoneda[]) => void
 }) {
-  const [tipo, setTipo] = useState<TipoMovimiento>('INGRESO')
+  const [tipo, setTipo] = useState<'INGRESO' | 'RETIRO'>('INGRESO')
   const [codigo, setCodigo] = useState(monedaInicial)
   const [cantidades, setCantidades] = useState<Record<number, number>>({})
   const [observacion, setObservacion] = useState('')
@@ -491,10 +451,9 @@ function ModalMovimiento({
       <div className="grid grid-cols-2 gap-3">
         <label className="font-semibold text-slate-600 space-y-1 block">
           <span>Tipo</span>
-          <select value={tipo} onChange={e => setTipo(e.target.value as TipoMovimiento)} className="w-full p-2.5 border border-slate-200 rounded-lg bg-white">
+          <select value={tipo} onChange={e => setTipo(e.target.value as 'INGRESO' | 'RETIRO')} className="w-full p-2.5 border border-slate-200 rounded-lg bg-white">
             <option value="INGRESO">Ingreso</option>
             <option value="RETIRO">Retiro</option>
-            {permitirEntrega && <option value="ENTREGA">Entrega a cajero</option>}
           </select>
         </label>
         <label className="font-semibold text-slate-600 space-y-1 block">
@@ -670,6 +629,89 @@ function ModalArqueo({
           className="w-full p-2.5 border border-slate-200 rounded-lg"
         />
       </label>
+    </Modal>
+  )
+}
+
+/**
+ * Detalle de una entrega pendiente: el cajero cuenta los billetes y
+ * confirma la recepción o la rechaza indicando el motivo.
+ */
+function ModalEntrega({ entrega, onCerrar, onRespondida }: {
+  entrega: Entrega
+  onCerrar: () => void
+  onRespondida: (entrega: Entrega, saldo?: SaldoMoneda[]) => void
+}) {
+  const [rechazando, setRechazando] = useState(false)
+  const [motivo, setMotivo] = useState('')
+  const [enviando, setEnviando] = useState(false)
+  const [error, setError] = useState('')
+
+  const responder = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (rechazando && !motivo.trim()) return
+    setEnviando(true)
+    setError('')
+    try {
+      if (rechazando) {
+        onRespondida(await rechazarEntrega(entrega.id, motivo.trim()))
+      } else {
+        const res = await confirmarEntrega(entrega.id)
+        onRespondida(res.entrega, res.saldo)
+      }
+    } catch (err) {
+      setError((err as Error).message)
+      setEnviando(false)
+    }
+  }
+
+  const pie = (
+    <>
+      {rechazando && (
+        <label className="font-semibold text-slate-600 space-y-1 block">
+          <span>Motivo del rechazo</span>
+          <input
+            type="text"
+            maxLength={255}
+            autoFocus
+            value={motivo}
+            onChange={e => setMotivo(e.target.value)}
+            placeholder="Ej. Faltan 2 billetes de USD 100"
+            className="w-full p-2.5 border border-slate-200 rounded-lg bg-white"
+          />
+        </label>
+      )}
+      {error && <p role="alert" className="text-rose-600">{error}</p>}
+      {rechazando ? (
+        <div className="flex gap-2">
+          <button type="button" onClick={() => setRechazando(false)} className="flex-1 py-2.5 border border-slate-300 rounded-lg bg-white text-slate-600 font-semibold">
+            Volver
+          </button>
+          <button type="submit" disabled={enviando || !motivo.trim()} className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-semibold rounded-lg disabled:opacity-50">
+            {enviando ? 'Enviando…' : 'Rechazar entrega'}
+          </button>
+        </div>
+      ) : (
+        <div className="flex gap-2">
+          <button type="button" onClick={() => setRechazando(true)} className="flex-1 py-2.5 border border-rose-200 rounded-lg bg-white text-rose-600 font-semibold">
+            No coincide, rechazar
+          </button>
+          <button type="submit" disabled={enviando} className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg disabled:opacity-50">
+            {enviando ? 'Confirmando…' : 'Confirmar recepción'}
+          </button>
+        </div>
+      )}
+    </>
+  )
+
+  return (
+    <Modal titulo={`Entrega de billetes #${entrega.id}`} onCerrar={onCerrar} onSubmit={responder} pie={pie}>
+      <p className="text-slate-500">
+        {entrega.entregadoPorNombre || 'El administrador'} entregó estos billetes ({fechaCorta(entrega.creadoEn)}).
+        Contalos antes de confirmar: al confirmar se suman al saldo de la caja.
+      </p>
+      {entrega.observacion && <p className="text-slate-600"><strong>Observación:</strong> {entrega.observacion}</p>}
+      <TablaEntrega entrega={entrega} />
     </Modal>
   )
 }
