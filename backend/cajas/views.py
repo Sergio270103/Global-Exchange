@@ -11,25 +11,34 @@
   estado de caja para cierres de turno y arqueos.
 - ``GET /api/denominaciones/?moneda=`` catálogo de billetes; escritura
   solo admin.
+- ``GET|POST /api/entregas/`` entregas de billetes a una caja (PI-43,
+  RF57). El admin las registra y quedan pendientes; filtros ``?caja=`` y
+  ``?estado=``.
+- ``POST /api/entregas/{id}/confirmar/`` el cajero confirma que recibió
+  los billetes: recién ahí se suman al saldo.
+- ``POST /api/entregas/{id}/rechazar/`` el cajero rechaza, con motivo.
+- ``POST /api/entregas/{id}/cancelar/`` el admin anula una pendiente.
 
-Movimientos y arqueos no tienen endpoints de edición ni borrado.
+Movimientos, arqueos y entregas no tienen endpoints de edición ni borrado.
 """
 
+from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
 
-from monedas.permisos import es_admin
-
-from .models import ArqueoCaja, Caja, Denominacion, MovimientoCaja
-from .permisos import PersonalCaja
+from .models import ArqueoCaja, Caja, Denominacion, EntregaBilletes, MovimientoCaja
+from .permisos import PermisoEntregas, PersonalCaja
 from .serializers import (
-    ArqueoSerializer, CajaSerializer, DenominacionSerializer,
-    MovimientoSerializer, NuevoArqueoSerializer, NuevoMovimientoSerializer,
+    ArqueoSerializer, CajaSerializer, DenominacionSerializer, EntregaSerializer,
+    MotivoSerializer, MovimientoSerializer, NuevaEntregaSerializer,
+    NuevoArqueoSerializer, NuevoMovimientoSerializer,
 )
-from .servicios import registrar_arqueo, registrar_movimiento, saldo_por_moneda
+from .servicios import (
+    cancelar_entrega, confirmar_entrega, crear_entrega, rechazar_entrega,
+    registrar_arqueo, registrar_movimiento, saldo_por_moneda,
+)
 
 #: Cuántos movimientos o arqueos devuelve el historial por defecto.
 LIMITE_HISTORIAL = 50
@@ -94,8 +103,6 @@ class CajaViewSet(viewsets.ModelViewSet):
         entrada = NuevoMovimientoSerializer(data=request.data)
         entrada.is_valid(raise_exception=True)
         datos = entrada.validated_data
-        if datos['tipo'] == MovimientoCaja.TIPO_ENTREGA and not es_admin(request.user):
-            raise PermissionDenied('Solo un administrador registra entregas de billetes.')
         sub, nombre = _usuario(request)
         try:
             movimiento = registrar_movimiento(
@@ -149,3 +156,80 @@ class DenominacionViewSet(viewsets.ModelViewSet):
             qs = qs.filter(moneda__pk=moneda) if moneda.isdigit() else qs.filter(
                 moneda__codigo__iexact=moneda)
         return qs
+
+
+class EntregaViewSet(viewsets.ReadOnlyModelViewSet):
+    """Entregas de billetes del administrador a las cajas (PI-43)."""
+
+    queryset = (EntregaBilletes.objects.select_related('caja')
+                .prefetch_related('detalle__denominacion__moneda'))
+    serializer_class = EntregaSerializer
+    permission_classes = [PermisoEntregas]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        caja = self.request.query_params.get('caja')
+        if caja:
+            qs = qs.filter(caja_id=caja) if caja.isdigit() else qs.none()
+        estado = self.request.query_params.get('estado')
+        if estado:
+            qs = qs.filter(estado=estado.upper())
+        if self.action == 'list':
+            qs = qs[:_limite(self.request)]
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        entrada = NuevaEntregaSerializer(data=request.data)
+        entrada.is_valid(raise_exception=True)
+        datos = entrada.validated_data
+        sub, nombre = _usuario(request)
+        try:
+            entrega = crear_entrega(
+                caja=datos['caja'],
+                detalle=[(l['denominacion'], l['cantidad']) for l in datos['detalle']],
+                usuario_id=sub, usuario_nombre=nombre, observacion=datos['observacion'],
+            )
+        except DjangoValidationError as exc:
+            return Response({'detail': _mensaje(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(EntregaSerializer(entrega).data, status=status.HTTP_201_CREATED)
+
+    def _responder(self, request, funcion, con_motivo: bool):
+        entrega = self.get_object()
+        argumentos = {}
+        if con_motivo:
+            entrada = MotivoSerializer(data=request.data)
+            entrada.is_valid(raise_exception=True)
+            argumentos['motivo'] = entrada.validated_data['motivo']
+        sub, nombre = _usuario(request)
+        try:
+            entrega = funcion(entrega, usuario_id=sub, usuario_nombre=nombre, **argumentos)
+        except DjangoPermissionDenied as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_403_FORBIDDEN)
+        except DjangoValidationError as exc:
+            return Response({'detail': _mensaje(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        entrega = self.get_queryset().get(pk=entrega.pk)
+        return entrega
+
+    @action(detail=True, methods=['post'])
+    def confirmar(self, request, pk=None):
+        resultado = self._responder(request, confirmar_entrega, con_motivo=False)
+        if isinstance(resultado, Response):
+            return resultado
+        return Response({
+            'entrega': EntregaSerializer(resultado).data,
+            'monedas': saldo_por_moneda(resultado.caja),
+        })
+
+    @action(detail=True, methods=['post'])
+    def rechazar(self, request, pk=None):
+        resultado = self._responder(request, rechazar_entrega, con_motivo=True)
+        if isinstance(resultado, Response):
+            return resultado
+        return Response(EntregaSerializer(resultado).data)
+
+    @action(detail=True, methods=['post'])
+    def cancelar(self, request, pk=None):
+        resultado = self._responder(request, cancelar_entrega, con_motivo=True)
+        if isinstance(resultado, Response):
+            return resultado
+        return Response(EntregaSerializer(resultado).data)

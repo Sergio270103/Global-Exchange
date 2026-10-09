@@ -144,13 +144,13 @@ class MovimientoTests(BaseCajas):
         self.assertEqual(self.cantidad(self.usd20), 1)
         self.assertEqual(MovimientoCaja.objects.filter(tipo='RETIRO').count(), 0)
 
-    def test_entrega_solo_admin(self):
-        res = self.mover('ENTREGA', self.usd, [(self.usd100, 5)])
-        self.assertEqual(res.status_code, 403)
+    def test_entrega_no_se_registra_como_movimiento_directo(self):
+        # PI-43: las entregas pasan por /api/entregas/ y requieren confirmación.
+        for usuario in (CAJERO, ADMIN):
+            res = self.mover('ENTREGA', self.usd, [(self.usd100, 5)], usuario=usuario)
+            self.assertEqual(res.status_code, 400)
+            self.assertIn('/api/entregas/', str(res.data['tipo']))
         self.assertEqual(self.cantidad(self.usd100), 0)
-        res = self.mover('ENTREGA', self.usd, [(self.usd100, 5)], usuario=ADMIN)
-        self.assertEqual(res.status_code, 201, res.data)
-        self.assertEqual(self.cantidad(self.usd100), 5)
 
     def test_denominacion_de_otra_moneda_se_rechaza(self):
         res = self.mover('INGRESO', self.usd, [(self.pyg100k, 1)])

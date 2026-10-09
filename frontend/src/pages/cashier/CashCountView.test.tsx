@@ -1,5 +1,6 @@
 /**
  * Pruebas PI-44: consultar y actualizar saldo de billetes por caja.
+ * Incluye PI-43: el cajero confirma o rechaza las entregas pendientes.
  *
  * El servicio `@/services/cajas` se reemplaza por un mock: la API real
  * se prueba en el backend (`backend/cajas/tests.py`).
@@ -11,7 +12,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import CashCountView from '@/pages/cashier/CashCountView'
 import type { AuthUser } from '@/types'
-import type { Arqueo, MovimientoCaja, SaldoMoneda } from '@/services/cajas'
+import type { Arqueo, Entrega, MovimientoCaja, SaldoMoneda } from '@/services/cajas'
 import * as cajas from '@/services/cajas'
 
 vi.mock('@/services/cajas', async importOriginal => {
@@ -24,6 +25,9 @@ vi.mock('@/services/cajas', async importOriginal => {
     listarArqueos: vi.fn(),
     registrarMovimiento: vi.fn(),
     registrarArqueo: vi.fn(),
+    listarEntregas: vi.fn(),
+    confirmarEntrega: vi.fn(),
+    rechazarEntrega: vi.fn(),
   }
 })
 
@@ -63,7 +67,16 @@ beforeEach(() => {
   mocks.obtenerSaldo.mockResolvedValue(saldo())
   mocks.listarMovimientos.mockResolvedValue([])
   mocks.listarArqueos.mockResolvedValue([])
+  mocks.listarEntregas.mockResolvedValue([])
 })
+
+const entregaPendiente: Entrega = {
+  id: 12, caja: 1, cajaNombre: 'Casa Central · Caja 1', estado: 'PENDIENTE', estadoDisplay: 'Pendiente',
+  entregadoPorNombre: 'Admin Beto', observacion: 'Fondo de apertura', creadoEn: '2026-10-09T08:00:00-03:00',
+  respondidoPorNombre: '', fechaRespuesta: null, motivo: '',
+  totales: [{ moneda: 2, monedaCodigo: 'USD', simbolo: '$', decimales: 2, total: 1000, cantidadBilletes: 10 }],
+  detalle: [{ denominacion: 20, monedaCodigo: 'USD', valor: 100, cantidad: 10, subtotal: 1000 }],
+}
 
 async function abrirModalMovimiento() {
   const user = userEvent.setup()
@@ -125,16 +138,73 @@ describe('CashCountView (PI-44)', () => {
     expect(await within(dialogo).findByRole('alert')).toHaveTextContent('La caja está inactiva.')
   })
 
-  it('la entrega a cajero solo aparece para el administrador', async () => {
+  it('el movimiento manual solo ofrece ingreso y retiro (PI-43: las entregas van con confirmación)', async () => {
     const { dialogo, unmount } = await abrirModalMovimiento()
-    expect(within(dialogo).queryByRole('option', { name: 'Entrega a cajero' })).not.toBeInTheDocument()
-
-    const user = userEvent.setup()
+    const opciones = within(within(dialogo).getByLabelText('Tipo')).getAllByRole('option').map(o => o.textContent)
+    expect(opciones).toEqual(['Ingreso', 'Retiro'])
     unmount()
     render(<CashCountView auth={admin} />)
     await screen.findByText('Billete $ 100')
-    await user.click(screen.getByRole('button', { name: /Registrar movimiento/ }))
-    expect(screen.getByRole('option', { name: 'Entrega a cajero' })).toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole('button', { name: /Registrar movimiento/ }))
+    expect(screen.queryByRole('option', { name: /Entrega/ })).not.toBeInTheDocument()
+  })
+
+  it('PI-43: muestra las entregas pendientes de la caja', async () => {
+    mocks.listarEntregas.mockResolvedValue([entregaPendiente])
+    render(<CashCountView auth={cajero} />)
+    const seccion = await screen.findByRole('region', { name: 'Entregas pendientes' })
+    expect(within(seccion).getByText(/Tenés 1 entrega de billetes pendiente/)).toBeInTheDocument()
+    expect(within(seccion).getByText(/Entrega #12 · \$ 1\.000 USD/)).toBeInTheDocument()
+    expect(within(seccion).getByText(/de Admin Beto · Fondo de apertura/)).toBeInTheDocument()
+    expect(mocks.listarEntregas).toHaveBeenCalledWith({ caja: 1, estado: 'PENDIENTE' })
+  })
+
+  it('PI-43: el cajero confirma la entrega y el saldo se actualiza', async () => {
+    mocks.listarEntregas.mockResolvedValue([entregaPendiente])
+    mocks.confirmarEntrega.mockResolvedValue({
+      entrega: { ...entregaPendiente, estado: 'CONFIRMADA' }, saldo: saldo(13, 5),
+    })
+    const user = userEvent.setup()
+    render(<CashCountView auth={cajero} />)
+    await user.click(await screen.findByRole('button', { name: 'Revisar y confirmar' }))
+    const dialogo = screen.getByRole('dialog', { name: 'Entrega de billetes #12' })
+    expect(within(dialogo).getByText(/10 × 100 = 1\.000/)).toBeInTheDocument()
+    expect(within(dialogo).getByText(/Total USD \(10 billetes\)/)).toBeInTheDocument()
+    await user.click(within(dialogo).getByRole('button', { name: 'Confirmar recepción' }))
+
+    expect(mocks.confirmarEntrega).toHaveBeenCalledWith(12)
+    expect(await screen.findByRole('status')).toHaveTextContent('Entrega #12 confirmada')
+    expect(screen.queryByRole('region', { name: 'Entregas pendientes' })).not.toBeInTheDocument()
+    expect(screen.getByTestId('total-USD')).toHaveTextContent('$ 1.400')
+  })
+
+  it('PI-43: para rechazar hay que indicar el motivo', async () => {
+    mocks.listarEntregas.mockResolvedValue([entregaPendiente])
+    mocks.rechazarEntrega.mockResolvedValue({ ...entregaPendiente, estado: 'RECHAZADA', motivo: 'Faltan 2 billetes' })
+    const user = userEvent.setup()
+    render(<CashCountView auth={cajero} />)
+    await user.click(await screen.findByRole('button', { name: 'Revisar y confirmar' }))
+    const dialogo = screen.getByRole('dialog', { name: 'Entrega de billetes #12' })
+    await user.click(within(dialogo).getByRole('button', { name: 'No coincide, rechazar' }))
+    const boton = within(dialogo).getByRole('button', { name: 'Rechazar entrega' })
+    expect(boton).toBeDisabled()
+    await user.type(within(dialogo).getByLabelText('Motivo del rechazo'), 'Faltan 2 billetes')
+    await user.click(boton)
+
+    expect(mocks.rechazarEntrega).toHaveBeenCalledWith(12, 'Faltan 2 billetes')
+    expect(mocks.confirmarEntrega).not.toHaveBeenCalled()
+    expect(await screen.findByRole('status')).toHaveTextContent('Entrega #12 rechazada')
+  })
+
+  it('PI-43: muestra el error si la confirmación falla', async () => {
+    mocks.listarEntregas.mockResolvedValue([entregaPendiente])
+    mocks.confirmarEntrega.mockRejectedValue(new Error('La entrega ya está confirmada.'))
+    const user = userEvent.setup()
+    render(<CashCountView auth={cajero} />)
+    await user.click(await screen.findByRole('button', { name: 'Revisar y confirmar' }))
+    const dialogo = screen.getByRole('dialog', { name: 'Entrega de billetes #12' })
+    await user.click(within(dialogo).getByRole('button', { name: 'Confirmar recepción' }))
+    expect(await within(dialogo).findByRole('alert')).toHaveTextContent('La entrega ya está confirmada.')
   })
 
   it('registra un arqueo con lo contado y muestra si hay diferencias', async () => {

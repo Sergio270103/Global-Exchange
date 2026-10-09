@@ -5,9 +5,10 @@ from rest_framework import serializers
 from monedas.models import Moneda
 
 from .models import (
-    ArqueoCaja, Caja, DetalleArqueo, DetalleMovimiento, Denominacion,
-    MovimientoCaja,
+    ArqueoCaja, Caja, DetalleArqueo, DetalleEntrega, DetalleMovimiento,
+    Denominacion, EntregaBilletes, MovimientoCaja,
 )
+from .servicios import totales_entrega
 
 
 def _texto_valor(valor) -> str:
@@ -54,7 +55,7 @@ class MovimientoSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'caja', 'caja_nombre', 'tipo', 'tipo_display', 'moneda',
             'moneda_codigo', 'total', 'usuario_nombre', 'observacion',
-            'creado_en', 'detalle',
+            'entrega', 'creado_en', 'detalle',
         ]
 
 
@@ -65,7 +66,12 @@ class LineaBilletesSerializer(serializers.Serializer):
 
 
 class NuevoMovimientoSerializer(serializers.Serializer):
-    tipo = serializers.ChoiceField(choices=MovimientoCaja.TIPOS)
+    # Las entregas tienen su propio flujo con confirmación (PI-43).
+    tipo = serializers.ChoiceField(choices=[
+        (MovimientoCaja.TIPO_INGRESO, 'Ingreso'),
+        (MovimientoCaja.TIPO_RETIRO, 'Retiro'),
+    ], error_messages={'invalid_choice': (
+        'Tipo inválido. Las entregas de billetes se registran desde /api/entregas/.')})
     moneda = serializers.PrimaryKeyRelatedField(queryset=Moneda.objects.all())
     detalle = LineaBilletesSerializer(many=True, allow_empty=False)
     observacion = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
@@ -129,3 +135,58 @@ class NuevoArqueoSerializer(serializers.Serializer):
         if len(ids) != len(set(ids)):
             raise serializers.ValidationError('Hay denominaciones repetidas en el conteo.')
         return lineas
+
+
+# --- Entregas de billetes (PI-43) --------------------------------------
+
+class DetalleEntregaSerializer(serializers.ModelSerializer):
+    moneda_codigo = serializers.CharField(source='denominacion.moneda.codigo', read_only=True)
+    valor = serializers.SerializerMethodField()
+    subtotal = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DetalleEntrega
+        fields = ['denominacion', 'moneda_codigo', 'valor', 'cantidad', 'subtotal']
+
+    def get_valor(self, obj) -> str:
+        return _texto_valor(obj.denominacion.valor)
+
+    def get_subtotal(self, obj) -> str:
+        return _texto_valor(obj.subtotal)
+
+
+class EntregaSerializer(serializers.ModelSerializer):
+    caja_nombre = serializers.CharField(source='caja.__str__', read_only=True)
+    estado_display = serializers.CharField(source='get_estado_display', read_only=True)
+    detalle = DetalleEntregaSerializer(many=True, read_only=True)
+    totales = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EntregaBilletes
+        fields = [
+            'id', 'caja', 'caja_nombre', 'estado', 'estado_display',
+            'entregado_por_nombre', 'observacion', 'creado_en',
+            'respondido_por_nombre', 'fecha_respuesta', 'motivo',
+            'totales', 'detalle',
+        ]
+
+    def get_totales(self, obj) -> list[dict]:
+        return totales_entrega(obj)
+
+
+class NuevaEntregaSerializer(serializers.Serializer):
+    caja = serializers.PrimaryKeyRelatedField(queryset=Caja.objects.all())
+    detalle = LineaBilletesSerializer(many=True, allow_empty=False)
+    observacion = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+
+    def validate_detalle(self, lineas):
+        ids = [linea['denominacion'].pk for linea in lineas]
+        if len(ids) != len(set(ids)):
+            raise serializers.ValidationError('Hay denominaciones repetidas.')
+        return lineas
+
+
+class MotivoSerializer(serializers.Serializer):
+    motivo = serializers.CharField(max_length=255, allow_blank=False, trim_whitespace=True,
+                                   error_messages={'blank': 'Indicá el motivo.',
+                                                   'required': 'Indicá el motivo.'})
