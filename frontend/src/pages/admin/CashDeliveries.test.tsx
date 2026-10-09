@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import CashDeliveries from '@/pages/admin/CashDeliveries'
-import type { Entrega, SaldoMoneda } from '@/services/cajas'
+import type { CatalogoMoneda, Entrega } from '@/services/cajas'
 import * as cajas from '@/services/cajas'
 
 vi.mock('@/services/cajas', async importOriginal => {
@@ -17,7 +17,7 @@ vi.mock('@/services/cajas', async importOriginal => {
     ...real,
     listarCajas: vi.fn(),
     listarEntregas: vi.fn(),
-    obtenerSaldo: vi.fn(),
+    listarDenominaciones: vi.fn(),
     crearEntrega: vi.fn(),
     cancelarEntrega: vi.fn(),
   }
@@ -25,17 +25,14 @@ vi.mock('@/services/cajas', async importOriginal => {
 
 const mocks = vi.mocked(cajas)
 
-const monedas: SaldoMoneda[] = [
+const monedas: CatalogoMoneda[] = [
   {
-    moneda: 1, codigo: 'PYG', nombre: 'Guaraní', simbolo: '₲', decimales: 0, flag: '🇵🇾', total: 0, cantidadBilletes: 0,
-    denominaciones: [{ denominacion: 10, valor: 100000, cantidad: 0, subtotal: 0 }],
+    moneda: 1, codigo: 'PYG', nombre: 'Guaraní', simbolo: '₲', decimales: 0, flag: '🇵🇾',
+    denominaciones: [{ denominacion: 10, valor: 100000 }],
   },
   {
-    moneda: 2, codigo: 'USD', nombre: 'Dólar', simbolo: '$', decimales: 2, flag: '🇺🇸', total: 0, cantidadBilletes: 0,
-    denominaciones: [
-      { denominacion: 20, valor: 100, cantidad: 0, subtotal: 0 },
-      { denominacion: 21, valor: 20, cantidad: 0, subtotal: 0 },
-    ],
+    moneda: 2, codigo: 'USD', nombre: 'Dólar', simbolo: '$', decimales: 2, flag: '🇺🇸',
+    denominaciones: [{ denominacion: 20, valor: 100 }, { denominacion: 21, valor: 20 }],
   },
 ]
 
@@ -57,7 +54,7 @@ beforeEach(() => {
     { id: 1, nombre: 'Caja 1', sucursal: 'Casa Central', activa: true },
     { id: 2, nombre: 'Caja 2', sucursal: 'Casa Central', activa: true },
   ])
-  mocks.obtenerSaldo.mockResolvedValue(monedas)
+  mocks.listarDenominaciones.mockResolvedValue(monedas)
   mocks.listarEntregas.mockResolvedValue([
     entrega(),
     entrega({

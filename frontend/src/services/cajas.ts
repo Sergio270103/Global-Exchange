@@ -1,13 +1,17 @@
 /**
- * Servicio de control de cajas (PI-44, ERS RF56/RF58).
+ * Servicio de control de cajas (PI-44, PI-43, PI-78; ERS RF56–RF58).
  *
- * - `listarCajas()`: cajas activas de las sucursales.
- * - `obtenerSaldo(cajaId)`: billetes por divisa y denominación con el
- *   total de cada moneda.
- * - `registrarMovimiento(...)`: ingreso, entrega o retiro de billetes.
- *   Devuelve el saldo ya actualizado.
- * - `listarArqueos` / `registrarArqueo`: registro de auditoría del
- *   estado de caja para cierres de turno y arqueos.
+ * Desde PI-78 el saldo se maneja por **total de cada divisa**; la
+ * denominación solo se registra en las entregas de billetes.
+ *
+ * - `listarCajas()`: cajas activas.
+ * - `obtenerSaldo(cajaId)`: saldo de la caja por divisa.
+ * - `registrarMovimiento(...)`: ingreso o retiro por monto. Devuelve el
+ *   saldo ya actualizado.
+ * - `listarArqueos` / `registrarArqueo`: recuento de la caja por total de
+ *   cada moneda (sistema vs. contado).
+ * - `listarDenominaciones()`: catálogo de billetes por moneda, para cargar
+ *   una entrega.
  * - Entregas de billetes (PI-43, RF57): el admin las registra
  *   (`crearEntrega`) y quedan pendientes; el cajero las confirma
  *   (`confirmarEntrega`, se suman al saldo) o rechaza con motivo; el admin
@@ -29,25 +33,24 @@ export interface Caja {
 /** Tipos de movimiento de efectivo. */
 export type TipoMovimiento = 'INGRESO' | 'ENTREGA' | 'RETIRO'
 
-/** Billetes de una denominación en la caja. */
-export interface DenominacionSaldo {
-  denominacion: number
-  valor: number
-  cantidad: number
-  subtotal: number
-}
-
-/** Inventario de billetes de una moneda en la caja. */
-export interface SaldoMoneda {
+/** Datos de una moneda que usan las pantallas de caja. */
+export interface MonedaCaja {
   moneda: number
   codigo: string
   nombre: string
   simbolo: string
   decimales: number
   flag: string
+}
+
+/** Saldo de la caja en una moneda (total, sin detalle de billetes). */
+export interface SaldoMoneda extends MonedaCaja {
   total: number
-  cantidadBilletes: number
-  denominaciones: DenominacionSaldo[]
+}
+
+/** Billetes habilitados de una moneda (catálogo para las entregas). */
+export interface CatalogoMoneda extends MonedaCaja {
+  denominaciones: { denominacion: number; valor: number }[]
 }
 
 /** Movimiento de efectivo ya registrado. */
@@ -57,19 +60,21 @@ export interface MovimientoCaja {
   tipoDisplay: string
   monedaCodigo: string
   total: number
+  /** Saldo de la divisa después del movimiento (puede faltar en datos viejos). */
+  saldoResultante: number | null
   usuarioNombre: string
   observacion: string
   creadoEn: string
-  detalle: { denominacion: number; valor: number; cantidad: number; saldoResultante: number }[]
 }
 
-/** Línea de un arqueo: lo que dice el sistema vs. lo contado. */
+/** Línea de un arqueo: total según sistema vs. total contado de una moneda. */
 export interface LineaArqueo {
-  denominacion: number
+  moneda: number
   monedaCodigo: string
-  valor: number
-  cantidadSistema: number
-  cantidadContada: number
+  simbolo: string
+  decimales: number
+  montoSistema: number
+  montoContado: number
   diferencia: number
 }
 
@@ -113,7 +118,7 @@ export interface Entrega {
   detalle: { denominacion: number; monedaCodigo: string; valor: number; cantidad: number; subtotal: number }[]
 }
 
-/** Billetes que se cargan en un movimiento o arqueo. */
+/** Billetes de una denominación que se cargan en una entrega. */
 export interface LineaBilletes {
   denominacion: number
   cantidad: number
@@ -128,8 +133,16 @@ interface SaldoMonedaApi {
   simbolo: string
   decimales: number
   total: string
-  cantidad_billetes: number
-  denominaciones: { denominacion: number; valor: string; cantidad: number; subtotal: string }[]
+}
+
+interface DenominacionApi {
+  id: number
+  moneda: number
+  moneda_codigo: string
+  moneda_nombre: string
+  simbolo: string
+  decimales: number
+  valor: string
 }
 
 interface MovimientoApi {
@@ -138,10 +151,10 @@ interface MovimientoApi {
   tipo_display: string
   moneda_codigo: string
   total: string
+  saldo_resultante: string | null
   usuario_nombre: string
   observacion: string
   creado_en: string
-  detalle: { denominacion: number; valor: string; cantidad: number; saldo_resultante: number }[]
 }
 
 interface ArqueoApi {
@@ -151,12 +164,13 @@ interface ArqueoApi {
   con_diferencias: boolean
   creado_en: string
   detalle: {
-    denominacion: number
+    moneda: number
     moneda_codigo: string
-    valor: string
-    cantidad_sistema: number
-    cantidad_contada: number
-    diferencia: number
+    simbolo: string
+    decimales: number
+    monto_sistema: string
+    monto_contado: string
+    diferencia: string
   }[]
 }
 
@@ -219,13 +233,6 @@ function mapearSaldo(m: SaldoMonedaApi): SaldoMoneda {
     decimales: m.decimales,
     flag: banderaDesdeCodigo(m.moneda_codigo),
     total: Number(m.total),
-    cantidadBilletes: m.cantidad_billetes,
-    denominaciones: m.denominaciones.map(d => ({
-      denominacion: d.denominacion,
-      valor: Number(d.valor),
-      cantidad: d.cantidad,
-      subtotal: Number(d.subtotal),
-    })),
   }
 }
 
@@ -236,15 +243,10 @@ function mapearMovimiento(m: MovimientoApi): MovimientoCaja {
     tipoDisplay: m.tipo_display,
     monedaCodigo: m.moneda_codigo,
     total: Number(m.total),
+    saldoResultante: m.saldo_resultante === null ? null : Number(m.saldo_resultante),
     usuarioNombre: m.usuario_nombre,
     observacion: m.observacion,
     creadoEn: m.creado_en,
-    detalle: m.detalle.map(d => ({
-      denominacion: d.denominacion,
-      valor: Number(d.valor),
-      cantidad: d.cantidad,
-      saldoResultante: d.saldo_resultante,
-    })),
   }
 }
 
@@ -256,12 +258,13 @@ function mapearArqueo(a: ArqueoApi): Arqueo {
     conDiferencias: a.con_diferencias,
     creadoEn: a.creado_en,
     detalle: a.detalle.map(d => ({
-      denominacion: d.denominacion,
+      moneda: d.moneda,
       monedaCodigo: d.moneda_codigo,
-      valor: Number(d.valor),
-      cantidadSistema: d.cantidad_sistema,
-      cantidadContada: d.cantidad_contada,
-      diferencia: d.diferencia,
+      simbolo: d.simbolo,
+      decimales: d.decimales,
+      montoSistema: Number(d.monto_sistema),
+      montoContado: Number(d.monto_contado),
+      diferencia: Number(d.diferencia),
     })),
   }
 }
@@ -271,7 +274,7 @@ export async function listarCajas(): Promise<Caja[]> {
   return apiFetch<Caja[]>('/cajas/')
 }
 
-/** Billetes de la caja agrupados por moneda y denominación (RF56). */
+/** Saldo de la caja por divisa (RF56). */
 export async function obtenerSaldo(cajaId: number): Promise<SaldoMoneda[]> {
   const datos = await apiFetch<{ monedas: SaldoMonedaApi[] }>(`/cajas/${cajaId}/saldo/`)
   return datos.monedas.map(mapearSaldo)
@@ -292,15 +295,16 @@ export async function listarMovimientos(
 }
 
 /**
- * Registra un ingreso o retiro y devuelve el saldo actualizado (RF58).
- * Las entregas de billetes van por `crearEntrega` (requieren confirmación).
+ * Registra un ingreso o retiro por monto y devuelve el saldo actualizado
+ * (RF58). Las entregas de billetes van por `crearEntrega` (requieren
+ * confirmación).
  *
  * @throws {ApiError} Con el mensaje del backend, por ejemplo si un retiro
- *   pide más billetes de los que hay.
+ *   supera el saldo de la divisa.
  */
 export async function registrarMovimiento(
   cajaId: number,
-  datos: { tipo: 'INGRESO' | 'RETIRO'; moneda: number; detalle: LineaBilletes[]; observacion?: string },
+  datos: { tipo: 'INGRESO' | 'RETIRO'; moneda: number; monto: number; observacion?: string },
 ): Promise<{ movimiento: MovimientoCaja; saldo: SaldoMoneda[] }> {
   const res = await apiFetch<{ movimiento: MovimientoApi; monedas: SaldoMonedaApi[] }>(
     `/cajas/${cajaId}/movimientos/`,
@@ -309,7 +313,7 @@ export async function registrarMovimiento(
       body: JSON.stringify({
         tipo: datos.tipo,
         moneda: datos.moneda,
-        detalle: datos.detalle.filter(l => l.cantidad > 0),
+        monto: String(datos.monto),
         observacion: datos.observacion ?? '',
       }),
     },
@@ -324,19 +328,50 @@ export async function listarArqueos(cajaId: number, limite = 10): Promise<Arqueo
 }
 
 /**
- * Registra un arqueo con lo contado físicamente. No modifica el saldo:
- * solo deja constancia (con diferencias, si las hay).
+ * Registra un arqueo con el total contado de cada moneda. No modifica el
+ * saldo: solo deja constancia (con diferencias, si las hay).
  */
 export async function registrarArqueo(
   cajaId: number,
-  conteo: LineaBilletes[],
+  conteo: { moneda: number; monto: number }[],
   observacion = '',
 ): Promise<Arqueo> {
   const datos = await apiFetch<ArqueoApi>(`/cajas/${cajaId}/arqueos/`, {
     method: 'POST',
-    body: JSON.stringify({ conteo, observacion }),
+    body: JSON.stringify({
+      conteo: conteo.map(l => ({ moneda: l.moneda, monto: String(l.monto) })),
+      observacion,
+    }),
   })
   return mapearArqueo(datos)
+}
+
+/**
+ * Catálogo de billetes habilitados, agrupado por moneda y ordenado de la
+ * denominación mayor a la menor. Lo usa el formulario de entregas.
+ */
+export async function listarDenominaciones(): Promise<CatalogoMoneda[]> {
+  const datos = await apiFetch<DenominacionApi[]>('/denominaciones/?activas=1')
+  const grupos = new Map<number, CatalogoMoneda>()
+  for (const d of datos) {
+    let grupo = grupos.get(d.moneda)
+    if (!grupo) {
+      grupo = {
+        moneda: d.moneda,
+        codigo: d.moneda_codigo,
+        nombre: d.moneda_nombre,
+        simbolo: d.simbolo,
+        decimales: d.decimales,
+        flag: banderaDesdeCodigo(d.moneda_codigo),
+        denominaciones: [],
+      }
+      grupos.set(d.moneda, grupo)
+    }
+    grupo.denominaciones.push({ denominacion: d.id, valor: Number(d.valor) })
+  }
+  return [...grupos.values()]
+    .map(g => ({ ...g, denominaciones: [...g.denominaciones].sort((a, b) => b.valor - a.valor) }))
+    .sort((a, b) => a.codigo.localeCompare(b.codigo))
 }
 
 /** Lista entregas de billetes, de la más reciente a la más antigua. */

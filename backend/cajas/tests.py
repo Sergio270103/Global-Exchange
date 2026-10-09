@@ -1,13 +1,17 @@
-"""Pruebas de PI-44: consultar y actualizar saldo de billetes por caja.
+"""Pruebas del saldo de caja (PI-44, ajustado en PI-78).
 
-Criterios de aceptación cubiertos:
+Desde PI-78 el saldo se lleva por **total de cada divisa** (decisión de
+la Product Owner); la denominación solo se registra en las entregas de
+billetes (ver ``test_entregas.py``).
 
-1. Vista detallada de billetes agrupados por divisa y denominación (RF56).
-2. Total acumulado por moneda según el inventario de billetes.
-3. El saldo se actualiza en el mismo paso que se confirma un ingreso,
-   una entrega o un retiro (RF58), y un retiro no puede dejarlo negativo.
-4. Registro de auditoría del estado de caja (arqueos / cierres de turno),
-   sin endpoints para editar ni borrar movimientos.
+Criterios cubiertos:
+
+1. Saldo de la caja por divisa, con todas las monedas activas.
+2. Ingresos y retiros por monto que actualizan el saldo en el mismo paso
+   (RF58); un retiro no puede superar el saldo de la divisa.
+3. Montos que respetan los decimales de cada moneda.
+4. Recuento (arqueo) por total de cada moneda, con diferencias.
+5. Permisos por rol y movimientos sin edición ni borrado.
 
 Ejecutar desde ``backend/``::
 
@@ -21,7 +25,7 @@ from rest_framework.test import APIClient
 
 from monedas.models import Moneda
 
-from .models import ArqueoCaja, Caja, Denominacion, MovimientoCaja, SaldoBillete
+from .models import ArqueoCaja, Caja, Denominacion, MovimientoCaja, SaldoCaja
 from .servicios import SaldoInsuficiente, registrar_movimiento
 
 
@@ -53,10 +57,11 @@ class BaseCajas(TestCase):
     @classmethod
     def setUpTestData(cls):
         cls.usd, _ = Moneda.objects.update_or_create(
-            codigo='USD', defaults={'nombre': 'Dólar', 'simbolo': '$', 'activo': True})
+            codigo='USD', defaults={'nombre': 'Dólar', 'simbolo': '$', 'decimales': 2, 'activo': True})
         cls.pyg, _ = Moneda.objects.update_or_create(
             codigo='PYG', defaults={'nombre': 'Guaraní', 'simbolo': '₲', 'decimales': 0, 'activo': True})
         cls.caja = Caja.objects.create(nombre='Caja Test', sucursal='Sucursal Test')
+        # Denominaciones: solo las usan las entregas (PI-43).
         cls.usd100, _ = Denominacion.objects.get_or_create(moneda=cls.usd, valor=Decimal('100'))
         cls.usd20, _ = Denominacion.objects.get_or_create(moneda=cls.usd, valor=Decimal('20'))
         cls.pyg100k, _ = Denominacion.objects.get_or_create(moneda=cls.pyg, valor=Decimal('100000'))
@@ -68,161 +73,161 @@ class BaseCajas(TestCase):
     def url(self, sufijo=''):
         return f'/api/cajas/{self.caja.pk}/{sufijo}'
 
-    def mover(self, tipo, moneda, lineas, usuario=None, **extra):
+    def mover(self, tipo, moneda, monto, usuario=None, **extra):
         if usuario:
             self.api.force_authenticate(user=usuario)
         return self.api.post(self.url('movimientos/'), {
-            'tipo': tipo, 'moneda': moneda.pk,
-            'detalle': [{'denominacion': d.pk, 'cantidad': c} for d, c in lineas],
-            **extra,
+            'tipo': tipo, 'moneda': moneda.pk, 'monto': str(monto), **extra,
         }, format='json')
 
-    def cantidad(self, denominacion) -> int:
-        saldo = SaldoBillete.objects.filter(caja=self.caja, denominacion=denominacion).first()
-        return saldo.cantidad if saldo else 0
+    def saldo(self, moneda, caja=None) -> Decimal:
+        fila = SaldoCaja.objects.filter(caja=caja or self.caja, moneda=moneda).first()
+        return fila.monto if fila else Decimal('0')
 
 
 class SaldoTests(BaseCajas):
-    """Criterios 1 y 2: vista por divisa y denominación con totales."""
+    """Criterio 1: saldo por divisa."""
 
-    def test_caja_nueva_muestra_denominaciones_en_cero(self):
+    def test_caja_nueva_muestra_todas_las_monedas_en_cero(self):
         res = self.api.get(self.url('saldo/'))
         self.assertEqual(res.status_code, 200)
-        usd = next(m for m in res.data['monedas'] if m['moneda_codigo'] == 'USD')
-        valores = [d['valor'] for d in usd['denominaciones']]
-        self.assertIn('100', valores)
-        self.assertIn('20', valores)
-        self.assertEqual(usd['total'], '0')
-        self.assertTrue(all(d['cantidad'] == 0 for d in usd['denominaciones']))
-
-    def test_agrupa_por_moneda_y_calcula_totales(self):
-        self.mover('INGRESO', self.usd, [(self.usd100, 3), (self.usd20, 5)])
-        self.mover('INGRESO', self.pyg, [(self.pyg100k, 4)])
-        res = self.api.get(self.url('saldo/'))
         monedas = {m['moneda_codigo']: m for m in res.data['monedas']}
-        self.assertEqual(monedas['USD']['total'], '400')
-        self.assertEqual(monedas['USD']['cantidad_billetes'], 8)
-        fila100 = next(d for d in monedas['USD']['denominaciones'] if d['valor'] == '100')
-        self.assertEqual(fila100['cantidad'], 3)
-        self.assertEqual(fila100['subtotal'], '300')
-        self.assertEqual(monedas['PYG']['total'], '400000')
+        self.assertEqual(monedas['USD']['total'], '0')
+        self.assertEqual(monedas['PYG']['total'], '0')
+        self.assertEqual(monedas['PYG']['decimales'], 0)
+        self.assertNotIn('denominaciones', monedas['USD'])
 
-    def test_moneda_inactiva_no_aparece_si_no_tiene_billetes(self):
-        gbp = Moneda.objects.create(codigo='GBX', nombre='Prueba', activo=False)
-        Denominacion.objects.create(moneda=gbp, valor=Decimal('10'))
-        res = self.api.get(self.url('saldo/'))
-        self.assertNotIn('GBX', [m['moneda_codigo'] for m in res.data['monedas']])
+    def test_muestra_el_total_de_cada_divisa(self):
+        self.mover('INGRESO', self.usd, '1250.50')
+        self.mover('INGRESO', self.pyg, '3500000')
+        monedas = {m['moneda_codigo']: m for m in self.api.get(self.url('saldo/')).data['monedas']}
+        self.assertEqual(monedas['USD']['total'], '1250.5')
+        self.assertEqual(monedas['PYG']['total'], '3500000')
+
+    def test_moneda_inactiva_solo_aparece_si_tiene_saldo(self):
+        gbx = Moneda.objects.create(codigo='GBX', nombre='Prueba', activo=True)
+        self.mover('INGRESO', gbx, '10')
+        gbx.activo = False
+        gbx.save()
+        codigos = lambda: [m['moneda_codigo'] for m in self.api.get(self.url('saldo/')).data['monedas']]
+        self.assertIn('GBX', codigos())
+        self.mover('RETIRO', gbx, '10')
+        self.assertNotIn('GBX', codigos())
 
 
 class MovimientoTests(BaseCajas):
-    """Criterio 3: el saldo se actualiza tras cada movimiento."""
+    """Criterios 2 y 3: ingresos y retiros por monto."""
 
     def test_ingreso_suma_y_devuelve_saldo_actualizado(self):
-        res = self.mover('INGRESO', self.usd, [(self.usd100, 10)], observacion='Apertura')
+        res = self.mover('INGRESO', self.usd, '1000', observacion='Ajuste')
         self.assertEqual(res.status_code, 201, res.data)
-        self.assertEqual(self.cantidad(self.usd100), 10)
+        self.assertEqual(self.saldo(self.usd), Decimal('1000'))
         mov = res.data['movimiento']
         self.assertEqual(Decimal(mov['total']), Decimal('1000'))
+        self.assertEqual(Decimal(mov['saldo_resultante']), Decimal('1000'))
         self.assertEqual(mov['usuario_nombre'], 'Cajera Ana')
-        self.assertEqual(mov['detalle'][0]['saldo_resultante'], 10)
+        self.assertNotIn('detalle', mov)
         usd = next(m for m in res.data['monedas'] if m['moneda_codigo'] == 'USD')
         self.assertEqual(usd['total'], '1000')
 
     def test_retiro_resta(self):
-        self.mover('INGRESO', self.usd, [(self.usd100, 10)])
-        res = self.mover('RETIRO', self.usd, [(self.usd100, 4)])
+        self.mover('INGRESO', self.usd, '1000')
+        res = self.mover('RETIRO', self.usd, '350.25')
         self.assertEqual(res.status_code, 201, res.data)
-        self.assertEqual(self.cantidad(self.usd100), 6)
-        self.assertEqual(res.data['movimiento']['detalle'][0]['saldo_resultante'], 6)
+        self.assertEqual(self.saldo(self.usd), Decimal('649.75'))
+        self.assertEqual(Decimal(res.data['movimiento']['saldo_resultante']), Decimal('649.75'))
 
-    def test_retiro_sin_billetes_suficientes_no_cambia_nada(self):
-        self.mover('INGRESO', self.usd, [(self.usd100, 2), (self.usd20, 1)])
-        res = self.mover('RETIRO', self.usd, [(self.usd100, 1), (self.usd20, 3)])
+    def test_retiro_mayor_al_saldo_no_cambia_nada(self):
+        self.mover('INGRESO', self.usd, '100')
+        res = self.mover('RETIRO', self.usd, '100.01')
         self.assertEqual(res.status_code, 400)
-        self.assertIn('insuficientes', res.data['detail'])
-        self.assertEqual(self.cantidad(self.usd100), 2)
-        self.assertEqual(self.cantidad(self.usd20), 1)
+        self.assertIn('Saldo insuficiente de USD', res.data['detail'])
+        self.assertEqual(self.saldo(self.usd), Decimal('100'))
         self.assertEqual(MovimientoCaja.objects.filter(tipo='RETIRO').count(), 0)
+
+    def test_retiro_exacto_deja_la_divisa_en_cero(self):
+        self.mover('INGRESO', self.usd, '100')
+        self.assertEqual(self.mover('RETIRO', self.usd, '100').status_code, 201)
+        self.assertEqual(self.saldo(self.usd), Decimal('0'))
 
     def test_entrega_no_se_registra_como_movimiento_directo(self):
         # PI-43: las entregas pasan por /api/entregas/ y requieren confirmación.
         for usuario in (CAJERO, ADMIN):
-            res = self.mover('ENTREGA', self.usd, [(self.usd100, 5)], usuario=usuario)
+            res = self.mover('ENTREGA', self.usd, '500', usuario=usuario)
             self.assertEqual(res.status_code, 400)
             self.assertIn('/api/entregas/', str(res.data['tipo']))
-        self.assertEqual(self.cantidad(self.usd100), 0)
+        self.assertEqual(self.saldo(self.usd), Decimal('0'))
 
-    def test_denominacion_de_otra_moneda_se_rechaza(self):
-        res = self.mover('INGRESO', self.usd, [(self.pyg100k, 1)])
-        self.assertEqual(res.status_code, 400)
-        self.assertEqual(self.cantidad(self.pyg100k), 0)
+    def test_monto_cero_negativo_o_vacio_se_rechaza(self):
+        for monto in ('0', '-5', ''):
+            self.assertEqual(self.mover('INGRESO', self.usd, monto).status_code, 400, monto)
+        self.assertEqual(MovimientoCaja.objects.count(), 0)
 
-    def test_denominacion_repetida_y_cantidad_cero_se_rechazan(self):
-        res = self.mover('INGRESO', self.usd, [(self.usd100, 1), (self.usd100, 2)])
+    def test_respeta_los_decimales_de_la_moneda(self):
+        res = self.mover('INGRESO', self.pyg, '1000.5')
         self.assertEqual(res.status_code, 400)
-        res = self.mover('INGRESO', self.usd, [(self.usd100, 0)])
-        self.assertEqual(res.status_code, 400)
-        res = self.api.post(self.url('movimientos/'), {
-            'tipo': 'INGRESO', 'moneda': self.usd.pk, 'detalle': []}, format='json')
-        self.assertEqual(res.status_code, 400)
+        self.assertIn('PYG admite 0 decimales', res.data['detail'])
+        self.assertEqual(self.mover('INGRESO', self.usd, '10.25').status_code, 201)
 
     def test_caja_inactiva_no_admite_movimientos(self):
         self.caja.activa = False
         self.caja.save()
-        res = self.mover('INGRESO', self.usd, [(self.usd100, 1)])
-        self.assertEqual(res.status_code, 400)
+        self.assertEqual(self.mover('INGRESO', self.usd, '10').status_code, 400)
 
     def test_historial_filtra_por_moneda_y_tipo(self):
-        self.mover('INGRESO', self.usd, [(self.usd100, 3)])
-        self.mover('RETIRO', self.usd, [(self.usd100, 1)])
-        self.mover('INGRESO', self.pyg, [(self.pyg100k, 2)])
+        self.mover('INGRESO', self.usd, '300')
+        self.mover('RETIRO', self.usd, '100')
+        self.mover('INGRESO', self.pyg, '200000')
         res = self.api.get(self.url('movimientos/'))
         self.assertEqual(len(res.data), 3)
         self.assertEqual(res.data[0]['moneda_codigo'], 'PYG')  # más reciente primero
-        res = self.api.get(self.url('movimientos/?moneda=USD'))
-        self.assertEqual(len(res.data), 2)
+        self.assertEqual(len(self.api.get(self.url('movimientos/?moneda=USD')).data), 2)
         res = self.api.get(self.url('movimientos/?moneda=USD&tipo=retiro'))
         self.assertEqual([m['tipo'] for m in res.data], ['RETIRO'])
 
     def test_servicio_reutilizable_lanza_saldo_insuficiente(self):
         with self.assertRaises(SaldoInsuficiente):
-            registrar_movimiento(self.caja, 'RETIRO', self.usd, [(self.usd100, 1)], 'tests')
+            registrar_movimiento(self.caja, 'RETIRO', self.usd, Decimal('1'), 'tests')
 
 
 class ArqueoTests(BaseCajas):
-    """Criterio 4: registro de auditoría del estado de caja."""
+    """Criterio 4: recuento por total de cada moneda."""
 
     def test_arqueo_sin_conteo_respalda_el_saldo_actual(self):
-        self.mover('INGRESO', self.usd, [(self.usd100, 3)])
+        self.mover('INGRESO', self.usd, '300')
         res = self.api.post(self.url('arqueos/'), {'observacion': 'Cierre turno mañana'}, format='json')
         self.assertEqual(res.status_code, 201, res.data)
         self.assertFalse(res.data['con_diferencias'])
         self.assertEqual(res.data['usuario_nombre'], 'Cajera Ana')
         [linea] = res.data['detalle']
-        self.assertEqual((linea['cantidad_sistema'], linea['cantidad_contada']), (3, 3))
+        self.assertEqual(linea['moneda_codigo'], 'USD')
+        self.assertEqual((Decimal(linea['monto_sistema']), Decimal(linea['monto_contado'])),
+                         (Decimal('300'), Decimal('300')))
 
-    def test_arqueo_con_diferencia_queda_marcado_y_no_toca_el_saldo(self):
-        self.mover('INGRESO', self.usd, [(self.usd100, 3)])
+    def test_arqueo_con_faltante_y_sobrante_no_toca_el_saldo(self):
+        self.mover('INGRESO', self.usd, '300')
+        self.mover('INGRESO', self.pyg, '100000')
         res = self.api.post(self.url('arqueos/'), {
-            'conteo': [{'denominacion': self.usd100.pk, 'cantidad': 2},
-                       {'denominacion': self.usd20.pk, 'cantidad': 1}],
+            'conteo': [{'moneda': self.usd.pk, 'monto': '280'},
+                       {'moneda': self.pyg.pk, 'monto': '150000'}],
         }, format='json')
         self.assertEqual(res.status_code, 201, res.data)
         self.assertTrue(res.data['con_diferencias'])
-        por_valor = {d['valor']: d for d in res.data['detalle']}
-        self.assertEqual(por_valor['100']['diferencia'], -1)
-        self.assertEqual(por_valor['20']['diferencia'], 1)
-        self.assertEqual(self.cantidad(self.usd100), 3)
+        por_moneda = {d['moneda_codigo']: d for d in res.data['detalle']}
+        self.assertEqual(Decimal(por_moneda['USD']['diferencia']), Decimal('-20'))
+        self.assertEqual(Decimal(por_moneda['PYG']['diferencia']), Decimal('50000'))
+        self.assertEqual(self.saldo(self.usd), Decimal('300'))
         self.assertEqual(len(self.api.get(self.url('arqueos/')).data), 1)
 
-    def test_conteo_negativo_o_repetido_se_rechaza(self):
-        res = self.api.post(self.url('arqueos/'), {
-            'conteo': [{'denominacion': self.usd100.pk, 'cantidad': -1}]}, format='json')
-        self.assertEqual(res.status_code, 400)
-        res = self.api.post(self.url('arqueos/'), {
-            'conteo': [{'denominacion': self.usd100.pk, 'cantidad': 1},
-                       {'denominacion': self.usd100.pk, 'cantidad': 2}]}, format='json')
-        self.assertEqual(res.status_code, 400)
+    def test_conteo_invalido_se_rechaza(self):
+        casos = (
+            [{'moneda': self.usd.pk, 'monto': '-1'}],
+            [{'moneda': self.usd.pk, 'monto': '1'}, {'moneda': self.usd.pk, 'monto': '2'}],
+            [{'moneda': self.pyg.pk, 'monto': '10.5'}],
+        )
+        for conteo in casos:
+            res = self.api.post(self.url('arqueos/'), {'conteo': conteo}, format='json')
+            self.assertEqual(res.status_code, 400, conteo)
         self.assertEqual(ArqueoCaja.objects.count(), 0)
 
 
@@ -250,7 +255,7 @@ class PermisosTests(BaseCajas):
         self.assertNotIn('Vieja', nombres)
 
     def test_movimientos_no_se_editan_ni_borran(self):
-        self.mover('INGRESO', self.usd, [(self.usd100, 1)])
+        self.mover('INGRESO', self.usd, '1')
         self.assertEqual(self.api.delete(self.url()).status_code, 403)
         self.api.force_authenticate(user=ADMIN)
         self.assertEqual(self.api.delete(self.url()).status_code, 405)
@@ -258,8 +263,15 @@ class PermisosTests(BaseCajas):
         self.assertEqual(self.api.delete(self.url('movimientos/')).status_code, 405)
 
     def test_catalogo_de_denominaciones(self):
-        res = self.api.get('/api/denominaciones/?moneda=USD')
+        res = self.api.get('/api/denominaciones/?moneda=USD&activas=1')
         self.assertEqual(res.status_code, 200)
         self.assertTrue(all(d['moneda_codigo'] == 'USD' for d in res.data))
+        valores = [Decimal(d['valor']) for d in res.data]
+        self.assertEqual(valores, sorted(valores, reverse=True))  # mayor primero
+        self.assertEqual(res.data[0]['simbolo'], '$')
+        self.usd20.activa = False
+        self.usd20.save()
+        valores = [Decimal(d['valor']) for d in self.api.get('/api/denominaciones/?moneda=USD&activas=1').data]
+        self.assertNotIn(Decimal('20'), valores)
         nueva = {'moneda': self.usd.pk, 'valor': '50'}
         self.assertEqual(self.api.post('/api/denominaciones/', nueva, format='json').status_code, 403)

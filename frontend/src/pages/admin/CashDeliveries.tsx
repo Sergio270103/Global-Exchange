@@ -16,12 +16,12 @@ import {
   crearEntrega,
   formatearMonto,
   listarCajas,
+  listarDenominaciones,
   listarEntregas,
-  obtenerSaldo,
   type Caja,
+  type CatalogoMoneda,
   type Entrega,
   type EstadoEntrega,
-  type SaldoMoneda,
 } from '@/services/cajas'
 import {
   BotonesModal,
@@ -241,22 +241,23 @@ function ModalNuevaEntrega({ cajas, cajaInicial, onCerrar, onRegistrada }: {
   onRegistrada: (entrega: Entrega) => void
 }) {
   const [cajaId, setCajaId] = useState<number>(cajaInicial ?? cajas[0].id)
-  const [monedas, setMonedas] = useState<SaldoMoneda[]>([])
+  const [monedas, setMonedas] = useState<CatalogoMoneda[]>([])
   const [codigo, setCodigo] = useState('')
   const [cantidades, setCantidades] = useState<Record<number, number>>({})
   const [observacion, setObservacion] = useState('')
   const [enviando, setEnviando] = useState(false)
   const [error, setError] = useState('')
 
-  // Las denominaciones habilitadas salen del catálogo de la caja (PI-44).
+  // Catálogo de billetes habilitados por moneda. La entrega es el único
+  // lugar donde se registra la denominación (PI-78).
   useEffect(() => {
-    obtenerSaldo(cajaId)
+    listarDenominaciones()
       .then(lista => {
         setMonedas(lista)
         setCodigo(actual => actual && lista.some(m => m.codigo === actual) ? actual : lista[0]?.codigo ?? '')
       })
       .catch((e: Error) => setError(e.message))
-  }, [cajaId])
+  }, [])
 
   const moneda = monedas.find(m => m.codigo === codigo)
   const totales = monedas

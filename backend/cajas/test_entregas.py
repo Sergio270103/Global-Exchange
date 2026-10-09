@@ -5,8 +5,9 @@ Criterios de aceptación cubiertos:
 1. Registro por caja y divisa, con el detalle por denominación y cantidad.
 2. Fecha y hora de la entrega guardadas automáticamente.
 3. Total entregado por divisa.
-4. Recién al confirmar el cajero se suman los billetes al saldo de la
-   caja (PI-44), y queda registrado qué cajero la recibió y cuándo.
+4. Recién al confirmar el cajero se suma al saldo de la caja el total
+   entregado de cada divisa (PI-78), y queda registrado qué cajero la
+   recibió y cuándo.
 
 Además: rechazo con motivo, cancelación por el admin, permisos por rol,
 y que una entrega no se pueda responder dos veces.
@@ -73,7 +74,7 @@ class RegistrarEntregaTests(BaseEntregas):
 
     def test_pendiente_no_modifica_el_saldo(self):
         self.entrega_usd_pyg()
-        self.assertEqual(self.cantidad(self.usd100), 0)
+        self.assertEqual(self.saldo(self.usd), Decimal('0'))
         self.assertEqual(MovimientoCaja.objects.count(), 0)
 
     def test_validaciones_del_detalle(self):
@@ -110,9 +111,9 @@ class ConfirmarEntregaTests(BaseEntregas):
         self.assertEqual(res.data['entrega']['estado'], 'CONFIRMADA')
         self.assertEqual(res.data['entrega']['respondido_por_nombre'], 'Cajera Ana')
         self.assertIsNotNone(res.data['entrega']['fecha_respuesta'])
-        self.assertEqual(self.cantidad(self.usd100), 10)
-        self.assertEqual(self.cantidad(self.usd20), 5)
-        self.assertEqual(self.cantidad(self.pyg100k), 3)
+        # PI-78: al confirmar se suma el total de cada divisa.
+        self.assertEqual(self.saldo(self.usd), Decimal('1100'))
+        self.assertEqual(self.saldo(self.pyg), Decimal('300000'))
         monedas = {m['moneda_codigo']: m for m in res.data['monedas']}
         self.assertEqual(monedas['USD']['total'], '1100')
 
@@ -124,6 +125,8 @@ class ConfirmarEntregaTests(BaseEntregas):
         self.assertEqual({m.moneda.codigo for m in movs}, {'USD', 'PYG'})
         self.assertTrue(all(m.tipo == 'ENTREGA' for m in movs))
         self.assertTrue(all(m.usuario_nombre == 'Cajera Ana' for m in movs))
+        self.assertEqual({m.moneda.codigo: m.total for m in movs},
+                         {'USD': Decimal('1100'), 'PYG': Decimal('300000')})
         self.assertIn(f"Entrega #{entrega['id']}", movs.first().observacion)
         # Se ve en el historial de la caja (PI-44).
         historial = self.como(CAJERO).get(f'/api/cajas/{self.caja.pk}/movimientos/?tipo=ENTREGA').data
@@ -135,19 +138,19 @@ class ConfirmarEntregaTests(BaseEntregas):
         res = self.accion(entrega['id'], 'confirmar', OTRO_CAJERO)
         self.assertEqual(res.status_code, 400)
         self.assertIn('confirmada', res.data['detail'])
-        self.assertEqual(self.cantidad(self.usd100), 10)
+        self.assertEqual(self.saldo(self.usd), Decimal('1100'))
 
     def test_solo_el_cajero_confirma(self):
         entrega = self.entrega_usd_pyg()
         for usuario in (ADMIN, ANALISTA, CLIENTE):
             self.assertEqual(self.accion(entrega['id'], 'confirmar', usuario).status_code, 403)
-        self.assertEqual(self.cantidad(self.usd100), 0)
+        self.assertEqual(self.saldo(self.usd), Decimal('0'))
 
     def test_quien_entrega_no_puede_confirmar_su_propia_entrega(self):
         res = self.entregar([(self.usd100, 1)], usuario=ADMIN_CAJERO)
         res = self.accion(res.data['id'], 'confirmar', ADMIN_CAJERO)
         self.assertEqual(res.status_code, 403)
-        self.assertEqual(self.cantidad(self.usd100), 0)
+        self.assertEqual(self.saldo(self.usd), Decimal('0'))
 
     def test_si_la_confirmacion_falla_no_se_suma_nada(self):
         entrega = crear_entrega(self.caja, [(self.usd100, 2), (self.pyg100k, 1)], 'sub-admin', 'Admin')
@@ -155,8 +158,8 @@ class ConfirmarEntregaTests(BaseEntregas):
         self.caja.save()
         res = self.accion(entrega.pk, 'confirmar', CAJERO)
         self.assertEqual(res.status_code, 400)
-        self.assertEqual(self.cantidad(self.usd100), 0)
-        self.assertEqual(self.cantidad(self.pyg100k), 0)
+        self.assertEqual(self.saldo(self.usd), Decimal('0'))
+        self.assertEqual(self.saldo(self.pyg), Decimal('0'))
         entrega.refresh_from_db()
         self.assertEqual(entrega.estado, 'PENDIENTE')
 
@@ -165,7 +168,7 @@ class ConfirmarEntregaTests(BaseEntregas):
         confirmar_entrega(entrega, 'sub-cajero', 'Cajera Ana')
         entrega.refresh_from_db()
         self.assertEqual(entrega.estado, EntregaBilletes.ESTADO_CONFIRMADA)
-        self.assertEqual(self.cantidad(self.usd20), 4)
+        self.assertEqual(self.saldo(self.usd), Decimal('80'))
 
 
 class RechazarYCancelarTests(BaseEntregas):
@@ -179,7 +182,7 @@ class RechazarYCancelarTests(BaseEntregas):
         self.assertEqual(res.data['estado'], 'RECHAZADA')
         self.assertEqual(res.data['motivo'], 'Faltan 2 billetes de USD 100')
         self.assertEqual(res.data['respondido_por_nombre'], 'Cajera Ana')
-        self.assertEqual(self.cantidad(self.usd100), 0)
+        self.assertEqual(self.saldo(self.usd), Decimal('0'))
         self.assertEqual(self.accion(entrega['id'], 'confirmar', CAJERO).status_code, 400)
 
     def test_admin_cancela_pendiente(self):
@@ -195,7 +198,7 @@ class RechazarYCancelarTests(BaseEntregas):
         self.accion(entrega['id'], 'confirmar', CAJERO)
         res = self.accion(entrega['id'], 'cancelar', ADMIN, motivo='Tarde')
         self.assertEqual(res.status_code, 400)
-        self.assertEqual(self.cantidad(self.usd100), 10)
+        self.assertEqual(self.saldo(self.usd), Decimal('1100'))
 
 
 class ListarEntregasTests(BaseEntregas):
