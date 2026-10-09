@@ -1,19 +1,19 @@
-"""Modelos del módulo de control de cajas (PI-44, ERS RF56/RF58).
+"""Modelos del módulo de control de cajas (PI-44, PI-43, PI-78).
 
-- ``Caja``: ventanilla de una sucursal donde hay efectivo físico.
+- ``Caja``: ventanilla de la sucursal donde hay efectivo físico.
 - ``Denominacion``: catálogo de billetes por moneda (USD 100, PYG 50.000...).
-- ``SaldoBillete``: cantidad de billetes de una denominación en una caja.
-  Es el inventario que consulta el cajero (RF56). Solo lo modifica el
-  servicio ``registrar_movimiento`` (ver ``servicios.py``).
-- ``MovimientoCaja`` + ``DetalleMovimiento``: cada ingreso, entrega o
-  retiro de billetes, con quién lo hizo y el saldo que dejó (RF58).
-  Son inmutables: no hay endpoint para editarlos ni borrarlos (RNF6).
-- ``ArqueoCaja`` + ``DetalleArqueo``: foto del estado de la caja al
-  cerrar turno o hacer un arqueo, comparando lo que dice el sistema
-  con lo contado físicamente (auditoría de PI-44).
+- ``SaldoCaja``: saldo de efectivo de la caja por moneda (total, RF56).
+  Solo lo modifica el servicio ``registrar_movimiento`` (ver
+  ``servicios.py``).
+- ``MovimientoCaja``: cada ingreso, entrega o retiro, por monto, con quién
+  lo hizo y el saldo que dejó (RF58). Son inmutables: no hay endpoint para
+  editarlos ni borrarlos (RNF6).
+- ``ArqueoCaja`` + ``ArqueoMoneda``: recuento de la caja comparando el
+  total que dice el sistema con el contado, por moneda.
 - ``EntregaBilletes`` + ``DetalleEntrega``: billetes que el administrador
-  entrega a una caja (PI-43, RF57). Quedan pendientes hasta que el cajero
-  los cuenta y confirma; recién ahí se suman al saldo.
+  entrega a una caja (PI-43, RF57), por divisa y denominación. Es el único
+  lugar donde se registra la denominación (decisión de la Product Owner).
+  Quedan pendientes hasta que el cajero los cuenta y confirma.
 """
 
 from decimal import Decimal
@@ -71,36 +71,39 @@ class Denominacion(models.Model):
         return f'{self.moneda.codigo} {self.valor.normalize():f}'
 
 
-class SaldoBillete(models.Model):
-    """Cantidad de billetes de una denominación disponibles en una caja."""
+class SaldoCaja(models.Model):
+    """Saldo de efectivo de una caja en una moneda (PI-78).
+
+    Por decisión de la Product Owner, el saldo se lleva por total de cada
+    divisa: el detalle por denominación solo se registra en las entregas
+    de billetes (``DetalleEntrega``). Solo lo modifica
+    :func:`cajas.servicios.registrar_movimiento`.
+    """
 
     caja = models.ForeignKey(
         Caja, on_delete=models.CASCADE,
         related_name='saldos', verbose_name='caja',
     )
-    denominacion = models.ForeignKey(
-        Denominacion, on_delete=models.PROTECT,
-        related_name='saldos', verbose_name='denominación',
+    moneda = models.ForeignKey(
+        'monedas.Moneda', on_delete=models.PROTECT,
+        related_name='saldos_caja', verbose_name='moneda',
     )
-    cantidad = models.PositiveIntegerField('cantidad de billetes', default=0)
+    monto = models.DecimalField(
+        'saldo', max_digits=18, decimal_places=2, default=0,
+        validators=[MinValueValidator(0)],
+    )
     actualizado_en = models.DateTimeField('actualizado en', auto_now=True)
 
     class Meta:
-        ordering = ['denominacion__moneda__codigo', '-denominacion__valor']
-        verbose_name = 'saldo de billetes'
-        verbose_name_plural = 'saldos de billetes'
+        ordering = ['moneda__codigo']
+        verbose_name = 'saldo de caja'
+        verbose_name_plural = 'saldos de caja'
         constraints = [
-            models.UniqueConstraint(
-                fields=['caja', 'denominacion'], name='uniq_saldo_caja_denominacion',
-            )
+            models.UniqueConstraint(fields=['caja', 'moneda'], name='uniq_saldo_caja_moneda'),
         ]
 
-    @property
-    def subtotal(self):
-        return self.denominacion.valor * self.cantidad
-
     def __str__(self) -> str:
-        return f'{self.caja}: {self.cantidad} x {self.denominacion}'
+        return f'{self.caja}: {self.moneda.codigo} {self.monto}'
 
 
 class MovimientoCaja(models.Model):
@@ -126,7 +129,11 @@ class MovimientoCaja(models.Model):
         'monedas.Moneda', on_delete=models.PROTECT,
         related_name='movimientos_caja', verbose_name='moneda',
     )
-    total = models.DecimalField('total', max_digits=18, decimal_places=2)
+    total = models.DecimalField('monto', max_digits=18, decimal_places=2)
+    saldo_resultante = models.DecimalField(
+        'saldo de la divisa después del movimiento', max_digits=18, decimal_places=2,
+        null=True, blank=True,
+    )
     usuario_keycloak_id = models.CharField('usuario (sub)', max_length=64)
     usuario_nombre = models.CharField('usuario', max_length=160, blank=True)
     observacion = models.CharField('observación', max_length=255, blank=True)
@@ -150,33 +157,6 @@ class MovimientoCaja(models.Model):
     def __str__(self) -> str:
         signo = '+' if self.suma else '-'
         return f'{self.get_tipo_display()} {signo}{self.total} {self.moneda.codigo} ({self.caja})'
-
-
-class DetalleMovimiento(models.Model):
-    """Billetes de una denominación dentro de un movimiento."""
-
-    movimiento = models.ForeignKey(
-        MovimientoCaja, on_delete=models.CASCADE,
-        related_name='detalle', verbose_name='movimiento',
-    )
-    denominacion = models.ForeignKey(
-        Denominacion, on_delete=models.PROTECT,
-        related_name='detalles_movimiento', verbose_name='denominación',
-    )
-    cantidad = models.PositiveIntegerField(
-        'cantidad de billetes', validators=[MinValueValidator(1)],
-    )
-    saldo_resultante = models.PositiveIntegerField(
-        'billetes en caja después del movimiento',
-    )
-
-    class Meta:
-        ordering = ['-denominacion__valor']
-        verbose_name = 'detalle de movimiento'
-        verbose_name_plural = 'detalles de movimiento'
-
-    def __str__(self) -> str:
-        return f'{self.cantidad} x {self.denominacion}'
 
 
 class ArqueoCaja(models.Model):
@@ -204,31 +184,34 @@ class ArqueoCaja(models.Model):
         return f'Arqueo {self.caja} {self.creado_en:%d/%m/%Y %H:%M}'
 
 
-class DetalleArqueo(models.Model):
-    """Cantidad según sistema vs. contada para una denominación."""
+class ArqueoMoneda(models.Model):
+    """Total según sistema vs. total contado de una moneda en un arqueo."""
 
     arqueo = models.ForeignKey(
         ArqueoCaja, on_delete=models.CASCADE,
         related_name='detalle', verbose_name='arqueo',
     )
-    denominacion = models.ForeignKey(
-        Denominacion, on_delete=models.PROTECT,
-        related_name='detalles_arqueo', verbose_name='denominación',
+    moneda = models.ForeignKey(
+        'monedas.Moneda', on_delete=models.PROTECT,
+        related_name='arqueos_caja', verbose_name='moneda',
     )
-    cantidad_sistema = models.PositiveIntegerField('según sistema')
-    cantidad_contada = models.PositiveIntegerField('contada')
+    monto_sistema = models.DecimalField('según sistema', max_digits=18, decimal_places=2)
+    monto_contado = models.DecimalField('contado', max_digits=18, decimal_places=2)
 
     class Meta:
-        ordering = ['denominacion__moneda__codigo', '-denominacion__valor']
+        ordering = ['moneda__codigo']
         verbose_name = 'detalle de arqueo'
         verbose_name_plural = 'detalles de arqueo'
+        constraints = [
+            models.UniqueConstraint(fields=['arqueo', 'moneda'], name='uniq_arqueo_moneda'),
+        ]
 
     @property
-    def diferencia(self) -> int:
-        return self.cantidad_contada - self.cantidad_sistema
+    def diferencia(self):
+        return self.monto_contado - self.monto_sistema
 
     def __str__(self) -> str:
-        return f'{self.denominacion}: sistema {self.cantidad_sistema}, contado {self.cantidad_contada}'
+        return f'{self.moneda.codigo}: sistema {self.monto_sistema}, contado {self.monto_contado}'
 
 
 class EntregaBilletes(models.Model):

@@ -1,6 +1,9 @@
 /**
- * Pruebas PI-44: consultar y actualizar saldo de billetes por caja.
- * Incluye PI-43: el cajero confirma o rechaza las entregas pendientes.
+ * Pruebas de la pantalla de caja del cajero.
+ *
+ * - PI-44 / PI-78: saldo por total de cada divisa, ingresos y retiros por
+ *   monto, y arqueo por total de cada moneda.
+ * - PI-43: el cajero confirma o rechaza las entregas pendientes.
  *
  * El servicio `@/services/cajas` se reemplaza por un mock: la API real
  * se prueba en el backend (`backend/cajas/tests.py`).
@@ -33,28 +36,24 @@ vi.mock('@/services/cajas', async importOriginal => {
 
 const mocks = vi.mocked(cajas)
 
-function saldo(usd100 = 3, usd20 = 5): SaldoMoneda[] {
+function saldo(usd = 400, pyg = 0): SaldoMoneda[] {
   return [
-    {
-      moneda: 1, codigo: 'PYG', nombre: 'Guaraní', simbolo: '₲', decimales: 0, flag: '🇵🇾',
-      total: 0, cantidadBilletes: 0,
-      denominaciones: [{ denominacion: 10, valor: 100000, cantidad: 0, subtotal: 0 }],
-    },
-    {
-      moneda: 2, codigo: 'USD', nombre: 'Dólar Americano', simbolo: '$', decimales: 2, flag: '🇺🇸',
-      total: usd100 * 100 + usd20 * 20, cantidadBilletes: usd100 + usd20,
-      denominaciones: [
-        { denominacion: 20, valor: 100, cantidad: usd100, subtotal: usd100 * 100 },
-        { denominacion: 21, valor: 20, cantidad: usd20, subtotal: usd20 * 20 },
-      ],
-    },
+    { moneda: 1, codigo: 'PYG', nombre: 'Guaraní', simbolo: '₲', decimales: 0, flag: '🇵🇾', total: pyg },
+    { moneda: 2, codigo: 'USD', nombre: 'Dólar Americano', simbolo: '$', decimales: 2, flag: '🇺🇸', total: usd },
   ]
 }
 
 const movimiento: MovimientoCaja = {
-  id: 7, tipo: 'INGRESO', tipoDisplay: 'Ingreso', monedaCodigo: 'USD', total: 200,
-  usuarioNombre: 'Cajera Ana', observacion: '', creadoEn: '2026-10-08T12:00:00-03:00',
-  detalle: [{ denominacion: 20, valor: 100, cantidad: 2, saldoResultante: 5 }],
+  id: 7, tipo: 'INGRESO', tipoDisplay: 'Ingreso', monedaCodigo: 'USD', total: 200, saldoResultante: 600,
+  usuarioNombre: 'Cajera Ana', observacion: 'Ajuste', creadoEn: '2026-10-09T12:00:00-03:00',
+}
+
+const entregaPendiente: Entrega = {
+  id: 12, caja: 1, cajaNombre: 'Casa Central · Caja 1', estado: 'PENDIENTE', estadoDisplay: 'Pendiente',
+  entregadoPorNombre: 'Admin Beto', observacion: 'Fondo de apertura', creadoEn: '2026-10-09T08:00:00-03:00',
+  respondidoPorNombre: '', fechaRespuesta: null, motivo: '',
+  totales: [{ moneda: 2, monedaCodigo: 'USD', simbolo: '$', decimales: 2, total: 1000, cantidadBilletes: 10 }],
+  detalle: [{ denominacion: 20, monedaCodigo: 'USD', valor: 100, cantidad: 10, subtotal: 1000 }],
 }
 
 const admin = { name: 'Admin', email: 'a@x.com', role: 'admin', avatar: '' } as AuthUser
@@ -70,86 +69,138 @@ beforeEach(() => {
   mocks.listarEntregas.mockResolvedValue([])
 })
 
-const entregaPendiente: Entrega = {
-  id: 12, caja: 1, cajaNombre: 'Casa Central · Caja 1', estado: 'PENDIENTE', estadoDisplay: 'Pendiente',
-  entregadoPorNombre: 'Admin Beto', observacion: 'Fondo de apertura', creadoEn: '2026-10-09T08:00:00-03:00',
-  respondidoPorNombre: '', fechaRespuesta: null, motivo: '',
-  totales: [{ moneda: 2, monedaCodigo: 'USD', simbolo: '$', decimales: 2, total: 1000, cantidadBilletes: 10 }],
-  detalle: [{ denominacion: 20, monedaCodigo: 'USD', valor: 100, cantidad: 10, subtotal: 1000 }],
-}
-
-async function abrirModalMovimiento() {
+async function abrirModal(nombre: RegExp, titulo: string, auth: AuthUser = cajero) {
   const user = userEvent.setup()
-  const { unmount } = render(<CashCountView auth={cajero} />)
-  await screen.findByText('Billete $ 100')
-  await user.click(screen.getByRole('button', { name: /Registrar movimiento/ }))
-  return { user, unmount, dialogo: screen.getByRole('dialog', { name: 'Registrar movimiento de efectivo' }) }
+  const vista = render(<CashCountView auth={auth} />)
+  await screen.findByTestId('total-USD')
+  await user.click(screen.getByRole('button', { name: nombre }))
+  return { user, ...vista, dialogo: screen.getByRole('dialog', { name: titulo }) }
 }
 
-describe('CashCountView (PI-44)', () => {
-  it('muestra los billetes por denominación y el total de cada moneda', async () => {
+const abrirMovimiento = (auth?: AuthUser) =>
+  abrirModal(/Registrar movimiento/, 'Registrar movimiento de efectivo', auth)
+
+describe('CashCountView · saldo por divisa (PI-44 / PI-78)', () => {
+  it('muestra el total de cada divisa, sin detalle de billetes', async () => {
     render(<CashCountView auth={cajero} />)
-    expect(await screen.findByText('Billete $ 100')).toBeInTheDocument()
+    expect(await screen.findByTestId('total-USD')).toHaveTextContent('$ 400')
+    expect(screen.getByTestId('total-PYG')).toHaveTextContent('₲ 0')
     expect(screen.getByText('Casa Central · Caja 1')).toBeInTheDocument()
-    // Arranca en la primera moneda con billetes (USD), no en PYG vacío.
-    expect(screen.getByTestId('total-USD')).toHaveTextContent('$ 400')
-    expect(screen.getByText('Billete $ 20')).toBeInTheDocument()
-    expect(screen.getByText(/Total en caja \(USD\)/)).toBeInTheDocument()
+    expect(screen.queryByText(/Billete/)).not.toBeInTheDocument()
     expect(mocks.obtenerSaldo).toHaveBeenCalledWith(1)
   })
 
-  it('cambia de moneda al elegir otro total', async () => {
-    const user = userEvent.setup()
+  it('lista los movimientos con el monto y el saldo que dejaron', async () => {
+    mocks.listarMovimientos.mockResolvedValue([movimiento])
     render(<CashCountView auth={cajero} />)
-    await screen.findByText('Billete $ 100')
-    await user.click(screen.getByRole('button', { name: /PYG/ }))
-    expect(screen.getByText(/Billete ₲ 100\.000/)).toBeInTheDocument()
+    expect(await screen.findByText('+$ 200 USD')).toBeInTheDocument()
+    expect(screen.getByText('Saldo: $ 600')).toBeInTheDocument()
+    expect(screen.getByText('Ajuste')).toBeInTheDocument()
   })
 
-  it('registra un ingreso y actualiza el saldo en pantalla', async () => {
-    mocks.registrarMovimiento.mockResolvedValue({ movimiento, saldo: saldo(5, 5) })
-    const { user, dialogo } = await abrirModalMovimiento()
-    await user.type(within(dialogo).getByLabelText(/Billete \$ 100/), '2')
-    expect(within(dialogo).getByTestId('total-movimiento')).toHaveTextContent('$ 200')
+  it('registra un ingreso por monto y actualiza el saldo en pantalla', async () => {
+    mocks.registrarMovimiento.mockResolvedValue({ movimiento, saldo: saldo(600) })
+    const { user, dialogo } = await abrirMovimiento()
+    await user.type(within(dialogo).getByLabelText('Monto (USD)'), '200')
+    expect(within(dialogo).getByTestId('saldo-despues')).toHaveTextContent('$ 600')
+    await user.type(within(dialogo).getByPlaceholderText(/Ajuste/), 'Ajuste')
     await user.click(within(dialogo).getByRole('button', { name: 'Confirmar movimiento' }))
 
     expect(mocks.registrarMovimiento).toHaveBeenCalledWith(1, {
-      tipo: 'INGRESO', moneda: 2, detalle: [{ denominacion: 20, cantidad: 2 }], observacion: '',
+      tipo: 'INGRESO', moneda: 2, monto: 200, observacion: 'Ajuste',
     })
     expect(await screen.findByRole('status')).toHaveTextContent('Ingreso registrado')
     expect(screen.getByTestId('total-USD')).toHaveTextContent('$ 600')
-    expect(screen.getByText('Cajera Ana', { exact: false })).toBeInTheDocument()
   })
 
-  it('no deja confirmar un retiro mayor a los billetes disponibles', async () => {
-    const { user, dialogo } = await abrirModalMovimiento()
+  it('no deja retirar más que el saldo de la divisa', async () => {
+    const { user, dialogo } = await abrirMovimiento()
     await user.selectOptions(within(dialogo).getByLabelText('Tipo'), 'RETIRO')
-    await user.type(within(dialogo).getByLabelText(/Billete \$ 100/), '4')
-    expect(within(dialogo).getByText(/No hay billetes suficientes/)).toBeInTheDocument()
+    await user.type(within(dialogo).getByLabelText('Monto (USD)'), '400.01')
+    expect(within(dialogo).getByText('No alcanza el saldo: hay $ 400.')).toBeInTheDocument()
+    expect(within(dialogo).getByTestId('saldo-despues')).toHaveTextContent('—')
     expect(within(dialogo).getByRole('button', { name: 'Confirmar movimiento' })).toBeDisabled()
+    await user.clear(within(dialogo).getByLabelText('Monto (USD)'))
+    await user.type(within(dialogo).getByLabelText('Monto (USD)'), '400')
+    expect(within(dialogo).getByRole('button', { name: 'Confirmar movimiento' })).toBeEnabled()
     expect(mocks.registrarMovimiento).not.toHaveBeenCalled()
+  })
+
+  it('valida los decimales de la moneda', async () => {
+    const { user, dialogo } = await abrirMovimiento()
+    await user.selectOptions(within(dialogo).getByLabelText('Moneda'), 'PYG')
+    await user.type(within(dialogo).getByLabelText('Monto (PYG)'), '1000.5')
+    expect(within(dialogo).getByText('Esta moneda no admite decimales.')).toBeInTheDocument()
+    expect(within(dialogo).getByRole('button', { name: 'Confirmar movimiento' })).toBeDisabled()
   })
 
   it('muestra el error que devuelve la API', async () => {
     mocks.registrarMovimiento.mockRejectedValue(new Error('La caja está inactiva.'))
-    const { user, dialogo } = await abrirModalMovimiento()
-    await user.type(within(dialogo).getByLabelText(/Billete \$ 20/), '1')
+    const { user, dialogo } = await abrirMovimiento()
+    await user.type(within(dialogo).getByLabelText('Monto (USD)'), '10')
     await user.click(within(dialogo).getByRole('button', { name: 'Confirmar movimiento' }))
     expect(await within(dialogo).findByRole('alert')).toHaveTextContent('La caja está inactiva.')
   })
 
-  it('el movimiento manual solo ofrece ingreso y retiro (PI-43: las entregas van con confirmación)', async () => {
-    const { dialogo, unmount } = await abrirModalMovimiento()
+  it('el movimiento manual solo ofrece ingreso y retiro (las entregas van con confirmación)', async () => {
+    const { dialogo, unmount } = await abrirMovimiento()
     const opciones = within(within(dialogo).getByLabelText('Tipo')).getAllByRole('option').map(o => o.textContent)
     expect(opciones).toEqual(['Ingreso', 'Retiro'])
     unmount()
-    render(<CashCountView auth={admin} />)
-    await screen.findByText('Billete $ 100')
-    await userEvent.setup().click(screen.getByRole('button', { name: /Registrar movimiento/ }))
+    await abrirMovimiento(admin)
     expect(screen.queryByRole('option', { name: /Entrega/ })).not.toBeInTheDocument()
   })
 
-  it('PI-43: muestra las entregas pendientes de la caja', async () => {
+  it('bloquea el scroll de la página mientras el modal está abierto', async () => {
+    const { user, dialogo } = await abrirMovimiento()
+    expect(document.body.style.overflow).toBe('hidden')
+    await user.click(within(dialogo).getByRole('button', { name: 'Cancelar' }))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(document.body.style.overflow).toBe('')
+  })
+})
+
+describe('CashCountView · arqueo por total (PI-78)', () => {
+  it('arranca con el total del sistema y marca faltantes y sobrantes', async () => {
+    mocks.obtenerSaldo.mockResolvedValue(saldo(400, 100000))
+    const arqueo: Arqueo = {
+      id: 3, usuarioNombre: 'Ana', observacion: 'Cierre', conDiferencias: true,
+      creadoEn: '2026-10-09T18:00:00-03:00',
+      detalle: [{ moneda: 2, monedaCodigo: 'USD', simbolo: '$', decimales: 2, montoSistema: 400, montoContado: 380, diferencia: -20 }],
+    }
+    mocks.registrarArqueo.mockResolvedValue(arqueo)
+    const { user, dialogo } = await abrirModal(/Registrar arqueo/, 'Registrar arqueo de caja')
+
+    const usd = within(dialogo).getByLabelText('USD')
+    expect(usd).toHaveValue(400)
+    expect(within(dialogo).getByText('Todo coincide con el sistema.')).toBeInTheDocument()
+    await user.clear(usd)
+    await user.type(usd, '380')
+    expect(within(dialogo).getByText('−$ 20')).toBeInTheDocument()
+    expect(within(dialogo).getByText('Hay diferencias en USD.')).toBeInTheDocument()
+    await user.type(within(dialogo).getByPlaceholderText(/Cierre de turno/), 'Cierre')
+    await user.click(within(dialogo).getByRole('button', { name: 'Guardar arqueo' }))
+
+    // Solo se envían las monedas con saldo o con algo contado.
+    expect(mocks.registrarArqueo).toHaveBeenCalledWith(1, [
+      { moneda: 1, monto: 100000 },
+      { moneda: 2, monto: 380 },
+    ], 'Cierre')
+    expect(await screen.findByRole('status')).toHaveTextContent('CON diferencias')
+    expect(screen.getByText('Con diferencias')).toBeInTheDocument()
+    expect(screen.getByText('USD: faltante −$ 20')).toBeInTheDocument()
+  })
+
+  it('no deja guardar con un monto inválido', async () => {
+    const { user, dialogo } = await abrirModal(/Registrar arqueo/, 'Registrar arqueo de caja')
+    await user.clear(within(dialogo).getByLabelText('USD'))
+    expect(within(dialogo).getByText('Revisá el monto de USD.')).toBeInTheDocument()
+    expect(within(dialogo).getByRole('button', { name: 'Guardar arqueo' })).toBeDisabled()
+  })
+})
+
+describe('CashCountView · entregas pendientes (PI-43)', () => {
+  it('muestra las entregas pendientes de la caja', async () => {
     mocks.listarEntregas.mockResolvedValue([entregaPendiente])
     render(<CashCountView auth={cajero} />)
     const seccion = await screen.findByRole('region', { name: 'Entregas pendientes' })
@@ -159,10 +210,10 @@ describe('CashCountView (PI-44)', () => {
     expect(mocks.listarEntregas).toHaveBeenCalledWith({ caja: 1, estado: 'PENDIENTE' })
   })
 
-  it('PI-43: el cajero confirma la entrega y el saldo se actualiza', async () => {
+  it('el cajero ve los billetes por denominación, confirma y se suma el total', async () => {
     mocks.listarEntregas.mockResolvedValue([entregaPendiente])
     mocks.confirmarEntrega.mockResolvedValue({
-      entrega: { ...entregaPendiente, estado: 'CONFIRMADA' }, saldo: saldo(13, 5),
+      entrega: { ...entregaPendiente, estado: 'CONFIRMADA' }, saldo: saldo(1400),
     })
     const user = userEvent.setup()
     render(<CashCountView auth={cajero} />)
@@ -178,7 +229,7 @@ describe('CashCountView (PI-44)', () => {
     expect(screen.getByTestId('total-USD')).toHaveTextContent('$ 1.400')
   })
 
-  it('PI-43: para rechazar hay que indicar el motivo', async () => {
+  it('para rechazar hay que indicar el motivo', async () => {
     mocks.listarEntregas.mockResolvedValue([entregaPendiente])
     mocks.rechazarEntrega.mockResolvedValue({ ...entregaPendiente, estado: 'RECHAZADA', motivo: 'Faltan 2 billetes' })
     const user = userEvent.setup()
@@ -196,7 +247,7 @@ describe('CashCountView (PI-44)', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('Entrega #12 rechazada')
   })
 
-  it('PI-43: muestra el error si la confirmación falla', async () => {
+  it('muestra el error si la confirmación falla', async () => {
     mocks.listarEntregas.mockResolvedValue([entregaPendiente])
     mocks.confirmarEntrega.mockRejectedValue(new Error('La entrega ya está confirmada.'))
     const user = userEvent.setup()
@@ -206,59 +257,9 @@ describe('CashCountView (PI-44)', () => {
     await user.click(within(dialogo).getByRole('button', { name: 'Confirmar recepción' }))
     expect(await within(dialogo).findByRole('alert')).toHaveTextContent('La entrega ya está confirmada.')
   })
+})
 
-  it('registra un arqueo con lo contado y muestra si hay diferencias', async () => {
-    const arqueo: Arqueo = {
-      id: 3, usuarioNombre: 'Ana', observacion: 'Cierre', conDiferencias: true,
-      creadoEn: '2026-10-08T18:00:00-03:00',
-      detalle: [{ denominacion: 20, monedaCodigo: 'USD', valor: 100, cantidadSistema: 3, cantidadContada: 2, diferencia: -1 }],
-    }
-    mocks.registrarArqueo.mockResolvedValue(arqueo)
-    const user = userEvent.setup()
-    render(<CashCountView auth={cajero} />)
-    await screen.findByText('Billete $ 100')
-    await user.click(screen.getByRole('button', { name: /Registrar arqueo/ }))
-    const dialogo = screen.getByRole('dialog', { name: 'Registrar arqueo de caja' })
-    const campo = within(dialogo).getByLabelText('$ 100')
-    expect(campo).toHaveValue(3) // arranca con lo del sistema
-    await user.clear(campo)
-    await user.type(campo, '2')
-    expect(within(dialogo).getByText('-1')).toBeInTheDocument()
-    expect(within(dialogo).getByText('Hay diferencias en USD.')).toBeInTheDocument()
-    await user.type(within(dialogo).getByPlaceholderText(/Cierre de turno/), 'Cierre')
-    await user.click(within(dialogo).getByRole('button', { name: 'Guardar arqueo' }))
-
-    expect(mocks.registrarArqueo).toHaveBeenCalledWith(1, [
-      { denominacion: 20, cantidad: 2 },
-      { denominacion: 21, cantidad: 5 },
-    ], 'Cierre')
-    expect(await screen.findByRole('status')).toHaveTextContent('CON diferencias')
-    expect(screen.getByText('Con diferencias')).toBeInTheDocument()
-  })
-
-  it('el arqueo muestra una moneda por vez y arranca en la que tiene billetes', async () => {
-    const user = userEvent.setup()
-    render(<CashCountView auth={cajero} />)
-    await screen.findByText('Billete $ 100')
-    await user.click(screen.getByRole('button', { name: /Registrar arqueo/ }))
-    const dialogo = screen.getByRole('dialog', { name: 'Registrar arqueo de caja' })
-    expect(within(dialogo).getByRole('button', { name: 'USD', pressed: true })).toBeInTheDocument()
-    expect(within(dialogo).queryByLabelText('₲ 100.000')).not.toBeInTheDocument()
-    expect(within(dialogo).getByText('Todo coincide con el sistema.')).toBeInTheDocument()
-
-    await user.click(within(dialogo).getByRole('button', { name: 'PYG' }))
-    expect(within(dialogo).getByLabelText('₲ 100.000')).toBeInTheDocument()
-    expect(within(dialogo).queryByLabelText('$ 100')).not.toBeInTheDocument()
-  })
-
-  it('bloquea el scroll de la página mientras el modal está abierto', async () => {
-    const { user, dialogo } = await abrirModalMovimiento()
-    expect(document.body.style.overflow).toBe('hidden')
-    await user.click(within(dialogo).getByRole('button', { name: 'Cancelar' }))
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
-    expect(document.body.style.overflow).toBe('')
-  })
-
+describe('CashCountView · estados generales', () => {
   it('avisa cuando no hay cajas habilitadas', async () => {
     mocks.listarCajas.mockResolvedValue([])
     render(<CashCountView auth={cajero} />)

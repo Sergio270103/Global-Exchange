@@ -1,13 +1,13 @@
 /**
- * Piezas visuales compartidas por las pantallas de caja (PI-43/PI-44):
- * la ventana modal con botones fijos, el campo de cantidad de billetes,
- * el detalle de una entrega y los formatos de fecha y billete.
+ * Piezas visuales compartidas por las pantallas de caja (PI-43/PI-44/PI-78):
+ * la ventana modal con botones fijos, los campos de cantidad de billetes y
+ * de monto, el detalle de una entrega y los formatos de fecha y billete.
  *
  * @module ComponentesCaja
  */
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { formatearMonto, type Entrega, type SaldoMoneda } from '@/services/cajas'
+import { formatearMonto, type Entrega, type MonedaCaja } from '@/services/cajas'
 
 /** Fecha y hora corta, por ejemplo `09/10, 08:30`. */
 export function fechaCorta(iso: string): string {
@@ -16,8 +16,8 @@ export function fechaCorta(iso: string): string {
   })
 }
 
-/** Texto de un billete con el símbolo de su moneda, por ejemplo `$ 100`. */
-export function textoBillete(m: Pick<SaldoMoneda, 'simbolo' | 'codigo' | 'decimales'>, valor: number): string {
+/** Monto o billete con el símbolo de su moneda, por ejemplo `$ 100`. */
+export function textoBillete(m: Pick<MonedaCaja, 'simbolo' | 'codigo' | 'decimales'>, valor: number): string {
   return `${m.simbolo || m.codigo} ${formatearMonto(valor, m.decimales)}`
 }
 
@@ -103,6 +103,52 @@ export function CampoCantidad({ id, valor, onCambio, error = false, mostrarCero 
       onChange={e => onCambio(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
       onFocus={e => e.target.select()}
       className={`w-20 px-2 py-1.5 border rounded-lg text-right font-mono font-semibold bg-white ${error ? 'border-rose-400' : 'border-slate-200'}`}
+    />
+  )
+}
+
+/**
+ * Valida el texto de un monto: positivo (o cero si se permite) y con no
+ * más decimales que los de la moneda. Devuelve el número o un mensaje.
+ */
+export function leerMonto(
+  texto: string, decimales: number, permitirCero = false,
+): { monto: number } | { error: string } {
+  const limpio = texto.trim()
+  if (!limpio) return { error: 'Ingresá un monto.' }
+  const monto = Number(limpio)
+  if (!Number.isFinite(monto)) return { error: 'Monto inválido.' }
+  if (monto < 0 || (!permitirCero && monto === 0)) {
+    return { error: permitirCero ? 'El monto no puede ser negativo.' : 'El monto debe ser mayor a cero.' }
+  }
+  const parteDecimal = limpio.split('.')[1] ?? ''
+  if (parteDecimal.replace(/0+$/, '').length > decimales) {
+    return { error: decimales === 0 ? 'Esta moneda no admite decimales.' : `Máximo ${decimales} decimales.` }
+  }
+  return { monto }
+}
+
+/** Campo de monto de dinero, con los decimales que admite la moneda. */
+export function CampoMonto({ id, valor, onCambio, decimales, error = false, ancho = 'w-full' }: {
+  id: string
+  valor: string
+  onCambio: (texto: string) => void
+  decimales: number
+  error?: boolean
+  ancho?: string
+}) {
+  return (
+    <input
+      id={id}
+      type="number"
+      min="0"
+      step={decimales === 0 ? '1' : String(10 ** -decimales)}
+      inputMode={decimales === 0 ? 'numeric' : 'decimal'}
+      value={valor}
+      placeholder="0"
+      onChange={e => onCambio(e.target.value)}
+      onFocus={e => e.target.select()}
+      className={`${ancho} px-3 py-2 border rounded-lg text-right font-mono font-semibold bg-white ${error ? 'border-rose-400' : 'border-slate-200'}`}
     />
   )
 }

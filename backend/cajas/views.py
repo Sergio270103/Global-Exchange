@@ -2,15 +2,15 @@
 
 - ``GET /api/cajas/`` cajas activas (``?todas=1`` incluye inactivas).
   Alta y edición solo admin.
-- ``GET /api/cajas/{id}/saldo/`` billetes por divisa y denominación,
-  con el total por moneda (RF56).
+- ``GET /api/cajas/{id}/saldo/`` saldo de la caja por divisa (RF56;
+  PI-78: por total, sin detalle de billetes).
 - ``GET|POST /api/cajas/{id}/movimientos/`` historial y registro de
-  ingresos, entregas y retiros; el saldo se actualiza en el mismo paso
+  ingresos y retiros por monto; el saldo se actualiza en el mismo paso
   (RF58). Filtros ``?moneda=`` (código o id) y ``?tipo=``.
-- ``GET|POST /api/cajas/{id}/arqueos/`` registro de auditoría del
-  estado de caja para cierres de turno y arqueos.
-- ``GET /api/denominaciones/?moneda=`` catálogo de billetes; escritura
-  solo admin.
+- ``GET|POST /api/cajas/{id}/arqueos/`` recuento de la caja: total
+  según sistema vs. total contado de cada moneda.
+- ``GET /api/denominaciones/?moneda=&activas=1`` catálogo de billetes
+  (lo usa el formulario de entregas); escritura solo admin.
 - ``GET|POST /api/entregas/`` entregas de billetes a una caja (PI-43,
   RF57). El admin las registra y quedan pendientes; filtros ``?caja=`` y
   ``?estado=``.
@@ -88,9 +88,7 @@ class CajaViewSet(viewsets.ModelViewSet):
     def movimientos(self, request, pk=None):
         caja = self.get_object()
         if request.method == 'GET':
-            qs = (MovimientoCaja.objects.filter(caja=caja)
-                  .select_related('moneda', 'caja')
-                  .prefetch_related('detalle__denominacion'))
+            qs = MovimientoCaja.objects.filter(caja=caja).select_related('moneda', 'caja')
             moneda = request.query_params.get('moneda')
             if moneda:
                 qs = qs.filter(moneda__pk=moneda) if moneda.isdigit() else qs.filter(
@@ -107,7 +105,7 @@ class CajaViewSet(viewsets.ModelViewSet):
         try:
             movimiento = registrar_movimiento(
                 caja=caja, tipo=datos['tipo'], moneda=datos['moneda'],
-                detalle=[(l['denominacion'], l['cantidad']) for l in datos['detalle']],
+                monto=datos['monto'],
                 usuario_id=sub, usuario_nombre=nombre,
                 observacion=datos['observacion'],
             )
@@ -124,7 +122,7 @@ class CajaViewSet(viewsets.ModelViewSet):
         if request.method == 'GET':
             qs = (ArqueoCaja.objects.filter(caja=caja)
                   .select_related('caja')
-                  .prefetch_related('detalle__denominacion__moneda'))
+                  .prefetch_related('detalle__moneda'))
             return Response(ArqueoSerializer(qs[:_limite(request)], many=True).data)
 
         entrada = NuevoArqueoSerializer(data=request.data)
@@ -134,7 +132,7 @@ class CajaViewSet(viewsets.ModelViewSet):
         try:
             arqueo = registrar_arqueo(
                 caja=caja,
-                conteo={l['denominacion'].pk: l['cantidad'] for l in datos['conteo']},
+                conteo={l['moneda'].pk: l['monto'] for l in datos['conteo']},
                 usuario_id=sub, usuario_nombre=nombre,
                 observacion=datos['observacion'],
             )
@@ -155,7 +153,9 @@ class DenominacionViewSet(viewsets.ModelViewSet):
         if moneda:
             qs = qs.filter(moneda__pk=moneda) if moneda.isdigit() else qs.filter(
                 moneda__codigo__iexact=moneda)
-        return qs
+        if self.request.query_params.get('activas') == '1':
+            qs = qs.filter(activa=True, moneda__activo=True)
+        return qs.order_by('moneda__codigo', '-valor')
 
 
 class EntregaViewSet(viewsets.ReadOnlyModelViewSet):
