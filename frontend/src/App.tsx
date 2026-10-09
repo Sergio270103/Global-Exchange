@@ -124,7 +124,7 @@ export default function App() {
           <Dashboard auth={auth} currentClient={currentClient} navigate={navigate} />
         )
       case 'cash-count':
-        return <CashCountView /> // 👈 Pestaña de Arqueo y Dinero Recibido
+        return <CashCountView auth={auth} /> // PI-44: saldo de billetes por caja
       case 'wallets':
         return <Wallets navigate={navigate} currentClient={currentClient} />
       case 'buy':
