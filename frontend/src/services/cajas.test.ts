@@ -7,6 +7,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   cancelarEntrega,
+  cerrarCaja,
+  obtenerTurno,
+  listarTurnos,
   confirmarEntrega,
   crearEntrega,
   formatearMonto,
@@ -38,6 +41,11 @@ const movimientoApi = {
   saldo_resultante: '300.00', usuario_nombre: 'Ana', observacion: '', creado_en: '2026-10-08T12:00:00-03:00',
 }
 
+const turnoApi = {
+  id: 5, abierto: true, cajero_nombre: 'Ana', abierto_en: '2026-10-09T08:10:00-03:00',
+  entrega_apertura: 12, cerrado_en: null, cerrado_por_nombre: '', arqueo_cierre: null,
+}
+
 const denominacionesApi = [
   { id: 21, moneda: 2, moneda_codigo: 'USD', moneda_nombre: 'Dólar', simbolo: '$', decimales: 2, valor: '20.00', activa: true },
   { id: 20, moneda: 2, moneda_codigo: 'USD', moneda_nombre: 'Dólar', simbolo: '$', decimales: 2, valor: '100.00', activa: true },
@@ -62,7 +70,7 @@ describe('entregas de billetes (PI-43)', () => {
     fetchMock = vi.fn(async (url: string, init: RequestInit = {}) => {
       const u = String(url)
       const method = (init.method ?? 'GET').toUpperCase()
-      if (u.includes('/confirmar/')) return respuesta({ entrega: { ...entregaApi, estado: 'CONFIRMADA' }, monedas: saldoApi.monedas })
+      if (u.includes('/confirmar/')) return respuesta({ entrega: { ...entregaApi, estado: 'CONFIRMADA' }, monedas: saldoApi.monedas, turno: turnoApi })
       if (u.includes('/rechazar/') || u.includes('/cancelar/')) {
         const { motivo } = JSON.parse(String(init.body))
         if (!motivo) return respuesta({ motivo: ['Indicá el motivo.'] }, 400)
@@ -90,11 +98,12 @@ describe('entregas de billetes (PI-43)', () => {
     expect(cuerpo).toEqual({ caja: 1, detalle: [{ denominacion: 20, cantidad: 10 }], observacion: 'Apertura' })
   })
 
-  it('confirma y devuelve el saldo nuevo', async () => {
+  it('confirma y devuelve el saldo nuevo y el turno abierto', async () => {
     const res = await confirmarEntrega(12)
     expect(String(fetchMock.mock.calls[0][0])).toContain('/entregas/12/confirmar/')
     expect(res.entrega.estado).toBe('CONFIRMADA')
     expect(res.saldo[0].total).toBe(400)
+    expect(res.turno?.cajeroNombre).toBe('Ana')
   })
 
   it('rechaza y cancela con motivo', async () => {
@@ -111,7 +120,26 @@ describe('cajas (servicio API)', () => {
     fetchMock = vi.fn(async (url: string, init: RequestInit = {}) => {
       const u = String(url)
       const method = (init.method ?? 'GET').toUpperCase()
-      if (u.endsWith('/cajas/')) return respuesta([{ id: 1, nombre: 'Caja 1', sucursal: 'Central', activa: true }])
+      if (u.endsWith('/cajas/')) {
+        return respuesta([{
+          id: 1, nombre: 'Caja 1', sucursal: 'Central', activa: true, abierta: true,
+          turno_actual: { id: 5, cajero_nombre: 'Ana', abierto_en: '2026-10-09T08:10:00-03:00', entrega_apertura: 12 },
+        }])
+      }
+      if (u.includes('/turno/')) return respuesta({ turno: u.includes('/cajas/2/') ? null : turnoApi })
+      if (u.includes('/turnos/')) return respuesta([turnoApi])
+      if (u.includes('/cerrar/')) {
+        return respuesta({
+          turno: {
+            ...turnoApi, abierto: false, cerrado_en: '2026-10-09T19:00:00-03:00', cerrado_por_nombre: 'Ana',
+            arqueo_cierre: {
+              id: 9, usuario_nombre: 'Ana', observacion: '', con_diferencias: false, es_cierre: true,
+              creado_en: '2026-10-09T19:00:00-03:00', detalle: [],
+            },
+          },
+          monedas: [{ ...saldoApi.monedas[0], total: '0' }],
+        })
+      }
       if (u.includes('/saldo/')) return respuesta(saldoApi)
       if (u.includes('/movimientos/') && method === 'POST') {
         const cuerpo = JSON.parse(String(init.body))
@@ -122,7 +150,7 @@ describe('cajas (servicio API)', () => {
       if (u.includes('/denominaciones/')) return respuesta(denominacionesApi)
       if (u.includes('/arqueos/') && method === 'POST') {
         return respuesta({
-          id: 5, usuario_nombre: 'Ana', observacion: 'x', con_diferencias: true, creado_en: '2026-10-08T18:00:00-03:00',
+          id: 5, usuario_nombre: 'Ana', observacion: 'x', con_diferencias: true, es_cierre: false, creado_en: '2026-10-08T18:00:00-03:00',
           detalle: [{ moneda: 2, moneda_codigo: 'USD', simbolo: '$', decimales: 2, monto_sistema: '400.00', monto_contado: '380.00', diferencia: '-20.00' }],
         }, 201)
       }
@@ -134,7 +162,10 @@ describe('cajas (servicio API)', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   it('lista cajas y convierte el saldo a números con bandera', async () => {
-    expect((await listarCajas())[0].nombre).toBe('Caja 1')
+    const [caja] = await listarCajas()
+    expect(caja.nombre).toBe('Caja 1')
+    expect(caja.abierta).toBe(true)
+    expect(caja.turnoActual).toEqual({ id: 5, cajeroNombre: 'Ana', abiertoEn: '2026-10-09T08:10:00-03:00', entregaApertura: 12 })
     const [usd] = await obtenerSaldo(1)
     expect(usd.total).toBe(400)
     expect(usd.flag).toBe('🇺🇸')
@@ -182,6 +213,23 @@ describe('cajas (servicio API)', () => {
       { denominacion: 21, valor: 20 },
     ])
     expect(catalogo[1].flag).toBe('🇺🇸')
+  })
+
+  it('consulta el turno, el historial y cierra la caja (PI-79)', async () => {
+    expect((await obtenerTurno(1))?.abierto).toBe(true)
+    expect(await obtenerTurno(2)).toBeNull()
+    expect((await listarTurnos(1))[0].entregaApertura).toBe(12)
+    const res = await cerrarCaja(1, [{ moneda: 2, monto: 400 }], 'Fin')
+    const llamada = fetchMock.mock.calls.find(([u]) => String(u).includes('/cerrar/'))!
+    expect(JSON.parse(String(llamada[1].body))).toEqual({ conteo: [{ moneda: 2, monto: '400' }], observacion: 'Fin' })
+    expect(res.turno.abierto).toBe(false)
+    expect(res.turno.arqueoCierre?.esCierre).toBe(true)
+    expect(res.saldo[0].total).toBe(0)
+  })
+
+  it('una respuesta con cuerpo vacío no rompe la carga (regresión PI-79)', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 200 }))
+    expect(await obtenerTurno(1)).toBeNull()
   })
 
   it('formatea montos con separador de miles', () => {

@@ -6,6 +6,8 @@ administrador. El cajero registra ingresos, retiros y arqueos.
 
 Entregas de billetes (PI-43): el administrador las registra y puede
 cancelarlas mientras estén pendientes; el cajero las confirma o rechaza.
+
+Cierre de caja (PI-79): lo hace el personal de caja (cajero o admin).
 """
 
 from rest_framework.permissions import SAFE_METHODS, BasePermission
@@ -33,7 +35,7 @@ class PersonalCaja(BasePermission):
     message = 'Solo el cajero o un administrador pueden acceder a las cajas.'
 
     #: Acciones que el cajero puede usar aunque escriban (POST).
-    ACCIONES_CAJERO = ('saldo', 'movimientos', 'arqueos')
+    ACCIONES_CAJERO = ('saldo', 'movimientos', 'arqueos', 'cerrar')
 
     def has_permission(self, request, view) -> bool:
         usuario = request.user

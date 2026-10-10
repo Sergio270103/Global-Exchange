@@ -4,6 +4,8 @@
  * - PI-44 / PI-78: saldo por total de cada divisa, ingresos y retiros por
  *   monto, y arqueo por total de cada moneda.
  * - PI-43: el cajero confirma o rechaza las entregas pendientes.
+ * - PI-79: la caja se abre con la entrega inicial, solo se opera abierta y
+ *   se cierra con el recuento final (el efectivo vuelve a tesorería).
  *
  * El servicio `@/services/cajas` se reemplaza por un mock: la API real
  * se prueba en el backend (`backend/cajas/tests.py`).
@@ -15,7 +17,7 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import CashCountView from '@/pages/cashier/CashCountView'
 import type { AuthUser } from '@/types'
-import type { Arqueo, Entrega, MovimientoCaja, SaldoMoneda } from '@/services/cajas'
+import type { Arqueo, Entrega, MovimientoCaja, SaldoMoneda, Turno } from '@/services/cajas'
 import * as cajas from '@/services/cajas'
 
 vi.mock('@/services/cajas', async importOriginal => {
@@ -31,6 +33,8 @@ vi.mock('@/services/cajas', async importOriginal => {
     listarEntregas: vi.fn(),
     confirmarEntrega: vi.fn(),
     rechazarEntrega: vi.fn(),
+    obtenerTurno: vi.fn(),
+    cerrarCaja: vi.fn(),
   }
 })
 
@@ -56,17 +60,25 @@ const entregaPendiente: Entrega = {
   detalle: [{ denominacion: 20, monedaCodigo: 'USD', valor: 100, cantidad: 10, subtotal: 1000 }],
 }
 
+const turnoAbierto: Turno = {
+  id: 5, abierto: true, cajeroNombre: 'Cajera Ana', abiertoEn: '2026-10-09T08:10:00-03:00',
+  entregaApertura: 11, cerradoEn: null, cerradoPorNombre: '', arqueoCierre: null,
+}
+
 const admin = { name: 'Admin', email: 'a@x.com', role: 'admin', avatar: '' } as AuthUser
 const cajero = { name: 'Ana', email: 'c@x.com', role: 'cashier', avatar: '' } as AuthUser
 
 beforeEach(() => {
   vi.clearAllMocks()
   document.body.style.overflow = ''
-  mocks.listarCajas.mockResolvedValue([{ id: 1, nombre: 'Caja 1', sucursal: 'Casa Central', activa: true }])
+  mocks.listarCajas.mockResolvedValue([
+    { id: 1, nombre: 'Caja 1', sucursal: 'Casa Central', activa: true, abierta: true, turnoActual: null },
+  ])
   mocks.obtenerSaldo.mockResolvedValue(saldo())
   mocks.listarMovimientos.mockResolvedValue([])
   mocks.listarArqueos.mockResolvedValue([])
   mocks.listarEntregas.mockResolvedValue([])
+  mocks.obtenerTurno.mockResolvedValue(turnoAbierto)
 })
 
 async function abrirModal(nombre: RegExp, titulo: string, auth: AuthUser = cajero) {
@@ -164,7 +176,7 @@ describe('CashCountView · arqueo por total (PI-78)', () => {
   it('arranca con el total del sistema y marca faltantes y sobrantes', async () => {
     mocks.obtenerSaldo.mockResolvedValue(saldo(400, 100000))
     const arqueo: Arqueo = {
-      id: 3, usuarioNombre: 'Ana', observacion: 'Cierre', conDiferencias: true,
+      id: 3, usuarioNombre: 'Ana', observacion: 'Cierre', conDiferencias: true, esCierre: false,
       creadoEn: '2026-10-09T18:00:00-03:00',
       detalle: [{ moneda: 2, monedaCodigo: 'USD', simbolo: '$', decimales: 2, montoSistema: 400, montoContado: 380, diferencia: -20 }],
     }
@@ -178,7 +190,7 @@ describe('CashCountView · arqueo por total (PI-78)', () => {
     await user.type(usd, '380')
     expect(within(dialogo).getByText('−$ 20')).toBeInTheDocument()
     expect(within(dialogo).getByText('Hay diferencias en USD.')).toBeInTheDocument()
-    await user.type(within(dialogo).getByPlaceholderText(/Cierre de turno/), 'Cierre')
+    await user.type(within(dialogo).getByPlaceholderText(/Arqueo de media mañana/), 'Cierre')
     await user.click(within(dialogo).getByRole('button', { name: 'Guardar arqueo' }))
 
     // Solo se envían las monedas con saldo o con algo contado.
@@ -213,7 +225,7 @@ describe('CashCountView · entregas pendientes (PI-43)', () => {
   it('el cajero ve los billetes por denominación, confirma y se suma el total', async () => {
     mocks.listarEntregas.mockResolvedValue([entregaPendiente])
     mocks.confirmarEntrega.mockResolvedValue({
-      entrega: { ...entregaPendiente, estado: 'CONFIRMADA' }, saldo: saldo(1400),
+      entrega: { ...entregaPendiente, estado: 'CONFIRMADA' }, saldo: saldo(1400), turno: turnoAbierto,
     })
     const user = userEvent.setup()
     render(<CashCountView auth={cajero} />)
@@ -256,6 +268,86 @@ describe('CashCountView · entregas pendientes (PI-43)', () => {
     const dialogo = screen.getByRole('dialog', { name: 'Entrega de billetes #12' })
     await user.click(within(dialogo).getByRole('button', { name: 'Confirmar recepción' }))
     expect(await within(dialogo).findByRole('alert')).toHaveTextContent('La entrega ya está confirmada.')
+  })
+})
+
+describe('CashCountView · apertura y cierre (PI-79)', () => {
+  it('con la caja abierta muestra quién la tiene y desde cuándo', async () => {
+    render(<CashCountView auth={cajero} />)
+    expect(await screen.findByTestId('estado-caja')).toHaveTextContent(/Caja abierta desde las .* · Cajera Ana/)
+    expect(screen.getByRole('button', { name: /Cerrar caja/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Registrar movimiento/ })).toBeEnabled()
+  })
+
+  it('con la caja cerrada no deja operar y explica cómo se abre', async () => {
+    mocks.obtenerTurno.mockResolvedValue(null)
+    render(<CashCountView auth={cajero} />)
+    expect(await screen.findByTestId('estado-caja')).toHaveTextContent('Caja cerrada')
+    expect(screen.getByRole('note')).toHaveTextContent('Se abre al confirmar la entrega de billetes del administrador')
+    expect(screen.getByRole('button', { name: /Registrar movimiento/ })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /Registrar arqueo/ })).toBeDisabled()
+    expect(screen.queryByRole('button', { name: /Cerrar caja/ })).not.toBeInTheDocument()
+  })
+
+  it('confirmar la entrega inicial abre la caja', async () => {
+    mocks.obtenerTurno.mockResolvedValue(null)
+    mocks.obtenerSaldo.mockResolvedValue(saldo(0))
+    mocks.listarEntregas.mockResolvedValue([entregaPendiente])
+    mocks.confirmarEntrega.mockResolvedValue({
+      entrega: { ...entregaPendiente, estado: 'CONFIRMADA' }, saldo: saldo(1000), turno: turnoAbierto,
+    })
+    const user = userEvent.setup()
+    render(<CashCountView auth={cajero} />)
+    await user.click(await screen.findByRole('button', { name: 'Revisar y confirmar' }))
+    await user.click(screen.getByRole('button', { name: 'Confirmar recepción' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('Caja abierta con la entrega #12')
+    expect(screen.getByTestId('estado-caja')).toHaveTextContent('Caja abierta')
+    expect(screen.getByRole('button', { name: /Registrar movimiento/ })).toBeEnabled()
+    expect(screen.getByTestId('total-USD')).toHaveTextContent('$ 1.000')
+  })
+
+  it('cierra la caja con el recuento final y el saldo queda en 0', async () => {
+    mocks.obtenerSaldo.mockResolvedValue(saldo(400, 100000))
+    const recuento: Arqueo = {
+      id: 9, usuarioNombre: 'Cajera Ana', observacion: 'Cierre del día', conDiferencias: true, esCierre: true,
+      creadoEn: '2026-10-09T19:00:00-03:00',
+      detalle: [{ moneda: 2, monedaCodigo: 'USD', simbolo: '$', decimales: 2, montoSistema: 400, montoContado: 390, diferencia: -10 }],
+    }
+    mocks.cerrarCaja.mockResolvedValue({
+      turno: { ...turnoAbierto, abierto: false, cerradoEn: '2026-10-09T19:00:00-03:00', cerradoPorNombre: 'Cajera Ana', arqueoCierre: recuento },
+      saldo: saldo(0, 0),
+    })
+    const { user, dialogo } = await abrirModal(/Cerrar caja/, 'Cerrar caja')
+    expect(within(dialogo).getByText(/el efectivo se devuelve a tesorería/)).toBeInTheDocument()
+    await user.clear(within(dialogo).getByLabelText('USD'))
+    await user.type(within(dialogo).getByLabelText('USD'), '390')
+    await user.type(within(dialogo).getByPlaceholderText(/Cierre del día/), 'Cierre del día')
+    await user.click(within(dialogo).getByRole('button', { name: 'Cerrar caja' }))
+
+    expect(mocks.cerrarCaja).toHaveBeenCalledWith(1, [
+      { moneda: 1, monto: 100000 },
+      { moneda: 2, monto: 390 },
+    ], 'Cierre del día')
+    expect(mocks.registrarArqueo).not.toHaveBeenCalled()
+    expect(await screen.findByRole('status')).toHaveTextContent('Caja cerrada CON diferencias')
+    expect(screen.getByTestId('estado-caja')).toHaveTextContent('Caja cerrada')
+    expect(screen.getByTestId('total-USD')).toHaveTextContent('$ 0')
+    expect(screen.getByText('Cierre')).toBeInTheDocument()
+    expect(screen.getByText('USD: faltante −$ 10')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Registrar movimiento/ })).toBeDisabled()
+  })
+
+  it('el arqueo intermedio no cierra la caja', async () => {
+    mocks.registrarArqueo.mockResolvedValue({
+      id: 4, usuarioNombre: 'Ana', observacion: '', conDiferencias: false, esCierre: false,
+      creadoEn: '2026-10-09T12:00:00-03:00', detalle: [],
+    })
+    const { user, dialogo } = await abrirModal(/Registrar arqueo/, 'Registrar arqueo de caja')
+    await user.click(within(dialogo).getByRole('button', { name: 'Guardar arqueo' }))
+    expect(mocks.registrarArqueo).toHaveBeenCalled()
+    expect(mocks.cerrarCaja).not.toHaveBeenCalled()
+    expect(await screen.findByRole('status')).toHaveTextContent('Arqueo registrado sin diferencias')
+    expect(screen.getByTestId('estado-caja')).toHaveTextContent('Caja abierta')
   })
 })
 

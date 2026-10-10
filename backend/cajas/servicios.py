@@ -12,6 +12,11 @@ ninguno. Las historias que mueven efectivo reutilizan esta función:
   :func:`confirmar_entrega`.
 - PI-75 (operación cambiaria presencial): ``INGRESO`` por el efectivo que
   trae el cliente y ``RETIRO`` por la divisa que se le entrega.
+
+Apertura y cierre (PI-79): la caja se abre al confirmar la entrega
+inicial de billetes (:func:`confirmar_entrega`) y los ingresos y retiros
+solo se aceptan con la caja abierta. :func:`cerrar_caja` registra el
+recuento final y devuelve el efectivo a tesorería (saldo en 0).
 """
 
 from decimal import Decimal
@@ -24,8 +29,21 @@ from monedas.models import Moneda
 
 from .models import (
     ArqueoCaja, ArqueoMoneda, Caja, DetalleEntrega, Denominacion,
-    EntregaBilletes, MovimientoCaja, SaldoCaja,
+    EntregaBilletes, MovimientoCaja, SaldoCaja, TurnoCaja,
 )
+
+#: Mensaje cuando se intenta operar con la caja cerrada (PI-79).
+CAJA_CERRADA = ('La caja está cerrada. Se abre cuando el cajero confirma '
+                'la entrega de billetes del administrador.')
+
+
+class CajaCerrada(ValidationError):
+    """Se intentó operar con la caja cerrada (PI-79)."""
+
+
+def turno_abierto(caja: Caja) -> TurnoCaja | None:
+    """Turno abierto de la caja, o ``None`` si está cerrada."""
+    return TurnoCaja.objects.filter(caja=caja, cerrado_en__isnull=True).first()
 
 
 class SaldoInsuficiente(ValidationError):
@@ -59,9 +77,15 @@ def registrar_movimiento(
     usuario_nombre: str = '',
     observacion: str = '',
     entrega: EntregaBilletes | None = None,
+    turno: TurnoCaja | None = None,
 ) -> MovimientoCaja:
     """Registra un movimiento y actualiza el saldo de la divisa en la caja.
 
+    Los ingresos y retiros solo se aceptan con la caja abierta (PI-79); las
+    entregas y devoluciones las registran la apertura y el cierre, que
+    pasan su propio ``turno``.
+
+    :raises CajaCerrada: si es un ingreso o retiro y la caja está cerrada.
     :raises SaldoInsuficiente: si un retiro supera el saldo de la divisa.
     :raises ValidationError: si la caja está inactiva o el monto no es válido.
     """
@@ -73,6 +97,10 @@ def registrar_movimiento(
     caja = Caja.objects.select_for_update().get(pk=caja.pk)
     if not caja.activa:
         raise ValidationError('La caja está inactiva.')
+    if turno is None:
+        turno = turno_abierto(caja)
+        if turno is None and tipo in (MovimientoCaja.TIPO_INGRESO, MovimientoCaja.TIPO_RETIRO):
+            raise CajaCerrada(CAJA_CERRADA)
 
     saldo, _ = SaldoCaja.objects.select_for_update().get_or_create(caja=caja, moneda=moneda)
     if tipo in MovimientoCaja.TIPOS_SUMAN:
@@ -89,7 +117,7 @@ def registrar_movimiento(
         caja=caja, tipo=tipo, moneda=moneda, total=monto,
         saldo_resultante=saldo.monto,
         usuario_keycloak_id=usuario_id or '', usuario_nombre=usuario_nombre[:160],
-        observacion=observacion[:255], entrega=entrega,
+        observacion=observacion[:255], entrega=entrega, turno=turno,
     )
 
 
@@ -122,6 +150,7 @@ def registrar_arqueo(
     usuario_id: str,
     usuario_nombre: str = '',
     observacion: str = '',
+    _desde_cierre: bool = False,
 ) -> ArqueoCaja:
     """Guarda el recuento de la caja comparando el sistema con lo contado.
 
@@ -133,6 +162,8 @@ def registrar_arqueo(
     (faltante o sobrante) para que se revisen.
     """
     caja = Caja.objects.select_for_update().get(pk=caja.pk)
+    if not _desde_cierre and turno_abierto(caja) is None:
+        raise CajaCerrada(CAJA_CERRADA)
     conteo = conteo or {}
     if any(monto is None or monto < 0 for monto in conteo.values()):
         raise ValidationError('Los montos contados no pueden ser negativos.')
@@ -256,6 +287,22 @@ def confirmar_entrega(
     entrega = _tomar_pendiente(entrega)
     _no_es_quien_entrego(entrega, usuario_id)
 
+    # PI-79: si la caja está cerrada, esta entrega la abre (apertura); si ya
+    # está abierta, es una reposición del mismo turno.
+    caja = Caja.objects.select_for_update().get(pk=entrega.caja_id)
+    turno = turno_abierto(caja)
+    if turno is None:
+        if not caja.activa:
+            raise ValidationError('La caja está inactiva.')
+        turno = TurnoCaja.objects.create(
+            caja=caja, cajero_id=usuario_id or '', cajero_nombre=usuario_nombre[:160],
+            entrega_apertura=entrega,
+        )
+    elif turno.cajero_id and usuario_id and turno.cajero_id != usuario_id:
+        raise PermissionDenied(
+            f'La caja está abierta por {turno.cajero_nombre or "otro cajero"}; '
+            'solo ese cajero puede recibir entregas hasta el cierre.')
+
     por_moneda: dict[int, list[DetalleEntrega]] = {}
     for linea in entrega.detalle.select_related('denominacion__moneda'):
         por_moneda.setdefault(linea.denominacion.moneda_id, []).append(linea)
@@ -269,7 +316,7 @@ def confirmar_entrega(
             moneda=lineas[0].denominacion.moneda,
             monto=sum((l.subtotal for l in lineas), Decimal('0')),
             usuario_id=usuario_id, usuario_nombre=usuario_nombre,
-            observacion=referencia, entrega=entrega,
+            observacion=referencia, entrega=entrega, turno=turno,
         )
     return _responder(entrega, EntregaBilletes.ESTADO_CONFIRMADA, '', usuario_id, usuario_nombre)
 
@@ -305,3 +352,48 @@ def _responder(entrega, estado, motivo, usuario_id, usuario_nombre) -> EntregaBi
     entrega.save(update_fields=[
         'estado', 'motivo', 'respondido_por_id', 'respondido_por_nombre', 'fecha_respuesta'])
     return entrega
+
+
+# --- Apertura y cierre de caja (PI-79) ---------------------------------
+
+@transaction.atomic
+def cerrar_caja(
+    caja: Caja,
+    conteo: dict[int, Decimal] | None,
+    usuario_id: str,
+    usuario_nombre: str = '',
+    observacion: str = '',
+) -> TurnoCaja:
+    """Cierra la caja con el recuento final y devuelve el efectivo a tesorería.
+
+    1. Registra el recuento (sistema vs. contado por moneda), con las
+       diferencias si las hay.
+    2. Devuelve a tesorería el saldo de cada moneda: queda en 0 para la
+       próxima apertura.
+    3. Cierra el turno: ya no se puede operar hasta una nueva apertura.
+
+    :raises CajaCerrada: si la caja ya está cerrada.
+    """
+    caja = Caja.objects.select_for_update().get(pk=caja.pk)
+    turno = turno_abierto(caja)
+    if turno is None:
+        raise CajaCerrada('La caja ya está cerrada.')
+    turno = TurnoCaja.objects.select_for_update().get(pk=turno.pk)
+
+    arqueo = registrar_arqueo(
+        caja, conteo, usuario_id, usuario_nombre,
+        observacion=observacion or 'Cierre de caja', _desde_cierre=True,
+    )
+    for saldo in SaldoCaja.objects.select_related('moneda').filter(caja=caja, monto__gt=0):
+        registrar_movimiento(
+            caja=caja, tipo=MovimientoCaja.TIPO_DEVOLUCION, moneda=saldo.moneda,
+            monto=saldo.monto, usuario_id=usuario_id, usuario_nombre=usuario_nombre,
+            observacion='Cierre de caja: devolución a tesorería', turno=turno,
+        )
+
+    turno.cerrado_en = timezone.now()
+    turno.cerrado_por_id = usuario_id or ''
+    turno.cerrado_por_nombre = usuario_nombre[:160]
+    turno.arqueo_cierre = arqueo
+    turno.save(update_fields=['cerrado_en', 'cerrado_por_id', 'cerrado_por_nombre', 'arqueo_cierre'])
+    return turno

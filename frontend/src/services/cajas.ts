@@ -12,6 +12,10 @@
  *   cada moneda (sistema vs. contado).
  * - `listarDenominaciones()`: catálogo de billetes por moneda, para cargar
  *   una entrega.
+ * - Apertura y cierre (PI-79): la caja se abre al confirmar la entrega
+ *   inicial (`confirmarEntrega`); `obtenerTurno` dice si está abierta y
+ *   `cerrarCaja` registra el recuento final y devuelve el efectivo a
+ *   tesorería (saldo en 0).
  * - Entregas de billetes (PI-43, RF57): el admin las registra
  *   (`crearEntrega`) y quedan pendientes; el cajero las confirma
  *   (`confirmarEntrega`, se suman al saldo) o rechaza con motivo; el admin
@@ -22,16 +26,27 @@
 import { apiFetch } from '@/services/api'
 import { banderaDesdeCodigo } from '@/services/monedas'
 
+/** Turno abierto de una caja: quién la tiene y desde cuándo (PI-79). */
+export interface TurnoResumen {
+  id: number
+  cajeroNombre: string
+  abiertoEn: string
+  entregaApertura: number | null
+}
+
 /** Caja de una sucursal. */
 export interface Caja {
   id: number
   nombre: string
   sucursal: string
   activa: boolean
+  /** `true` mientras haya un turno abierto (PI-79). */
+  abierta: boolean
+  turnoActual: TurnoResumen | null
 }
 
 /** Tipos de movimiento de efectivo. */
-export type TipoMovimiento = 'INGRESO' | 'ENTREGA' | 'RETIRO'
+export type TipoMovimiento = 'INGRESO' | 'ENTREGA' | 'RETIRO' | 'DEVOLUCION'
 
 /** Datos de una moneda que usan las pantallas de caja. */
 export interface MonedaCaja {
@@ -78,14 +93,28 @@ export interface LineaArqueo {
   diferencia: number
 }
 
-/** Arqueo o cierre de turno registrado. */
+/** Arqueo o recuento de cierre registrado. */
 export interface Arqueo {
   id: number
   usuarioNombre: string
   observacion: string
   conDiferencias: boolean
+  /** `true` si es el recuento final de un cierre de caja (PI-79). */
+  esCierre: boolean
   creadoEn: string
   detalle: LineaArqueo[]
+}
+
+/** Turno de caja: de la apertura al cierre (PI-79). */
+export interface Turno {
+  id: number
+  abierto: boolean
+  cajeroNombre: string
+  abiertoEn: string
+  entregaApertura: number | null
+  cerradoEn: string | null
+  cerradoPorNombre: string
+  arqueoCierre: Arqueo | null
 }
 
 /** Estados de una entrega de billetes. */
@@ -135,6 +164,15 @@ interface SaldoMonedaApi {
   total: string
 }
 
+interface CajaApi {
+  id: number
+  nombre: string
+  sucursal: string
+  activa: boolean
+  abierta: boolean
+  turno_actual: { id: number; cajero_nombre: string; abierto_en: string; entrega_apertura: number | null } | null
+}
+
 interface DenominacionApi {
   id: number
   moneda: number
@@ -162,6 +200,7 @@ interface ArqueoApi {
   usuario_nombre: string
   observacion: string
   con_diferencias: boolean
+  es_cierre: boolean
   creado_en: string
   detalle: {
     moneda: number
@@ -172,6 +211,17 @@ interface ArqueoApi {
     monto_contado: string
     diferencia: string
   }[]
+}
+
+interface TurnoApi {
+  id: number
+  abierto: boolean
+  cajero_nombre: string
+  abierto_en: string
+  entrega_apertura: number | null
+  cerrado_en: string | null
+  cerrado_por_nombre: string
+  arqueo_cierre: ArqueoApi | null
 }
 
 interface EntregaApi {
@@ -256,6 +306,7 @@ function mapearArqueo(a: ArqueoApi): Arqueo {
     usuarioNombre: a.usuario_nombre,
     observacion: a.observacion,
     conDiferencias: a.con_diferencias,
+    esCierre: a.es_cierre,
     creadoEn: a.creado_en,
     detalle: a.detalle.map(d => ({
       moneda: d.moneda,
@@ -269,9 +320,66 @@ function mapearArqueo(a: ArqueoApi): Arqueo {
   }
 }
 
-/** Lista las cajas activas. */
+function mapearTurno(t: TurnoApi): Turno {
+  return {
+    id: t.id,
+    abierto: t.abierto,
+    cajeroNombre: t.cajero_nombre,
+    abiertoEn: t.abierto_en,
+    entregaApertura: t.entrega_apertura,
+    cerradoEn: t.cerrado_en,
+    cerradoPorNombre: t.cerrado_por_nombre,
+    arqueoCierre: t.arqueo_cierre ? mapearArqueo(t.arqueo_cierre) : null,
+  }
+}
+
+/** Lista las cajas activas, con su estado (abierta o cerrada). */
 export async function listarCajas(): Promise<Caja[]> {
-  return apiFetch<Caja[]>('/cajas/')
+  const datos = await apiFetch<CajaApi[]>('/cajas/')
+  return datos.map(c => ({
+    id: c.id,
+    nombre: c.nombre,
+    sucursal: c.sucursal,
+    activa: c.activa,
+    abierta: c.abierta,
+    turnoActual: c.turno_actual && {
+      id: c.turno_actual.id,
+      cajeroNombre: c.turno_actual.cajero_nombre,
+      abiertoEn: c.turno_actual.abierto_en,
+      entregaApertura: c.turno_actual.entrega_apertura,
+    },
+  }))
+}
+
+/** Turno abierto de la caja, o `null` si está cerrada (PI-79). */
+export async function obtenerTurno(cajaId: number): Promise<Turno | null> {
+  const datos = await apiFetch<{ turno: TurnoApi | null }>(`/cajas/${cajaId}/turno/`)
+  return datos?.turno ? mapearTurno(datos.turno) : null
+}
+
+/** Últimas aperturas y cierres de la caja, del más reciente al más antiguo. */
+export async function listarTurnos(cajaId: number, limite = 10): Promise<Turno[]> {
+  const datos = await apiFetch<TurnoApi[]>(`/cajas/${cajaId}/turnos/?limite=${limite}`)
+  return datos.map(mapearTurno)
+}
+
+/**
+ * Cierra la caja con el recuento final de cada moneda (PI-79). El efectivo
+ * se devuelve a tesorería: el saldo queda en 0 hasta la próxima apertura.
+ */
+export async function cerrarCaja(
+  cajaId: number,
+  conteo: { moneda: number; monto: number }[],
+  observacion = '',
+): Promise<{ turno: Turno; saldo: SaldoMoneda[] }> {
+  const res = await apiFetch<{ turno: TurnoApi; monedas: SaldoMonedaApi[] }>(`/cajas/${cajaId}/cerrar/`, {
+    method: 'POST',
+    body: JSON.stringify({
+      conteo: conteo.map(l => ({ moneda: l.moneda, monto: String(l.monto) })),
+      observacion,
+    }),
+  })
+  return { turno: mapearTurno(res.turno), saldo: res.monedas.map(mapearSaldo) }
 }
 
 /** Saldo de la caja por divisa (RF56). */
@@ -401,12 +509,22 @@ export async function crearEntrega(
   return mapearEntrega(datos)
 }
 
-/** El cajero confirma la recepción: devuelve la entrega y el saldo actualizado. */
-export async function confirmarEntrega(id: number): Promise<{ entrega: Entrega; saldo: SaldoMoneda[] }> {
-  const res = await apiFetch<{ entrega: EntregaApi; monedas: SaldoMonedaApi[] }>(
+/**
+ * El cajero confirma la recepción: devuelve la entrega, el saldo
+ * actualizado y el turno. Si la caja estaba cerrada, esta entrega la abre
+ * (PI-79).
+ */
+export async function confirmarEntrega(
+  id: number,
+): Promise<{ entrega: Entrega; saldo: SaldoMoneda[]; turno: Turno | null }> {
+  const res = await apiFetch<{ entrega: EntregaApi; monedas: SaldoMonedaApi[]; turno: TurnoApi | null }>(
     `/entregas/${id}/confirmar/`, { method: 'POST', body: '{}' },
   )
-  return { entrega: mapearEntrega(res.entrega), saldo: res.monedas.map(mapearSaldo) }
+  return {
+    entrega: mapearEntrega(res.entrega),
+    saldo: res.monedas.map(mapearSaldo),
+    turno: res.turno ? mapearTurno(res.turno) : null,
+  }
 }
 
 /** El cajero rechaza la entrega indicando el motivo. */

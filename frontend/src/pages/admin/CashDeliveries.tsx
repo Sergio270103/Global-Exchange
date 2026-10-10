@@ -8,6 +8,10 @@
  * esté pendiente, el administrador puede cancelarla. La lista muestra el
  * estado, quién la recibió y cuándo, y se refresca sola.
  *
+ * PI-79: muestra si cada caja está abierta (y por quién) o cerrada. Si
+ * está cerrada, la entrega es la apertura; si está abierta, es una
+ * reposición del turno en curso.
+ *
  * @module CashDeliveries
  */
 import { useCallback, useEffect, useState } from 'react'
@@ -66,16 +70,14 @@ export default function CashDeliveries() {
   const [nueva, setNueva] = useState(false)
   const [aCancelar, setACancelar] = useState<Entrega | null>(null)
 
-  useEffect(() => {
-    listarCajas().then(setCajas).catch((e: Error) => setError(e.message))
-  }, [])
-
   const recargar = useCallback(async () => {
     try {
-      setEntregas(await listarEntregas({
-        caja: cajaFiltro || undefined,
-        estado: estado || undefined,
-      }))
+      const [lista, cajasActuales] = await Promise.all([
+        listarEntregas({ caja: cajaFiltro || undefined, estado: estado || undefined }),
+        listarCajas(),
+      ])
+      setEntregas(lista)
+      setCajas(cajasActuales)
       setError('')
     } catch (e) {
       setError((e as Error).message)
@@ -114,6 +116,25 @@ export default function CashDeliveries() {
           + Nueva entrega
         </button>
       </div>
+
+      {cajas.length > 0 && (
+        <div className="flex flex-wrap gap-2" aria-label="Estado de las cajas">
+          {cajas.map(c => (
+            <span
+              key={c.id}
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold ${
+                c.abierta ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-white border-slate-200 text-slate-500'
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${c.abierta ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+              {c.sucursal} · {c.nombre}:{' '}
+              {c.abierta && c.turnoActual
+                ? `abierta por ${c.turnoActual.cajeroNombre} desde ${fechaCorta(c.turnoActual.abiertoEn)}`
+                : 'cerrada'}
+            </span>
+          ))}
+        </div>
+      )}
 
       {error && <div role="alert" className="bg-rose-50 border border-rose-200 text-rose-700 rounded-lg p-3 text-xs">{error}</div>}
       {aviso && <div role="status" className="bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg p-3 text-xs">{aviso}</div>}
@@ -260,6 +281,7 @@ function ModalNuevaEntrega({ cajas, cajaInicial, onCerrar, onRegistrada }: {
   }, [])
 
   const moneda = monedas.find(m => m.codigo === codigo)
+  const cajaElegida = cajas.find(c => c.id === cajaId)
   const totales = monedas
     .map(m => ({
       m,
@@ -318,6 +340,13 @@ function ModalNuevaEntrega({ cajas, cajaInicial, onCerrar, onRegistrada }: {
           {cajas.map(c => <option key={c.id} value={c.id}>{c.sucursal} · {c.nombre}</option>)}
         </select>
       </label>
+      {cajaElegida && (
+        <p className={`rounded-lg px-3 py-2 ${cajaElegida.abierta ? 'bg-sky-50 text-sky-800' : 'bg-amber-50 text-amber-800'}`}>
+          {cajaElegida.abierta
+            ? `La caja está abierta por ${cajaElegida.turnoActual?.cajeroNombre ?? 'un cajero'}: esta entrega es una reposición.`
+            : 'La caja está cerrada: esta entrega será la apertura cuando el cajero la confirme.'}
+        </p>
+      )}
 
       <div className="flex flex-wrap gap-1.5" aria-label="Divisa">
         {monedas.map(m => {
