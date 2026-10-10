@@ -51,8 +51,11 @@ beforeEach(() => {
   vi.clearAllMocks()
   document.body.style.overflow = ''
   mocks.listarCajas.mockResolvedValue([
-    { id: 1, nombre: 'Caja 1', sucursal: 'Casa Central', activa: true },
-    { id: 2, nombre: 'Caja 2', sucursal: 'Casa Central', activa: true },
+    {
+      id: 1, nombre: 'Caja 1', sucursal: 'Casa Central', activa: true, abierta: true,
+      turnoActual: { id: 5, cajeroNombre: 'Cajera Ana', abiertoEn: '2026-10-09T08:10:00-03:00', entregaApertura: 11 },
+    },
+    { id: 2, nombre: 'Caja 2', sucursal: 'Casa Central', activa: true, abierta: false, turnoActual: null },
   ])
   mocks.listarDenominaciones.mockResolvedValue(monedas)
   mocks.listarEntregas.mockResolvedValue([
@@ -142,6 +145,24 @@ describe('CashDeliveries (PI-43)', () => {
     await user.click(boton)
     expect(mocks.cancelarEntrega).toHaveBeenCalledWith(12, 'Caja equivocada')
     expect(await screen.findByRole('status')).toHaveTextContent('Entrega #12 cancelada')
+  })
+
+  it('PI-79: muestra si cada caja está abierta o cerrada', async () => {
+    render(<CashDeliveries />)
+    const estado = await screen.findByLabelText('Estado de las cajas')
+    expect(within(estado).getByText(/Caja 1: abierta por Cajera Ana desde/)).toBeInTheDocument()
+    expect(within(estado).getByText(/Caja 2: cerrada/)).toBeInTheDocument()
+  })
+
+  it('PI-79: avisa si la entrega abre la caja o es una reposición', async () => {
+    const user = userEvent.setup()
+    render(<CashDeliveries />)
+    await screen.findByText('#12')
+    await user.click(screen.getByRole('button', { name: '+ Nueva entrega' }))
+    const dialogo = screen.getByRole('dialog', { name: 'Nueva entrega de billetes' })
+    expect(within(dialogo).getByText(/abierta por Cajera Ana: esta entrega es una reposición/)).toBeInTheDocument()
+    await user.selectOptions(within(dialogo).getByLabelText('Caja que recibe'), '2')
+    expect(within(dialogo).getByText(/cerrada: esta entrega será la apertura/)).toBeInTheDocument()
   })
 
   it('muestra el error de la API', async () => {

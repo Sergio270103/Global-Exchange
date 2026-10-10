@@ -8,20 +8,38 @@ from monedas.models import Moneda
 
 from .models import (
     ArqueoCaja, ArqueoMoneda, Caja, DetalleEntrega, Denominacion,
-    EntregaBilletes, MovimientoCaja,
+    EntregaBilletes, MovimientoCaja, TurnoCaja,
 )
-from .servicios import totales_entrega
+from .servicios import totales_entrega, turno_abierto
 
 
 def _texto_valor(valor) -> str:
     return f'{valor.normalize():f}'
 
 
+class TurnoResumenSerializer(serializers.ModelSerializer):
+    """Turno abierto de una caja (PI-79), para mostrar quién la tiene."""
+
+    class Meta:
+        model = TurnoCaja
+        fields = ['id', 'cajero_nombre', 'abierto_en', 'entrega_apertura']
+
+
 class CajaSerializer(serializers.ModelSerializer):
+    abierta = serializers.SerializerMethodField()
+    turno_actual = serializers.SerializerMethodField()
+
     class Meta:
         model = Caja
-        fields = ['id', 'nombre', 'sucursal', 'activa', 'creado_en']
-        read_only_fields = ['id', 'creado_en']
+        fields = ['id', 'nombre', 'sucursal', 'activa', 'abierta', 'turno_actual', 'creado_en']
+        read_only_fields = ['id', 'abierta', 'turno_actual', 'creado_en']
+
+    def get_abierta(self, obj) -> bool:
+        return turno_abierto(obj) is not None
+
+    def get_turno_actual(self, obj):
+        turno = turno_abierto(obj)
+        return TurnoResumenSerializer(turno).data if turno else None
 
 
 class DenominacionSerializer(serializers.ModelSerializer):
@@ -94,12 +112,31 @@ class ArqueoMonedaSerializer(serializers.ModelSerializer):
 class ArqueoSerializer(serializers.ModelSerializer):
     caja_nombre = serializers.CharField(source='caja.__str__', read_only=True)
     detalle = ArqueoMonedaSerializer(many=True, read_only=True)
+    es_cierre = serializers.SerializerMethodField()
 
     class Meta:
         model = ArqueoCaja
         fields = [
             'id', 'caja', 'caja_nombre', 'usuario_nombre', 'observacion',
-            'con_diferencias', 'creado_en', 'detalle',
+            'con_diferencias', 'es_cierre', 'creado_en', 'detalle',
+        ]
+
+    def get_es_cierre(self, obj) -> bool:
+        return hasattr(obj, 'turno_cierre')
+
+
+class TurnoSerializer(serializers.ModelSerializer):
+    """Turno de caja completo (PI-79): apertura, cierre y recuento final."""
+
+    caja_nombre = serializers.CharField(source='caja.__str__', read_only=True)
+    abierto = serializers.BooleanField(read_only=True)
+    arqueo_cierre = ArqueoSerializer(read_only=True)
+
+    class Meta:
+        model = TurnoCaja
+        fields = [
+            'id', 'caja', 'caja_nombre', 'abierto', 'cajero_nombre', 'abierto_en',
+            'entrega_apertura', 'cerrado_en', 'cerrado_por_nombre', 'arqueo_cierre',
         ]
 
 

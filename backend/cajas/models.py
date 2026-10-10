@@ -10,6 +10,10 @@
   editarlos ni borrarlos (RNF6).
 - ``ArqueoCaja`` + ``ArqueoMoneda``: recuento de la caja comparando el
   total que dice el sistema con el contado, por moneda.
+- ``TurnoCaja``: apertura y cierre de la caja (PI-79). La caja se abre al
+  confirmar la entrega inicial de billetes y solo se puede operar mientras
+  esté abierta. Al cerrar, el cajero informa el recuento final de cada
+  moneda y el efectivo se devuelve a tesorería (el saldo vuelve a 0).
 - ``EntregaBilletes`` + ``DetalleEntrega``: billetes que el administrador
   entrega a una caja (PI-43, RF57), por divisa y denominación. Es el único
   lugar donde se registra la denominación (decisión de la Product Owner).
@@ -107,15 +111,17 @@ class SaldoCaja(models.Model):
 
 
 class MovimientoCaja(models.Model):
-    """Ingreso, entrega o retiro de billetes de una caja (RF58)."""
+    """Ingreso, entrega, retiro o devolución de efectivo de una caja (RF58)."""
 
     TIPO_INGRESO = 'INGRESO'
     TIPO_ENTREGA = 'ENTREGA'
     TIPO_RETIRO = 'RETIRO'
+    TIPO_DEVOLUCION = 'DEVOLUCION'
     TIPOS = (
         (TIPO_INGRESO, 'Ingreso'),
         (TIPO_ENTREGA, 'Entrega'),
         (TIPO_RETIRO, 'Retiro'),
+        (TIPO_DEVOLUCION, 'Devolución a tesorería'),
     )
     #: Tipos que suman billetes a la caja; el resto los descuenta.
     TIPOS_SUMAN = (TIPO_INGRESO, TIPO_ENTREGA)
@@ -124,7 +130,7 @@ class MovimientoCaja(models.Model):
         Caja, on_delete=models.PROTECT,
         related_name='movimientos', verbose_name='caja',
     )
-    tipo = models.CharField('tipo', max_length=8, choices=TIPOS)
+    tipo = models.CharField('tipo', max_length=10, choices=TIPOS)
     moneda = models.ForeignKey(
         'monedas.Moneda', on_delete=models.PROTECT,
         related_name='movimientos_caja', verbose_name='moneda',
@@ -142,6 +148,12 @@ class MovimientoCaja(models.Model):
         null=True, blank=True, related_name='movimientos',
         verbose_name='entrega',
         help_text='Entrega de billetes que originó el movimiento (PI-43).',
+    )
+    turno = models.ForeignKey(
+        'TurnoCaja', on_delete=models.PROTECT,
+        null=True, blank=True, related_name='movimientos',
+        verbose_name='turno',
+        help_text='Turno (apertura → cierre) en el que se registró (PI-79).',
     )
     creado_en = models.DateTimeField('fecha y hora', auto_now_add=True)
 
@@ -296,3 +308,52 @@ class DetalleEntrega(models.Model):
 
     def __str__(self) -> str:
         return f'{self.cantidad} x {self.denominacion}'
+
+
+class TurnoCaja(models.Model):
+    """Apertura y cierre de una caja (PI-79).
+
+    Un turno está abierto mientras ``cerrado_en`` sea nulo; solo puede haber
+    un turno abierto por caja. Se abre al confirmar la entrega inicial de
+    billetes y se cierra con el recuento final (``arqueo_cierre``).
+    """
+
+    caja = models.ForeignKey(
+        Caja, on_delete=models.PROTECT,
+        related_name='turnos', verbose_name='caja',
+    )
+    cajero_id = models.CharField('cajero responsable (sub)', max_length=64)
+    cajero_nombre = models.CharField('cajero responsable', max_length=160, blank=True)
+    entrega_apertura = models.OneToOneField(
+        EntregaBilletes, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='turno_abierto',
+        verbose_name='entrega de apertura',
+    )
+    abierto_en = models.DateTimeField('fecha y hora de apertura', auto_now_add=True)
+    cerrado_en = models.DateTimeField('fecha y hora de cierre', null=True, blank=True)
+    cerrado_por_id = models.CharField('cerrado por (sub)', max_length=64, blank=True)
+    cerrado_por_nombre = models.CharField('cerrado por', max_length=160, blank=True)
+    arqueo_cierre = models.OneToOneField(
+        ArqueoCaja, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='turno_cierre',
+        verbose_name='recuento de cierre',
+    )
+
+    class Meta:
+        ordering = ['-abierto_en', '-id']
+        verbose_name = 'turno de caja'
+        verbose_name_plural = 'turnos de caja'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['caja'], condition=models.Q(cerrado_en__isnull=True),
+                name='uniq_turno_abierto_por_caja',
+            )
+        ]
+
+    @property
+    def abierto(self) -> bool:
+        return self.cerrado_en is None
+
+    def __str__(self) -> str:
+        estado = 'abierto' if self.abierto else f'cerrado {self.cerrado_en:%d/%m %H:%M}'
+        return f'Turno {self.caja} · {self.cajero_nombre} ({estado})'

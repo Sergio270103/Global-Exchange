@@ -9,6 +9,11 @@
   (RF58). Filtros ``?moneda=`` (código o id) y ``?tipo=``.
 - ``GET|POST /api/cajas/{id}/arqueos/`` recuento de la caja: total
   según sistema vs. total contado de cada moneda.
+- ``GET /api/cajas/{id}/turno/`` ``{"turno": ...}`` con el turno abierto
+  (``null`` si la caja está cerrada) y ``GET /api/cajas/{id}/turnos/`` historial de aperturas y
+  cierres (PI-79).
+- ``POST /api/cajas/{id}/cerrar/`` cierre con el recuento final de cada
+  moneda; el efectivo se devuelve a tesorería (PI-79).
 - ``GET /api/denominaciones/?moneda=&activas=1`` catálogo de billetes
   (lo usa el formulario de entregas); escritura solo admin.
 - ``GET|POST /api/entregas/`` entregas de billetes a una caja (PI-43,
@@ -28,17 +33,23 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
-from .models import ArqueoCaja, Caja, Denominacion, EntregaBilletes, MovimientoCaja
+from .models import ArqueoCaja, Caja, Denominacion, EntregaBilletes, MovimientoCaja, TurnoCaja
 from .permisos import PermisoEntregas, PersonalCaja
 from .serializers import (
     ArqueoSerializer, CajaSerializer, DenominacionSerializer, EntregaSerializer,
     MotivoSerializer, MovimientoSerializer, NuevaEntregaSerializer,
-    NuevoArqueoSerializer, NuevoMovimientoSerializer,
+    NuevoArqueoSerializer, NuevoMovimientoSerializer, TurnoSerializer,
 )
 from .servicios import (
-    cancelar_entrega, confirmar_entrega, crear_entrega, rechazar_entrega,
-    registrar_arqueo, registrar_movimiento, saldo_por_moneda,
+    cancelar_entrega, cerrar_caja, confirmar_entrega, crear_entrega,
+    rechazar_entrega, registrar_arqueo, registrar_movimiento, saldo_por_moneda,
+    turno_abierto,
 )
+
+
+def _turno_json(caja):
+    turno = turno_abierto(caja)
+    return TurnoSerializer(turno).data if turno else None
 
 #: Cuántos movimientos o arqueos devuelve el historial por defecto.
 LIMITE_HISTORIAL = 50
@@ -81,6 +92,41 @@ class CajaViewSet(viewsets.ModelViewSet):
         return Response({
             'caja': caja.pk,
             'caja_nombre': str(caja),
+            'monedas': saldo_por_moneda(caja),
+            'turno': _turno_json(caja),
+        })
+
+    @action(detail=True, methods=['get'])
+    def turno(self, request, pk=None):
+        # Envuelto en un objeto: un ``Response(None)`` sale con cuerpo vacío
+        # y el frontend no lo puede leer como JSON.
+        return Response({'turno': _turno_json(self.get_object())})
+
+    @action(detail=True, methods=['get'])
+    def turnos(self, request, pk=None):
+        qs = (TurnoCaja.objects.filter(caja=self.get_object())
+              .select_related('caja', 'arqueo_cierre')
+              .prefetch_related('arqueo_cierre__detalle__moneda'))
+        return Response(TurnoSerializer(qs[:_limite(request)], many=True).data)
+
+    @action(detail=True, methods=['post'])
+    def cerrar(self, request, pk=None):
+        caja = self.get_object()
+        entrada = NuevoArqueoSerializer(data=request.data)
+        entrada.is_valid(raise_exception=True)
+        datos = entrada.validated_data
+        sub, nombre = _usuario(request)
+        try:
+            turno = cerrar_caja(
+                caja=caja,
+                conteo={l['moneda'].pk: l['monto'] for l in datos['conteo']},
+                usuario_id=sub, usuario_nombre=nombre,
+                observacion=datos['observacion'],
+            )
+        except DjangoValidationError as exc:
+            return Response({'detail': _mensaje(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({
+            'turno': TurnoSerializer(turno).data,
             'monedas': saldo_por_moneda(caja),
         })
 
@@ -218,6 +264,7 @@ class EntregaViewSet(viewsets.ReadOnlyModelViewSet):
         return Response({
             'entrega': EntregaSerializer(resultado).data,
             'monedas': saldo_por_moneda(resultado.caja),
+            'turno': _turno_json(resultado.caja),
         })
 
     @action(detail=True, methods=['post'])

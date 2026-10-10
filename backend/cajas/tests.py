@@ -25,7 +25,7 @@ from rest_framework.test import APIClient
 
 from monedas.models import Moneda
 
-from .models import ArqueoCaja, Caja, Denominacion, MovimientoCaja, SaldoCaja
+from .models import ArqueoCaja, Caja, Denominacion, MovimientoCaja, SaldoCaja, TurnoCaja
 from .servicios import SaldoInsuficiente, registrar_movimiento
 
 
@@ -53,6 +53,8 @@ CLIENTE = UsuarioFalso('sub-cliente', 'Cliente', roles=['user'])
 
 
 class BaseCajas(TestCase):
+    #: Las pruebas de saldo y movimientos operan con la caja abierta (PI-79).
+    ABRIR_TURNO = True
 
     @classmethod
     def setUpTestData(cls):
@@ -69,6 +71,9 @@ class BaseCajas(TestCase):
     def setUp(self):
         self.api = APIClient()
         self.api.force_authenticate(user=CAJERO)
+        if self.ABRIR_TURNO:
+            self.turno = TurnoCaja.objects.create(
+                caja=self.caja, cajero_id=CAJERO.id, cajero_nombre=CAJERO.nombre)
 
     def url(self, sufijo=''):
         return f'/api/cajas/{self.caja.pk}/{sufijo}'
@@ -184,6 +189,20 @@ class MovimientoTests(BaseCajas):
         self.assertEqual(len(self.api.get(self.url('movimientos/?moneda=USD')).data), 2)
         res = self.api.get(self.url('movimientos/?moneda=USD&tipo=retiro'))
         self.assertEqual([m['tipo'] for m in res.data], ['RETIRO'])
+
+    def test_con_la_caja_cerrada_no_se_opera(self):
+        # PI-79: ingresos, retiros y arqueos solo con la caja abierta.
+        self.turno.delete()
+        res = self.mover('INGRESO', self.usd, '10')
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('La caja está cerrada', res.data['detail'])
+        res = self.api.post(self.url('arqueos/'), {}, format='json')
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(MovimientoCaja.objects.count(), 0)
+
+    def test_movimiento_queda_asociado_al_turno(self):
+        res = self.mover('INGRESO', self.usd, '10')
+        self.assertEqual(MovimientoCaja.objects.get(pk=res.data['movimiento']['id']).turno, self.turno)
 
     def test_servicio_reutilizable_lanza_saldo_insuficiente(self):
         with self.assertRaises(SaldoInsuficiente):

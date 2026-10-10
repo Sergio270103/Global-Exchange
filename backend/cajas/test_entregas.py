@@ -30,6 +30,8 @@ OTRO_CAJERO = UsuarioFalso('sub-cajero-2', 'Cajero Luis', roles=['cashier'])
 
 
 class BaseEntregas(BaseCajas):
+    # La caja arranca cerrada: la primera entrega confirmada la abre (PI-79).
+    ABRIR_TURNO = False
 
     def setUp(self):
         super().setUp()

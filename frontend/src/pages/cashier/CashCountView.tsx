@@ -11,11 +11,16 @@
  * el cajero los cuenta y confirma (se suma el total de cada divisa) o
  * rechaza con un motivo. Todo se refresca solo cada 30 segundos.
  *
+ * PI-79: la caja se abre al confirmar la entrega inicial y solo se puede
+ * operar mientras está abierta. "Cerrar caja" pide el recuento final de
+ * cada moneda y devuelve el efectivo a tesorería (el saldo queda en 0).
+ *
  * @module CashCountView
  */
 import { useCallback, useEffect, useState } from 'react'
 import type { AuthUser } from '@/types'
 import {
+  cerrarCaja,
   confirmarEntrega,
   formatearMonto,
   listarArqueos,
@@ -23,6 +28,7 @@ import {
   listarEntregas,
   listarMovimientos,
   obtenerSaldo,
+  obtenerTurno,
   rechazarEntrega,
   registrarArqueo,
   registrarMovimiento,
@@ -32,6 +38,7 @@ import {
   type MovimientoCaja,
   type SaldoMoneda,
   type TipoMovimiento,
+  type Turno,
 } from '@/services/cajas'
 import {
   BotonesModal,
@@ -56,6 +63,11 @@ const ESTILO_TIPO: Record<TipoMovimiento, { signo: string; clase: string }> = {
   INGRESO: { signo: '+', clase: 'bg-emerald-50 text-emerald-700' },
   ENTREGA: { signo: '+', clase: 'bg-sky-50 text-sky-700' },
   RETIRO: { signo: '−', clase: 'bg-rose-50 text-rose-700' },
+  DEVOLUCION: { signo: '−', clase: 'bg-slate-100 text-slate-600' },
+}
+
+function horaCorta(iso: string): string {
+  return new Date(iso).toLocaleTimeString('es-PY', { hour: '2-digit', minute: '2-digit' })
 }
 
 /** Diferencia con signo, por ejemplo `+$ 20` o `−₲ 50.000`. */
@@ -71,12 +83,13 @@ export default function CashCountView(_props: CashCountViewProps) {
   const [movimientos, setMovimientos] = useState<MovimientoCaja[]>([])
   const [arqueos, setArqueos] = useState<Arqueo[]>([])
   const [pendientes, setPendientes] = useState<Entrega[]>([])
+  const [turno, setTurno] = useState<Turno | null>(null)
   const [entregaSel, setEntregaSel] = useState<Entrega | null>(null)
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState('')
   const [aviso, setAviso] = useState('')
   const [actualizado, setActualizado] = useState<Date | null>(null)
-  const [modal, setModal] = useState<'movimiento' | 'arqueo' | null>(null)
+  const [modal, setModal] = useState<'movimiento' | 'arqueo' | 'cierre' | null>(null)
 
   useEffect(() => {
     listarCajas()
@@ -93,16 +106,18 @@ export default function CashCountView(_props: CashCountViewProps) {
 
   const recargar = useCallback(async (id: number) => {
     try {
-      const [s, m, a, e] = await Promise.all([
+      const [s, m, a, e, t] = await Promise.all([
         obtenerSaldo(id),
         listarMovimientos(id, { limite: 10 }),
         listarArqueos(id, 5),
         listarEntregas({ caja: id, estado: 'PENDIENTE' }),
+        obtenerTurno(id),
       ])
       setSaldo(s)
       setMovimientos(m)
       setArqueos(a)
       setPendientes(e)
+      setTurno(t)
       setActualizado(new Date())
       setError('')
     } catch (e) {
@@ -131,13 +146,17 @@ export default function CashCountView(_props: CashCountViewProps) {
     setAviso(`${mov.tipoDisplay} registrado. Saldo actualizado.`)
   }
 
-  const alResponderEntrega = (entrega: Entrega, nuevoSaldo?: SaldoMoneda[]) => {
+  const alResponderEntrega = (entrega: Entrega, nuevoSaldo?: SaldoMoneda[], nuevoTurno?: Turno | null) => {
     setEntregaSel(null)
     setPendientes(prev => prev.filter(e => e.id !== entrega.id))
     if (nuevoSaldo) {
+      const abrio = !turno && Boolean(nuevoTurno)
       setSaldo(nuevoSaldo)
+      setTurno(nuevoTurno ?? null)
       setActualizado(new Date())
-      setAviso(`Entrega #${entrega.id} confirmada. Se sumó al saldo de la caja.`)
+      setAviso(abrio
+        ? `Caja abierta con la entrega #${entrega.id}. Ya podés operar.`
+        : `Entrega #${entrega.id} confirmada. Se sumó al saldo de la caja.`)
       if (cajaId !== null) listarMovimientos(cajaId, { limite: 10 }).then(setMovimientos).catch(() => {})
     } else {
       setAviso(`Entrega #${entrega.id} rechazada. El administrador verá el motivo.`)
@@ -150,6 +169,18 @@ export default function CashCountView(_props: CashCountViewProps) {
     setAviso(arqueo.conDiferencias
       ? 'Arqueo registrado CON diferencias. Revisá el detalle.'
       : 'Arqueo registrado sin diferencias.')
+  }
+
+  const alCerrarCaja = (cerrado: Turno, nuevoSaldo: SaldoMoneda[]) => {
+    setTurno(null)
+    setSaldo(nuevoSaldo)
+    setModal(null)
+    setActualizado(new Date())
+    if (cerrado.arqueoCierre) setArqueos(prev => [cerrado.arqueoCierre as Arqueo, ...prev].slice(0, 5))
+    if (cajaId !== null) listarMovimientos(cajaId, { limite: 10 }).then(setMovimientos).catch(() => {})
+    setAviso(cerrado.arqueoCierre?.conDiferencias
+      ? 'Caja cerrada CON diferencias. El efectivo se devolvió a tesorería.'
+      : 'Caja cerrada sin diferencias. El efectivo se devolvió a tesorería.')
   }
 
   if (!cargando && cajas.length === 0 && !error) {
@@ -174,6 +205,17 @@ export default function CashCountView(_props: CashCountViewProps) {
           <p className="text-xs text-slate-400">
             {actualizado ? `Saldo actualizado ${actualizado.toLocaleTimeString('es-PY')}` : 'Cargando saldo…'}
           </p>
+          {!cargando && (
+            <p
+              data-testid="estado-caja"
+              className={`mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${
+                turno ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${turno ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+              {turno ? `Caja abierta desde las ${horaCorta(turno.abiertoEn)} · ${turno.cajeroNombre}` : 'Caja cerrada'}
+            </p>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -199,18 +241,26 @@ export default function CashCountView(_props: CashCountViewProps) {
           </button>
           <button
             onClick={() => { setAviso(''); setModal('arqueo') }}
-            disabled={saldo.length === 0}
+            disabled={!turno || saldo.length === 0}
             className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
             🧾 Registrar arqueo
           </button>
           <button
             onClick={() => { setAviso(''); setModal('movimiento') }}
-            disabled={saldo.length === 0}
+            disabled={!turno || saldo.length === 0}
             className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs rounded-lg shadow-sm disabled:opacity-50"
           >
             💵 Registrar movimiento
           </button>
+          {turno && (
+            <button
+              onClick={() => { setAviso(''); setModal('cierre') }}
+              className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs rounded-lg shadow-sm"
+            >
+              🔒 Cerrar caja
+            </button>
+          )}
         </div>
       </div>
 
@@ -219,6 +269,13 @@ export default function CashCountView(_props: CashCountViewProps) {
       )}
       {aviso && (
         <div role="status" className="bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg p-3 text-xs">{aviso}</div>
+      )}
+
+      {!cargando && !turno && cajas.length > 0 && (
+        <div role="note" className="bg-slate-50 border border-slate-200 text-slate-600 rounded-lg p-3 text-xs">
+          🔒 La caja está cerrada. Se abre al confirmar la entrega de billetes del administrador.
+          {pendientes.length === 0 && ' Todavía no hay entregas pendientes.'}
+        </div>
       )}
 
       {/* ENTREGAS PENDIENTES DE CONFIRMAR (PI-43) */}
@@ -301,14 +358,17 @@ export default function CashCountView(_props: CashCountViewProps) {
 
         {/* ARQUEOS */}
         <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5 space-y-3">
-          <h3 className="font-semibold text-sm text-slate-800 border-b border-slate-100 pb-2">🧾 Arqueos</h3>
+          <h3 className="font-semibold text-sm text-slate-800 border-b border-slate-100 pb-2">🧾 Arqueos y cierres</h3>
           {arqueos.length === 0 && <p className="text-xs text-slate-400">Todavía no se registraron arqueos.</p>}
           {arqueos.map(a => {
             const diferencias = a.detalle.filter(d => d.diferencia !== 0)
             return (
               <div key={a.id} className="p-2.5 rounded-lg bg-slate-50 text-xs space-y-1">
                 <div className="flex justify-between items-start gap-2">
-                  <span className="font-semibold">{fechaCorta(a.creadoEn)} · {a.usuarioNombre}</span>
+                  <span className="font-semibold">
+                    {a.esCierre && <span className="mr-1 px-1.5 py-0.5 rounded bg-slate-900 text-white text-[10px]">Cierre</span>}
+                    {fechaCorta(a.creadoEn)} · {a.usuarioNombre}
+                  </span>
                   <span className={`shrink-0 px-2 py-0.5 rounded font-bold ${a.conDiferencias ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}>
                     {a.conDiferencias ? 'Con diferencias' : 'Cuadrado'}
                   </span>
@@ -340,12 +400,14 @@ export default function CashCountView(_props: CashCountViewProps) {
           onRespondida={alResponderEntrega}
         />
       )}
-      {modal === 'arqueo' && cajaId !== null && (
+      {(modal === 'arqueo' || modal === 'cierre') && cajaId !== null && (
         <ModalArqueo
+          modo={modal}
           cajaId={cajaId}
           saldo={saldo}
           onCerrar={() => setModal(null)}
           onRegistrado={alRegistrarArqueo}
+          onCajaCerrada={alCerrarCaja}
         />
       )}
     </div>
@@ -456,12 +518,20 @@ function ModalMovimiento({ cajaId, saldo, onCerrar, onRegistrado }: {
   )
 }
 
-function ModalArqueo({ cajaId, saldo, onCerrar, onRegistrado }: {
+/**
+ * Recuento de la caja por moneda (sistema vs. contado). En modo `arqueo`
+ * solo deja constancia; en modo `cierre` además cierra la caja y devuelve
+ * el efectivo a tesorería (PI-79).
+ */
+function ModalArqueo({ modo, cajaId, saldo, onCerrar, onRegistrado, onCajaCerrada }: {
+  modo: 'arqueo' | 'cierre'
   cajaId: number
   saldo: SaldoMoneda[]
   onCerrar: () => void
   onRegistrado: (arqueo: Arqueo) => void
+  onCajaCerrada: (turno: Turno, saldo: SaldoMoneda[]) => void
 }) {
+  const esCierre = modo === 'cierre'
   // Arranca con el total del sistema; el cajero corrige lo que difiera.
   const [contado, setContado] = useState<Record<string, string>>(() => Object.fromEntries(
     saldo.map(m => [m.codigo, String(m.total)]),
@@ -487,7 +557,12 @@ function ModalArqueo({ cajaId, saldo, onCerrar, onRegistrado }: {
       .filter(f => f.m.total > 0 || (f.monto ?? 0) > 0)
       .map(f => ({ moneda: f.m.moneda, monto: f.monto ?? 0 }))
     try {
-      onRegistrado(await registrarArqueo(cajaId, conteo, observacion.trim()))
+      if (esCierre) {
+        const res = await cerrarCaja(cajaId, conteo, observacion.trim())
+        onCajaCerrada(res.turno, res.saldo)
+      } else {
+        onRegistrado(await registrarArqueo(cajaId, conteo, observacion.trim()))
+      }
     } catch (err) {
       setError((err as Error).message)
       setEnviando(false)
@@ -506,18 +581,32 @@ function ModalArqueo({ cajaId, saldo, onCerrar, onRegistrado }: {
       {error && <p role="alert" className="text-rose-600">{error}</p>}
       <BotonesModal
         onCerrar={onCerrar}
-        textoConfirmar={enviando ? 'Guardando…' : 'Guardar arqueo'}
+        textoConfirmar={enviando ? 'Guardando…' : esCierre ? 'Cerrar caja' : 'Guardar arqueo'}
+        textoCerrar={esCierre ? 'Volver' : 'Cancelar'}
         deshabilitado={enviando || invalidas.length > 0}
       />
     </>
   )
 
   return (
-    <Modal titulo="Registrar arqueo de caja" onCerrar={onCerrar} onSubmit={confirmar} pie={pie}>
-      <p className="text-slate-500">
-        Contá el efectivo de cada moneda y corregí el total si no coincide con el sistema.
-        El arqueo queda como respaldo; no modifica el saldo.
-      </p>
+    <Modal
+      titulo={esCierre ? 'Cerrar caja' : 'Registrar arqueo de caja'}
+      onCerrar={onCerrar}
+      onSubmit={confirmar}
+      pie={pie}
+    >
+      {esCierre ? (
+        <p className="text-slate-600">
+          Hacé el recuento final: contá el efectivo de cada moneda y corregí el total si no coincide.
+          Al cerrar, <strong>el efectivo se devuelve a tesorería</strong>, el saldo queda en 0 y no se
+          puede operar hasta la próxima apertura.
+        </p>
+      ) : (
+        <p className="text-slate-500">
+          Contá el efectivo de cada moneda y corregí el total si no coincide con el sistema.
+          El arqueo queda como respaldo; no modifica el saldo.
+        </p>
+      )}
       <div className="border border-slate-200 rounded-lg">
         <div className="grid grid-cols-[3.5rem_1fr_1fr_5.5rem] gap-3 px-3 py-2 text-[10px] font-semibold text-slate-400 border-b border-slate-200 bg-slate-50">
           <span>Moneda</span>
@@ -551,7 +640,7 @@ function ModalArqueo({ cajaId, saldo, onCerrar, onRegistrado }: {
           maxLength={255}
           value={observacion}
           onChange={e => setObservacion(e.target.value)}
-          placeholder="Ej. Cierre de turno mañana"
+          placeholder={esCierre ? 'Ej. Cierre del día' : 'Ej. Arqueo de media mañana'}
           className="w-full p-2.5 border border-slate-200 rounded-lg"
         />
       </label>
@@ -566,7 +655,7 @@ function ModalArqueo({ cajaId, saldo, onCerrar, onRegistrado }: {
 function ModalEntrega({ entrega, onCerrar, onRespondida }: {
   entrega: Entrega
   onCerrar: () => void
-  onRespondida: (entrega: Entrega, saldo?: SaldoMoneda[]) => void
+  onRespondida: (entrega: Entrega, saldo?: SaldoMoneda[], turno?: Turno | null) => void
 }) {
   const [rechazando, setRechazando] = useState(false)
   const [motivo, setMotivo] = useState('')
@@ -583,7 +672,7 @@ function ModalEntrega({ entrega, onCerrar, onRespondida }: {
         onRespondida(await rechazarEntrega(entrega.id, motivo.trim()))
       } else {
         const res = await confirmarEntrega(entrega.id)
-        onRespondida(res.entrega, res.saldo)
+        onRespondida(res.entrega, res.saldo, res.turno)
       }
     } catch (err) {
       setError((err as Error).message)
