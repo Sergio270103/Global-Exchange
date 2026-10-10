@@ -1,16 +1,23 @@
-"""Modelos del módulo de control de cajas (PI-44, ERS RF56/RF58).
+"""Modelos del módulo de control de cajas (PI-44, PI-43, PI-78).
 
-- ``Caja``: ventanilla de una sucursal donde hay efectivo físico.
+- ``Caja``: ventanilla de la sucursal donde hay efectivo físico.
 - ``Denominacion``: catálogo de billetes por moneda (USD 100, PYG 50.000...).
-- ``SaldoBillete``: cantidad de billetes de una denominación en una caja.
-  Es el inventario que consulta el cajero (RF56). Solo lo modifica el
-  servicio ``registrar_movimiento`` (ver ``servicios.py``).
-- ``MovimientoCaja`` + ``DetalleMovimiento``: cada ingreso, entrega o
-  retiro de billetes, con quién lo hizo y el saldo que dejó (RF58).
-  Son inmutables: no hay endpoint para editarlos ni borrarlos (RNF6).
-- ``ArqueoCaja`` + ``DetalleArqueo``: foto del estado de la caja al
-  cerrar turno o hacer un arqueo, comparando lo que dice el sistema
-  con lo contado físicamente (auditoría de PI-44).
+- ``SaldoCaja``: saldo de efectivo de la caja por moneda (total, RF56).
+  Solo lo modifica el servicio ``registrar_movimiento`` (ver
+  ``servicios.py``).
+- ``MovimientoCaja``: cada ingreso, entrega o retiro, por monto, con quién
+  lo hizo y el saldo que dejó (RF58). Son inmutables: no hay endpoint para
+  editarlos ni borrarlos (RNF6).
+- ``ArqueoCaja`` + ``ArqueoMoneda``: recuento de la caja comparando el
+  total que dice el sistema con el contado, por moneda.
+- ``TurnoCaja``: apertura y cierre de la caja (PI-79). La caja se abre al
+  confirmar la entrega inicial de billetes y solo se puede operar mientras
+  esté abierta. Al cerrar, el cajero informa el recuento final de cada
+  moneda y el efectivo se devuelve a tesorería (el saldo vuelve a 0).
+- ``EntregaBilletes`` + ``DetalleEntrega``: billetes que el administrador
+  entrega a una caja (PI-43, RF57), por divisa y denominación. Es el único
+  lugar donde se registra la denominación (decisión de la Product Owner).
+  Quedan pendientes hasta que el cajero los cuenta y confirma.
 """
 
 from decimal import Decimal
@@ -68,48 +75,53 @@ class Denominacion(models.Model):
         return f'{self.moneda.codigo} {self.valor.normalize():f}'
 
 
-class SaldoBillete(models.Model):
-    """Cantidad de billetes de una denominación disponibles en una caja."""
+class SaldoCaja(models.Model):
+    """Saldo de efectivo de una caja en una moneda (PI-78).
+
+    Por decisión de la Product Owner, el saldo se lleva por total de cada
+    divisa: el detalle por denominación solo se registra en las entregas
+    de billetes (``DetalleEntrega``). Solo lo modifica
+    :func:`cajas.servicios.registrar_movimiento`.
+    """
 
     caja = models.ForeignKey(
         Caja, on_delete=models.CASCADE,
         related_name='saldos', verbose_name='caja',
     )
-    denominacion = models.ForeignKey(
-        Denominacion, on_delete=models.PROTECT,
-        related_name='saldos', verbose_name='denominación',
+    moneda = models.ForeignKey(
+        'monedas.Moneda', on_delete=models.PROTECT,
+        related_name='saldos_caja', verbose_name='moneda',
     )
-    cantidad = models.PositiveIntegerField('cantidad de billetes', default=0)
+    monto = models.DecimalField(
+        'saldo', max_digits=18, decimal_places=2, default=0,
+        validators=[MinValueValidator(0)],
+    )
     actualizado_en = models.DateTimeField('actualizado en', auto_now=True)
 
     class Meta:
-        ordering = ['denominacion__moneda__codigo', '-denominacion__valor']
-        verbose_name = 'saldo de billetes'
-        verbose_name_plural = 'saldos de billetes'
+        ordering = ['moneda__codigo']
+        verbose_name = 'saldo de caja'
+        verbose_name_plural = 'saldos de caja'
         constraints = [
-            models.UniqueConstraint(
-                fields=['caja', 'denominacion'], name='uniq_saldo_caja_denominacion',
-            )
+            models.UniqueConstraint(fields=['caja', 'moneda'], name='uniq_saldo_caja_moneda'),
         ]
 
-    @property
-    def subtotal(self):
-        return self.denominacion.valor * self.cantidad
-
     def __str__(self) -> str:
-        return f'{self.caja}: {self.cantidad} x {self.denominacion}'
+        return f'{self.caja}: {self.moneda.codigo} {self.monto}'
 
 
 class MovimientoCaja(models.Model):
-    """Ingreso, entrega o retiro de billetes de una caja (RF58)."""
+    """Ingreso, entrega, retiro o devolución de efectivo de una caja (RF58)."""
 
     TIPO_INGRESO = 'INGRESO'
     TIPO_ENTREGA = 'ENTREGA'
     TIPO_RETIRO = 'RETIRO'
+    TIPO_DEVOLUCION = 'DEVOLUCION'
     TIPOS = (
         (TIPO_INGRESO, 'Ingreso'),
         (TIPO_ENTREGA, 'Entrega'),
         (TIPO_RETIRO, 'Retiro'),
+        (TIPO_DEVOLUCION, 'Devolución a tesorería'),
     )
     #: Tipos que suman billetes a la caja; el resto los descuenta.
     TIPOS_SUMAN = (TIPO_INGRESO, TIPO_ENTREGA)
@@ -118,15 +130,31 @@ class MovimientoCaja(models.Model):
         Caja, on_delete=models.PROTECT,
         related_name='movimientos', verbose_name='caja',
     )
-    tipo = models.CharField('tipo', max_length=8, choices=TIPOS)
+    tipo = models.CharField('tipo', max_length=10, choices=TIPOS)
     moneda = models.ForeignKey(
         'monedas.Moneda', on_delete=models.PROTECT,
         related_name='movimientos_caja', verbose_name='moneda',
     )
-    total = models.DecimalField('total', max_digits=18, decimal_places=2)
+    total = models.DecimalField('monto', max_digits=18, decimal_places=2)
+    saldo_resultante = models.DecimalField(
+        'saldo de la divisa después del movimiento', max_digits=18, decimal_places=2,
+        null=True, blank=True,
+    )
     usuario_keycloak_id = models.CharField('usuario (sub)', max_length=64)
     usuario_nombre = models.CharField('usuario', max_length=160, blank=True)
     observacion = models.CharField('observación', max_length=255, blank=True)
+    entrega = models.ForeignKey(
+        'EntregaBilletes', on_delete=models.PROTECT,
+        null=True, blank=True, related_name='movimientos',
+        verbose_name='entrega',
+        help_text='Entrega de billetes que originó el movimiento (PI-43).',
+    )
+    turno = models.ForeignKey(
+        'TurnoCaja', on_delete=models.PROTECT,
+        null=True, blank=True, related_name='movimientos',
+        verbose_name='turno',
+        help_text='Turno (apertura → cierre) en el que se registró (PI-79).',
+    )
     creado_en = models.DateTimeField('fecha y hora', auto_now_add=True)
 
     class Meta:
@@ -141,33 +169,6 @@ class MovimientoCaja(models.Model):
     def __str__(self) -> str:
         signo = '+' if self.suma else '-'
         return f'{self.get_tipo_display()} {signo}{self.total} {self.moneda.codigo} ({self.caja})'
-
-
-class DetalleMovimiento(models.Model):
-    """Billetes de una denominación dentro de un movimiento."""
-
-    movimiento = models.ForeignKey(
-        MovimientoCaja, on_delete=models.CASCADE,
-        related_name='detalle', verbose_name='movimiento',
-    )
-    denominacion = models.ForeignKey(
-        Denominacion, on_delete=models.PROTECT,
-        related_name='detalles_movimiento', verbose_name='denominación',
-    )
-    cantidad = models.PositiveIntegerField(
-        'cantidad de billetes', validators=[MinValueValidator(1)],
-    )
-    saldo_resultante = models.PositiveIntegerField(
-        'billetes en caja después del movimiento',
-    )
-
-    class Meta:
-        ordering = ['-denominacion__valor']
-        verbose_name = 'detalle de movimiento'
-        verbose_name_plural = 'detalles de movimiento'
-
-    def __str__(self) -> str:
-        return f'{self.cantidad} x {self.denominacion}'
 
 
 class ArqueoCaja(models.Model):
@@ -195,28 +196,164 @@ class ArqueoCaja(models.Model):
         return f'Arqueo {self.caja} {self.creado_en:%d/%m/%Y %H:%M}'
 
 
-class DetalleArqueo(models.Model):
-    """Cantidad según sistema vs. contada para una denominación."""
+class ArqueoMoneda(models.Model):
+    """Total según sistema vs. total contado de una moneda en un arqueo."""
 
     arqueo = models.ForeignKey(
         ArqueoCaja, on_delete=models.CASCADE,
         related_name='detalle', verbose_name='arqueo',
     )
+    moneda = models.ForeignKey(
+        'monedas.Moneda', on_delete=models.PROTECT,
+        related_name='arqueos_caja', verbose_name='moneda',
+    )
+    monto_sistema = models.DecimalField('según sistema', max_digits=18, decimal_places=2)
+    monto_contado = models.DecimalField('contado', max_digits=18, decimal_places=2)
+
+    class Meta:
+        ordering = ['moneda__codigo']
+        verbose_name = 'detalle de arqueo'
+        verbose_name_plural = 'detalles de arqueo'
+        constraints = [
+            models.UniqueConstraint(fields=['arqueo', 'moneda'], name='uniq_arqueo_moneda'),
+        ]
+
+    @property
+    def diferencia(self):
+        return self.monto_contado - self.monto_sistema
+
+    def __str__(self) -> str:
+        return f'{self.moneda.codigo}: sistema {self.monto_sistema}, contado {self.monto_contado}'
+
+
+class EntregaBilletes(models.Model):
+    """Entrega de billetes del administrador a una caja (PI-43, RF57).
+
+    Ciclo de vida: ``PENDIENTE`` al registrarla; el cajero la cuenta y la
+    confirma (se suma al saldo) o la rechaza con un motivo. Si el
+    administrador se equivocó, puede cancelarla mientras siga pendiente.
+    Una entrega puede incluir varias divisas.
+    """
+
+    ESTADO_PENDIENTE = 'PENDIENTE'
+    ESTADO_CONFIRMADA = 'CONFIRMADA'
+    ESTADO_RECHAZADA = 'RECHAZADA'
+    ESTADO_CANCELADA = 'CANCELADA'
+    ESTADOS = (
+        (ESTADO_PENDIENTE, 'Pendiente'),
+        (ESTADO_CONFIRMADA, 'Confirmada'),
+        (ESTADO_RECHAZADA, 'Rechazada'),
+        (ESTADO_CANCELADA, 'Cancelada'),
+    )
+
+    caja = models.ForeignKey(
+        Caja, on_delete=models.PROTECT,
+        related_name='entregas', verbose_name='caja',
+    )
+    estado = models.CharField(
+        'estado', max_length=10, choices=ESTADOS, default=ESTADO_PENDIENTE,
+    )
+    entregado_por_id = models.CharField('entregado por (sub)', max_length=64)
+    entregado_por_nombre = models.CharField('entregado por', max_length=160, blank=True)
+    observacion = models.CharField('observación', max_length=255, blank=True)
+    creado_en = models.DateTimeField('fecha y hora de entrega', auto_now_add=True)
+
+    respondido_por_id = models.CharField('respondido por (sub)', max_length=64, blank=True)
+    respondido_por_nombre = models.CharField(
+        'respondido por', max_length=160, blank=True,
+        help_text='Cajero que confirmó o rechazó, o admin que canceló.',
+    )
+    fecha_respuesta = models.DateTimeField(
+        'fecha y hora de respuesta', null=True, blank=True,
+    )
+    motivo = models.CharField('motivo de rechazo o cancelación', max_length=255, blank=True)
+
+    class Meta:
+        ordering = ['-creado_en', '-id']
+        verbose_name = 'entrega de billetes'
+        verbose_name_plural = 'entregas de billetes'
+
+    def __str__(self) -> str:
+        return f'Entrega #{self.pk} a {self.caja} ({self.get_estado_display()})'
+
+
+class DetalleEntrega(models.Model):
+    """Billetes de una denominación dentro de una entrega."""
+
+    entrega = models.ForeignKey(
+        EntregaBilletes, on_delete=models.CASCADE,
+        related_name='detalle', verbose_name='entrega',
+    )
     denominacion = models.ForeignKey(
         Denominacion, on_delete=models.PROTECT,
-        related_name='detalles_arqueo', verbose_name='denominación',
+        related_name='detalles_entrega', verbose_name='denominación',
     )
-    cantidad_sistema = models.PositiveIntegerField('según sistema')
-    cantidad_contada = models.PositiveIntegerField('contada')
+    cantidad = models.PositiveIntegerField(
+        'cantidad de billetes', validators=[MinValueValidator(1)],
+    )
 
     class Meta:
         ordering = ['denominacion__moneda__codigo', '-denominacion__valor']
-        verbose_name = 'detalle de arqueo'
-        verbose_name_plural = 'detalles de arqueo'
+        verbose_name = 'detalle de entrega'
+        verbose_name_plural = 'detalles de entrega'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['entrega', 'denominacion'], name='uniq_detalle_entrega_denominacion',
+            )
+        ]
 
     @property
-    def diferencia(self) -> int:
-        return self.cantidad_contada - self.cantidad_sistema
+    def subtotal(self):
+        return self.denominacion.valor * self.cantidad
 
     def __str__(self) -> str:
-        return f'{self.denominacion}: sistema {self.cantidad_sistema}, contado {self.cantidad_contada}'
+        return f'{self.cantidad} x {self.denominacion}'
+
+
+class TurnoCaja(models.Model):
+    """Apertura y cierre de una caja (PI-79).
+
+    Un turno está abierto mientras ``cerrado_en`` sea nulo; solo puede haber
+    un turno abierto por caja. Se abre al confirmar la entrega inicial de
+    billetes y se cierra con el recuento final (``arqueo_cierre``).
+    """
+
+    caja = models.ForeignKey(
+        Caja, on_delete=models.PROTECT,
+        related_name='turnos', verbose_name='caja',
+    )
+    cajero_id = models.CharField('cajero responsable (sub)', max_length=64)
+    cajero_nombre = models.CharField('cajero responsable', max_length=160, blank=True)
+    entrega_apertura = models.OneToOneField(
+        EntregaBilletes, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='turno_abierto',
+        verbose_name='entrega de apertura',
+    )
+    abierto_en = models.DateTimeField('fecha y hora de apertura', auto_now_add=True)
+    cerrado_en = models.DateTimeField('fecha y hora de cierre', null=True, blank=True)
+    cerrado_por_id = models.CharField('cerrado por (sub)', max_length=64, blank=True)
+    cerrado_por_nombre = models.CharField('cerrado por', max_length=160, blank=True)
+    arqueo_cierre = models.OneToOneField(
+        ArqueoCaja, on_delete=models.PROTECT,
+        null=True, blank=True, related_name='turno_cierre',
+        verbose_name='recuento de cierre',
+    )
+
+    class Meta:
+        ordering = ['-abierto_en', '-id']
+        verbose_name = 'turno de caja'
+        verbose_name_plural = 'turnos de caja'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['caja'], condition=models.Q(cerrado_en__isnull=True),
+                name='uniq_turno_abierto_por_caja',
+            )
+        ]
+
+    @property
+    def abierto(self) -> bool:
+        return self.cerrado_en is None
+
+    def __str__(self) -> str:
+        estado = 'abierto' if self.abierto else f'cerrado {self.cerrado_en:%d/%m %H:%M}'
+        return f'Turno {self.caja} · {self.cajero_nombre} ({estado})'

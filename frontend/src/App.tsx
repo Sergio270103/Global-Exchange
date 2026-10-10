@@ -29,6 +29,7 @@ import Payments from './pages/Payments'
 import Banks from './pages/Banks'
 import CashierDashboard from './pages/cashier/CashierDashboard'
 import CashCountView from './pages/cashier/CashCountView'
+import CashDeliveries from './pages/admin/CashDeliveries'
 import RatesManagement from './pages/analyst/RatesManagement'
 import Earnings from './pages/analyst/Earnings'
 
@@ -191,6 +192,8 @@ export default function App() {
         return <ReportsPlaceholder />
       case 'admin-config':
         return <Configuration />
+      case 'admin-cash-deliveries':
+        return <CashDeliveries /> // PI-43: entregas de billetes a cajas
       default:
         return <Dashboard auth={auth} currentClient={currentClient} navigate={navigate} />
     }

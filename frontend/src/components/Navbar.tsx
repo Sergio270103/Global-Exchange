@@ -37,6 +37,7 @@ const pageTitles: Record<string, string> = {
   'admin-earnings': 'Ganancias',
   'admin-reports': 'Reportes',
   'admin-config': 'Configuración del Sistema',
+  'admin-cash-deliveries': 'Entregas de Billetes',
 }
 
 /** Propiedades de la barra superior. */

@@ -1,35 +1,58 @@
 /**
- * Control de caja del rol cajero (PI-44, ERS RF56/RF58).
+ * Control de caja del rol cajero (PI-44, PI-43, PI-78; ERS RF56/RF58).
  *
- * Muestra el saldo de billetes de la caja agrupado por divisa y
- * denominación, con el total por moneda. Permite registrar ingresos,
- * retiros (y entregas, solo admin) que actualizan el saldo al confirmar,
- * y registrar arqueos / cierres de turno como respaldo de auditoría.
- * El saldo se refresca solo cada 30 segundos.
+ * Muestra el saldo de efectivo de la caja por divisa. Desde PI-78 el
+ * saldo se maneja por total de cada divisa (decisión de la Product Owner):
+ * los ingresos y retiros se registran por monto, y el recuento (arqueo)
+ * compara el total contado de cada moneda con el del sistema.
+ *
+ * PI-43: muestra las entregas de billetes del administrador pendientes de
+ * confirmar. Es el único lugar donde se ven los billetes por denominación:
+ * el cajero los cuenta y confirma (se suma el total de cada divisa) o
+ * rechaza con un motivo. Todo se refresca solo cada 30 segundos.
+ *
+ * PI-79: la caja se abre al confirmar la entrega inicial y solo se puede
+ * operar mientras está abierta. "Cerrar caja" pide el recuento final de
+ * cada moneda y devuelve el efectivo a tesorería (el saldo queda en 0).
  *
  * @module CashCountView
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { useCallback, useEffect, useState } from 'react'
 import type { AuthUser } from '@/types'
 import {
+  cerrarCaja,
+  confirmarEntrega,
   formatearMonto,
   listarArqueos,
   listarCajas,
+  listarEntregas,
   listarMovimientos,
   obtenerSaldo,
+  obtenerTurno,
+  rechazarEntrega,
   registrarArqueo,
   registrarMovimiento,
   type Arqueo,
   type Caja,
+  type Entrega,
   type MovimientoCaja,
   type SaldoMoneda,
   type TipoMovimiento,
+  type Turno,
 } from '@/services/cajas'
+import {
+  BotonesModal,
+  CampoMonto,
+  Modal,
+  TablaEntrega,
+  fechaCorta,
+  leerMonto,
+  textoBillete,
+} from './ComponentesCaja'
 
 /** Propiedades de la vista de control de caja. */
 export interface CashCountViewProps {
-  /** Usuario autenticado; las entregas de billetes son solo para admin. */
+  /** Usuario autenticado. */
   auth?: AuthUser
 }
 
@@ -40,32 +63,33 @@ const ESTILO_TIPO: Record<TipoMovimiento, { signo: string; clase: string }> = {
   INGRESO: { signo: '+', clase: 'bg-emerald-50 text-emerald-700' },
   ENTREGA: { signo: '+', clase: 'bg-sky-50 text-sky-700' },
   RETIRO: { signo: '−', clase: 'bg-rose-50 text-rose-700' },
+  DEVOLUCION: { signo: '−', clase: 'bg-slate-100 text-slate-600' },
 }
 
-function fechaCorta(iso: string): string {
-  return new Date(iso).toLocaleString('es-PY', {
-    day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit',
-  })
+function horaCorta(iso: string): string {
+  return new Date(iso).toLocaleTimeString('es-PY', { hour: '2-digit', minute: '2-digit' })
 }
 
-function textoBillete(m: Pick<SaldoMoneda, 'simbolo' | 'codigo' | 'decimales'>, valor: number): string {
-  return `${m.simbolo || m.codigo} ${formatearMonto(valor, m.decimales)}`
+/** Diferencia con signo, por ejemplo `+$ 20` o `−₲ 50.000`. */
+function textoDiferencia(m: { simbolo: string; codigo: string; decimales: number }, dif: number): string {
+  if (dif === 0) return '0'
+  return `${dif > 0 ? '+' : '−'}${textoBillete(m, Math.abs(dif))}`
 }
 
-export default function CashCountView({ auth }: CashCountViewProps) {
-  const esAdmin = auth?.role === 'admin'
-
+export default function CashCountView(_props: CashCountViewProps) {
   const [cajas, setCajas] = useState<Caja[]>([])
   const [cajaId, setCajaId] = useState<number | null>(null)
   const [saldo, setSaldo] = useState<SaldoMoneda[]>([])
   const [movimientos, setMovimientos] = useState<MovimientoCaja[]>([])
   const [arqueos, setArqueos] = useState<Arqueo[]>([])
-  const [monedaSel, setMonedaSel] = useState<string | null>(null)
+  const [pendientes, setPendientes] = useState<Entrega[]>([])
+  const [turno, setTurno] = useState<Turno | null>(null)
+  const [entregaSel, setEntregaSel] = useState<Entrega | null>(null)
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState('')
   const [aviso, setAviso] = useState('')
   const [actualizado, setActualizado] = useState<Date | null>(null)
-  const [modal, setModal] = useState<'movimiento' | 'arqueo' | null>(null)
+  const [modal, setModal] = useState<'movimiento' | 'arqueo' | 'cierre' | null>(null)
 
   useEffect(() => {
     listarCajas()
@@ -82,14 +106,18 @@ export default function CashCountView({ auth }: CashCountViewProps) {
 
   const recargar = useCallback(async (id: number) => {
     try {
-      const [s, m, a] = await Promise.all([
+      const [s, m, a, e, t] = await Promise.all([
         obtenerSaldo(id),
         listarMovimientos(id, { limite: 10 }),
         listarArqueos(id, 5),
+        listarEntregas({ caja: id, estado: 'PENDIENTE' }),
+        obtenerTurno(id),
       ])
       setSaldo(s)
       setMovimientos(m)
       setArqueos(a)
+      setPendientes(e)
+      setTurno(t)
       setActualizado(new Date())
       setError('')
     } catch (e) {
@@ -107,21 +135,32 @@ export default function CashCountView({ auth }: CashCountViewProps) {
     return () => clearInterval(intervalo)
   }, [cajaId, recargar])
 
-  const monedaActiva = useMemo(
-    () => saldo.find(m => m.codigo === monedaSel)
-      ?? saldo.find(m => m.cantidadBilletes > 0)
-      ?? saldo[0],
-    [saldo, monedaSel],
-  )
   const cajaActual = cajas.find(c => c.id === cajaId)
+  const simboloDe = (codigo: string) => saldo.find(m => m.codigo === codigo)
 
   const alRegistrarMovimiento = (mov: MovimientoCaja, nuevoSaldo: SaldoMoneda[]) => {
     setSaldo(nuevoSaldo)
     setMovimientos(prev => [mov, ...prev].slice(0, 10))
-    setMonedaSel(mov.monedaCodigo)
     setActualizado(new Date())
     setModal(null)
     setAviso(`${mov.tipoDisplay} registrado. Saldo actualizado.`)
+  }
+
+  const alResponderEntrega = (entrega: Entrega, nuevoSaldo?: SaldoMoneda[], nuevoTurno?: Turno | null) => {
+    setEntregaSel(null)
+    setPendientes(prev => prev.filter(e => e.id !== entrega.id))
+    if (nuevoSaldo) {
+      const abrio = !turno && Boolean(nuevoTurno)
+      setSaldo(nuevoSaldo)
+      setTurno(nuevoTurno ?? null)
+      setActualizado(new Date())
+      setAviso(abrio
+        ? `Caja abierta con la entrega #${entrega.id}. Ya podés operar.`
+        : `Entrega #${entrega.id} confirmada. Se sumó al saldo de la caja.`)
+      if (cajaId !== null) listarMovimientos(cajaId, { limite: 10 }).then(setMovimientos).catch(() => {})
+    } else {
+      setAviso(`Entrega #${entrega.id} rechazada. El administrador verá el motivo.`)
+    }
   }
 
   const alRegistrarArqueo = (arqueo: Arqueo) => {
@@ -130,6 +169,18 @@ export default function CashCountView({ auth }: CashCountViewProps) {
     setAviso(arqueo.conDiferencias
       ? 'Arqueo registrado CON diferencias. Revisá el detalle.'
       : 'Arqueo registrado sin diferencias.')
+  }
+
+  const alCerrarCaja = (cerrado: Turno, nuevoSaldo: SaldoMoneda[]) => {
+    setTurno(null)
+    setSaldo(nuevoSaldo)
+    setModal(null)
+    setActualizado(new Date())
+    if (cerrado.arqueoCierre) setArqueos(prev => [cerrado.arqueoCierre as Arqueo, ...prev].slice(0, 5))
+    if (cajaId !== null) listarMovimientos(cajaId, { limite: 10 }).then(setMovimientos).catch(() => {})
+    setAviso(cerrado.arqueoCierre?.conDiferencias
+      ? 'Caja cerrada CON diferencias. El efectivo se devolvió a tesorería.'
+      : 'Caja cerrada sin diferencias. El efectivo se devolvió a tesorería.')
   }
 
   if (!cargando && cajas.length === 0 && !error) {
@@ -154,6 +205,17 @@ export default function CashCountView({ auth }: CashCountViewProps) {
           <p className="text-xs text-slate-400">
             {actualizado ? `Saldo actualizado ${actualizado.toLocaleTimeString('es-PY')}` : 'Cargando saldo…'}
           </p>
+          {!cargando && (
+            <p
+              data-testid="estado-caja"
+              className={`mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-bold ${
+                turno ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${turno ? 'bg-emerald-500' : 'bg-slate-400'}`} />
+              {turno ? `Caja abierta desde las ${horaCorta(turno.abiertoEn)} · ${turno.cajeroNombre}` : 'Caja cerrada'}
+            </p>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -161,8 +223,8 @@ export default function CashCountView({ auth }: CashCountViewProps) {
             <select
               aria-label="Caja"
               value={cajaId ?? ''}
-              onChange={e => { setMonedaSel(null); setCajaId(Number(e.target.value)) }}
-              className="px-3 py-2 border rounded-lg text-xs font-semibold bg-white"
+              onChange={e => setCajaId(Number(e.target.value))}
+              className="px-3 py-2 border border-slate-200 rounded-lg text-xs font-semibold bg-white"
             >
               {cajas.map(c => <option key={c.id} value={c.id}>{c.sucursal} · {c.nombre}</option>)}
             </select>
@@ -173,24 +235,32 @@ export default function CashCountView({ auth }: CashCountViewProps) {
           )}
           <button
             onClick={() => cajaId !== null && recargar(cajaId)}
-            className="px-3 py-2 border rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-50"
+            className="px-3 py-2 border border-slate-200 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-50"
           >
             ↻ Actualizar
           </button>
           <button
             onClick={() => { setAviso(''); setModal('arqueo') }}
-            disabled={saldo.length === 0}
+            disabled={!turno || saldo.length === 0}
             className="px-4 py-2 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
           >
             🧾 Registrar arqueo
           </button>
           <button
             onClick={() => { setAviso(''); setModal('movimiento') }}
-            disabled={saldo.length === 0}
+            disabled={!turno || saldo.length === 0}
             className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs rounded-lg shadow-sm disabled:opacity-50"
           >
             💵 Registrar movimiento
           </button>
+          {turno && (
+            <button
+              onClick={() => { setAviso(''); setModal('cierre') }}
+              className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs rounded-lg shadow-sm"
+            >
+              🔒 Cerrar caja
+            </button>
+          )}
         </div>
       </div>
 
@@ -201,133 +271,143 @@ export default function CashCountView({ auth }: CashCountViewProps) {
         <div role="status" className="bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg p-3 text-xs">{aviso}</div>
       )}
 
-      {/* TOTALES POR MONEDA */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-        {saldo.map(m => (
-          <button
-            key={m.codigo}
-            onClick={() => setMonedaSel(m.codigo)}
-            aria-pressed={monedaActiva?.codigo === m.codigo}
-            className={`text-left p-3 rounded-xl border transition-all ${
-              monedaActiva?.codigo === m.codigo
-                ? 'border-emerald-400 bg-emerald-50/60 shadow-sm'
-                : 'border-slate-100 bg-white hover:border-slate-300'
-            }`}
-          >
-            <div className="text-xs font-bold text-slate-600">{m.flag} {m.codigo}</div>
-            <div className="text-base font-bold font-mono text-slate-900 truncate" data-testid={`total-${m.codigo}`}>
-              {m.simbolo || m.codigo} {formatearMonto(m.total, m.decimales)}
+      {!cargando && !turno && cajas.length > 0 && (
+        <div role="note" className="bg-slate-50 border border-slate-200 text-slate-600 rounded-lg p-3 text-xs">
+          🔒 La caja está cerrada. Se abre al confirmar la entrega de billetes del administrador.
+          {pendientes.length === 0 && ' Todavía no hay entregas pendientes.'}
+        </div>
+      )}
+
+      {/* ENTREGAS PENDIENTES DE CONFIRMAR (PI-43) */}
+      {pendientes.length > 0 && (
+        <section aria-label="Entregas pendientes" className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-3">
+          <h3 className="font-semibold text-sm text-amber-900">
+            📦 {pendientes.length === 1 ? 'Tenés 1 entrega de billetes pendiente' : `Tenés ${pendientes.length} entregas de billetes pendientes`} de confirmar
+          </h3>
+          {pendientes.map(e => (
+            <div key={e.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white rounded-lg border border-amber-100 p-3 text-xs">
+              <div className="space-y-0.5">
+                <div className="font-bold text-slate-800">
+                  Entrega #{e.id} · {e.totales.map(t => `${t.simbolo || t.monedaCodigo} ${formatearMonto(t.total, t.decimales)} ${t.monedaCodigo}`).join(' + ')}
+                </div>
+                <div className="text-[11px] text-slate-500">
+                  {fechaCorta(e.creadoEn)} · de {e.entregadoPorNombre || 'Administrador'}
+                  {e.observacion && ` · ${e.observacion}`}
+                </div>
+              </div>
+              <button
+                onClick={() => { setAviso(''); setEntregaSel(e) }}
+                className="shrink-0 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white font-semibold rounded-lg"
+              >
+                Revisar y confirmar
+              </button>
             </div>
-            <div className="text-[10px] text-slate-400">{m.cantidadBilletes} billetes</div>
-          </button>
-        ))}
-      </div>
+          ))}
+        </section>
+      )}
+
+      {/* SALDO POR DIVISA (PI-78) */}
+      <section aria-label="Saldo por divisa" className="space-y-2">
+        <h3 className="font-semibold text-sm text-slate-700">Saldo en caja</h3>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          {saldo.map(m => (
+            <div
+              key={m.codigo}
+              className={`p-3 rounded-xl border bg-white ${m.total > 0 ? 'border-emerald-200' : 'border-slate-100'}`}
+            >
+              <div className="text-xs font-bold text-slate-600">{m.flag} {m.codigo}</div>
+              <div className={`text-base font-bold font-mono truncate ${m.total > 0 ? 'text-slate-900' : 'text-slate-300'}`} data-testid={`total-${m.codigo}`}>
+                {textoBillete(m, m.total)}
+              </div>
+              <div className="text-[10px] text-slate-400 truncate">{m.nombre}</div>
+            </div>
+          ))}
+          {cargando && saldo.length === 0 && <p className="text-xs text-slate-400">Cargando…</p>}
+        </div>
+      </section>
 
       <div className="grid lg:grid-cols-3 gap-6">
-        {/* DETALLE POR DENOMINACIÓN */}
-        <div className="lg:col-span-2 bg-white rounded-xl border border-slate-100 shadow-sm p-6 space-y-4">
-          <h3 className="font-semibold text-sm text-slate-800 border-b pb-3">
-            Billetes por denominación {monedaActiva && `· ${monedaActiva.nombre}`}
-          </h3>
-          {monedaActiva ? (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-xs text-slate-400 border-b">
-                  <th className="text-left font-semibold py-2">Denominación</th>
-                  <th className="text-right font-semibold py-2">Cantidad</th>
-                  <th className="text-right font-semibold py-2">Subtotal</th>
-                </tr>
-              </thead>
-              <tbody>
-                {monedaActiva.denominaciones.map(d => (
-                  <tr key={d.denominacion} className={`border-b border-slate-50 ${d.cantidad === 0 ? 'text-slate-400' : ''}`}>
-                    <td className="py-2 font-semibold">Billete {textoBillete(monedaActiva, d.valor)}</td>
-                    <td className="py-2 text-right font-mono">{d.cantidad}</td>
-                    <td className="py-2 text-right font-mono">{formatearMonto(d.subtotal, monedaActiva.decimales)}</td>
-                  </tr>
-                ))}
-              </tbody>
-              <tfoot>
-                <tr>
-                  <td className="pt-3 text-xs font-semibold text-emerald-800">Total en caja ({monedaActiva.codigo})</td>
-                  <td className="pt-3 text-right font-mono text-xs text-slate-500">{monedaActiva.cantidadBilletes}</td>
-                  <td className="pt-3 text-right text-lg font-bold font-mono text-emerald-700">
-                    {monedaActiva.simbolo || monedaActiva.codigo} {formatearMonto(monedaActiva.total, monedaActiva.decimales)}
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
-          ) : (
-            <p className="text-xs text-slate-400">{cargando ? 'Cargando…' : 'Sin monedas con billetes configurados.'}</p>
-          )}
+        {/* MOVIMIENTOS RECIENTES */}
+        <div className="lg:col-span-2 bg-white rounded-xl border border-slate-100 shadow-sm p-5 space-y-3">
+          <h3 className="font-semibold text-sm text-slate-800 border-b border-slate-100 pb-2">📋 Últimos movimientos</h3>
+          {movimientos.length === 0 && <p className="text-xs text-slate-400">Todavía no hay movimientos.</p>}
+          <div className="divide-y divide-slate-100">
+            {movimientos.map(mov => {
+              const estilo = ESTILO_TIPO[mov.tipo]
+              const moneda = simboloDe(mov.monedaCodigo) ?? { simbolo: '', codigo: mov.monedaCodigo, decimales: 2 }
+              return (
+                <div key={mov.id} className="flex items-center justify-between gap-3 py-2.5 text-xs">
+                  <div className="min-w-0 space-y-0.5">
+                    <div className="flex items-center gap-2">
+                      <span className={`px-2 py-0.5 rounded font-bold ${estilo.clase}`}>{mov.tipoDisplay}</span>
+                      <span className="text-[11px] text-slate-400">{fechaCorta(mov.creadoEn)} · {mov.usuarioNombre}</span>
+                    </div>
+                    {mov.observacion && <div className="text-[11px] text-slate-500 truncate">{mov.observacion}</div>}
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="font-mono font-bold">{estilo.signo}{textoBillete(moneda, mov.total)} {mov.monedaCodigo}</div>
+                    {mov.saldoResultante !== null && (
+                      <div className="text-[10px] text-slate-400">Saldo: {textoBillete(moneda, mov.saldoResultante)}</div>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
         </div>
 
-        {/* MOVIMIENTOS RECIENTES */}
+        {/* ARQUEOS */}
         <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5 space-y-3">
-          <h3 className="font-semibold text-sm text-slate-800 border-b pb-2">📋 Últimos movimientos</h3>
-          {movimientos.length === 0 && <p className="text-xs text-slate-400">Todavía no hay movimientos.</p>}
-          {movimientos.map(mov => {
-            const estilo = ESTILO_TIPO[mov.tipo]
+          <h3 className="font-semibold text-sm text-slate-800 border-b border-slate-100 pb-2">🧾 Arqueos y cierres</h3>
+          {arqueos.length === 0 && <p className="text-xs text-slate-400">Todavía no se registraron arqueos.</p>}
+          {arqueos.map(a => {
+            const diferencias = a.detalle.filter(d => d.diferencia !== 0)
             return (
-              <div key={mov.id} className="p-2.5 rounded-lg bg-slate-50 text-xs space-y-1">
-                <div className="flex justify-between items-center gap-2">
-                  <span className={`px-2 py-0.5 rounded font-bold ${estilo.clase}`}>{mov.tipoDisplay}</span>
-                  <span className="font-mono font-bold">{estilo.signo}{formatearMonto(mov.total)} {mov.monedaCodigo}</span>
+              <div key={a.id} className="p-2.5 rounded-lg bg-slate-50 text-xs space-y-1">
+                <div className="flex justify-between items-start gap-2">
+                  <span className="font-semibold">
+                    {a.esCierre && <span className="mr-1 px-1.5 py-0.5 rounded bg-slate-900 text-white text-[10px]">Cierre</span>}
+                    {fechaCorta(a.creadoEn)} · {a.usuarioNombre}
+                  </span>
+                  <span className={`shrink-0 px-2 py-0.5 rounded font-bold ${a.conDiferencias ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                    {a.conDiferencias ? 'Con diferencias' : 'Cuadrado'}
+                  </span>
                 </div>
-                <div className="text-[10px] text-slate-400">
-                  {fechaCorta(mov.creadoEn)} · {mov.usuarioNombre}
-                  {mov.observacion && ` · ${mov.observacion}`}
-                </div>
-                <div className="text-[10px] text-slate-500">
-                  {mov.detalle.map(d => `${d.cantidad} × ${formatearMonto(d.valor)}`).join(', ')}
-                </div>
+                {a.observacion && <div className="text-[11px] text-slate-400">{a.observacion}</div>}
+                {diferencias.map(d => (
+                  <div key={d.moneda} className="text-[11px] text-rose-600">
+                    {d.monedaCodigo}: {d.diferencia < 0 ? 'faltante' : 'sobrante'} {textoDiferencia({ ...d, codigo: d.monedaCodigo }, d.diferencia)}
+                  </div>
+                ))}
               </div>
             )
           })}
         </div>
       </div>
 
-      {/* ARQUEOS / CIERRES DE TURNO */}
-      <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5 space-y-3">
-        <h3 className="font-semibold text-sm text-slate-800 border-b pb-2">🧾 Arqueos y cierres de turno</h3>
-        {arqueos.length === 0 && <p className="text-xs text-slate-400">Todavía no se registraron arqueos.</p>}
-        {arqueos.map(a => {
-          const diferencias = a.detalle.filter(d => d.diferencia !== 0)
-          return (
-            <div key={a.id} className="flex flex-col sm:flex-row sm:justify-between gap-1 p-2.5 rounded-lg bg-slate-50 text-xs">
-              <div>
-                <span className="font-semibold">{fechaCorta(a.creadoEn)} · {a.usuarioNombre}</span>
-                {a.observacion && <span className="text-slate-400"> · {a.observacion}</span>}
-                {diferencias.length > 0 && (
-                  <div className="text-[10px] text-rose-600">
-                    {diferencias.map(d => `${d.monedaCodigo} ${formatearMonto(d.valor)}: ${d.diferencia > 0 ? '+' : ''}${d.diferencia}`).join(' · ')}
-                  </div>
-                )}
-              </div>
-              <span className={`self-start px-2 py-0.5 rounded font-bold ${a.conDiferencias ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'}`}>
-                {a.conDiferencias ? 'Con diferencias' : 'Cuadrado'}
-              </span>
-            </div>
-          )
-        })}
-      </div>
-
-      {modal === 'movimiento' && cajaId !== null && monedaActiva && (
+      {modal === 'movimiento' && cajaId !== null && (
         <ModalMovimiento
           cajaId={cajaId}
           saldo={saldo}
-          monedaInicial={monedaActiva.codigo}
-          permitirEntrega={esAdmin}
           onCerrar={() => setModal(null)}
           onRegistrado={alRegistrarMovimiento}
         />
       )}
-      {modal === 'arqueo' && cajaId !== null && (
+      {entregaSel && (
+        <ModalEntrega
+          entrega={entregaSel}
+          onCerrar={() => setEntregaSel(null)}
+          onRespondida={alResponderEntrega}
+        />
+      )}
+      {(modal === 'arqueo' || modal === 'cierre') && cajaId !== null && (
         <ModalArqueo
+          modo={modal}
           cajaId={cajaId}
           saldo={saldo}
           onCerrar={() => setModal(null)}
           onRegistrado={alRegistrarArqueo}
+          onCajaCerrada={alCerrarCaja}
         />
       )}
     </div>
@@ -336,126 +416,35 @@ export default function CashCountView({ auth }: CashCountViewProps) {
 
 // ----------------------------------------------------------------------
 
-
-/**
- * Ventana modal con encabezado y botones fijos: solo se desplaza el
- * contenido del medio, así "Guardar" queda siempre a la vista. Mientras
- * está abierta, la página de fondo no scrollea (un solo scroll).
- */
-function Modal({
-  titulo, onCerrar, onSubmit, pie, children,
-}: {
-  titulo: string
-  onCerrar: () => void
-  onSubmit: (e: React.FormEvent) => void
-  pie: React.ReactNode
-  children: React.ReactNode
-}) {
-  useEffect(() => {
-    const anterior = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => { document.body.style.overflow = anterior }
-  }, [])
-
-  // Portal a <body>: la página usa una animación con transform, y eso
-  // hace que `fixed` se ubique respecto de la página y no de la ventana.
-  return createPortal(
-    <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm flex justify-center items-center z-50 p-4">
-      <form
-        role="dialog"
-        aria-label={titulo}
-        onSubmit={onSubmit}
-        className="bg-white rounded-xl shadow-xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden text-xs"
-      >
-        <div className="flex justify-between items-center px-6 py-4 border-b border-slate-200 shrink-0">
-          <h3 className="font-bold text-slate-900 text-sm">{titulo}</h3>
-          <button type="button" onClick={onCerrar} aria-label="Cerrar" className="text-slate-400 hover:text-slate-600 text-sm">✕</button>
-        </div>
-        <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4 space-y-4">
-          {children}
-        </div>
-        <div className="shrink-0 border-t border-slate-200 bg-slate-50 px-6 py-4 space-y-3">
-          {pie}
-        </div>
-      </form>
-    </div>,
-    document.body,
-  )
-}
-
-function BotonesModal({ onCerrar, textoConfirmar, deshabilitado }: {
-  onCerrar: () => void
-  textoConfirmar: string
-  deshabilitado: boolean
-}) {
-  return (
-    <div className="flex gap-2">
-      <button type="button" onClick={onCerrar} className="flex-1 py-2.5 border border-slate-300 rounded-lg bg-white text-slate-600 font-semibold">Cancelar</button>
-      <button type="submit" disabled={deshabilitado} className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg disabled:opacity-50">
-        {textoConfirmar}
-      </button>
-    </div>
-  )
-}
-
-/** Campo numérico de cantidad de billetes (enteros, sin negativos). */
-function CampoCantidad({ id, valor, onCambio, error = false, mostrarCero = false }: {
-  id: string
-  valor: number
-  onCambio: (n: number) => void
-  error?: boolean
-  mostrarCero?: boolean
-}) {
-  return (
-    <input
-      id={id}
-      type="number"
-      min="0"
-      step="1"
-      inputMode="numeric"
-      value={mostrarCero ? valor : valor || ''}
-      placeholder="0"
-      onChange={e => onCambio(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
-      onFocus={e => e.target.select()}
-      className={`w-20 px-2 py-1.5 border rounded-lg text-right font-mono font-semibold bg-white ${error ? 'border-rose-400' : 'border-slate-200'}`}
-    />
-  )
-}
-
-function ModalMovimiento({
-  cajaId, saldo, monedaInicial, permitirEntrega, onCerrar, onRegistrado,
-}: {
+function ModalMovimiento({ cajaId, saldo, onCerrar, onRegistrado }: {
   cajaId: number
   saldo: SaldoMoneda[]
-  monedaInicial: string
-  permitirEntrega: boolean
   onCerrar: () => void
   onRegistrado: (mov: MovimientoCaja, saldo: SaldoMoneda[]) => void
 }) {
-  const [tipo, setTipo] = useState<TipoMovimiento>('INGRESO')
-  const [codigo, setCodigo] = useState(monedaInicial)
-  const [cantidades, setCantidades] = useState<Record<number, number>>({})
+  const [tipo, setTipo] = useState<'INGRESO' | 'RETIRO'>('INGRESO')
+  const [codigo, setCodigo] = useState(() => (saldo.find(m => m.total > 0) ?? saldo[0]).codigo)
+  const [texto, setTexto] = useState('')
   const [observacion, setObservacion] = useState('')
   const [enviando, setEnviando] = useState(false)
   const [error, setError] = useState('')
 
   const moneda = saldo.find(m => m.codigo === codigo) ?? saldo[0]
-  const lineas = moneda.denominaciones.map(d => ({ ...d, pedida: cantidades[d.denominacion] ?? 0 }))
-  const total = lineas.reduce((acc, l) => acc + l.valor * l.pedida, 0)
-  const excedidas = tipo === 'RETIRO' ? lineas.filter(l => l.pedida > l.cantidad) : []
-  const puedeConfirmar = total > 0 && excedidas.length === 0 && !enviando
+  const lectura = texto ? leerMonto(texto, moneda.decimales) : null
+  const monto = lectura && 'monto' in lectura ? lectura.monto : null
+  const excede = tipo === 'RETIRO' && monto !== null && monto > moneda.total
+  const problema = lectura && 'error' in lectura ? lectura.error
+    : excede ? `No alcanza el saldo: hay ${textoBillete(moneda, moneda.total)}.` : ''
+  const puedeConfirmar = monto !== null && !excede && !enviando
 
   const confirmar = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!puedeConfirmar) return
+    if (!puedeConfirmar || monto === null) return
     setEnviando(true)
     setError('')
     try {
       const res = await registrarMovimiento(cajaId, {
-        tipo,
-        moneda: moneda.moneda,
-        detalle: lineas.filter(l => l.pedida > 0).map(l => ({ denominacion: l.denominacion, cantidad: l.pedida })),
-        observacion: observacion.trim(),
+        tipo, moneda: moneda.moneda, monto, observacion: observacion.trim(),
       })
       onRegistrado(res.movimiento, res.saldo)
     } catch (err) {
@@ -466,16 +455,12 @@ function ModalMovimiento({
 
   const pie = (
     <>
-      {excedidas.length > 0 && (
-        <p className="text-rose-600">
-          No hay billetes suficientes de {excedidas.map(l => formatearMonto(l.valor, moneda.decimales)).join(', ')}.
-        </p>
-      )}
+      {problema && <p className="text-rose-600">{problema}</p>}
       {error && <p role="alert" className="text-rose-600">{error}</p>}
       <div className="flex justify-between items-center">
-        <span className="text-slate-600 font-medium">Total del movimiento</span>
-        <span className="text-lg font-bold font-mono text-emerald-700" data-testid="total-movimiento">
-          {moneda.simbolo || moneda.codigo} {formatearMonto(total, moneda.decimales)}
+        <span className="text-slate-600 font-medium">Saldo después del movimiento</span>
+        <span className="text-lg font-bold font-mono text-emerald-700" data-testid="saldo-despues">
+          {excede ? '—' : textoBillete(moneda, moneda.total + (monto ?? 0) * (tipo === 'INGRESO' ? 1 : -1))}
         </span>
       </div>
       <BotonesModal
@@ -491,41 +476,31 @@ function ModalMovimiento({
       <div className="grid grid-cols-2 gap-3">
         <label className="font-semibold text-slate-600 space-y-1 block">
           <span>Tipo</span>
-          <select value={tipo} onChange={e => setTipo(e.target.value as TipoMovimiento)} className="w-full p-2.5 border border-slate-200 rounded-lg bg-white">
+          <select value={tipo} onChange={e => setTipo(e.target.value as 'INGRESO' | 'RETIRO')} className="w-full p-2.5 border border-slate-200 rounded-lg bg-white">
             <option value="INGRESO">Ingreso</option>
             <option value="RETIRO">Retiro</option>
-            {permitirEntrega && <option value="ENTREGA">Entrega a cajero</option>}
           </select>
         </label>
         <label className="font-semibold text-slate-600 space-y-1 block">
           <span>Moneda</span>
-          <select
-            value={moneda.codigo}
-            onChange={e => { setCodigo(e.target.value); setCantidades({}) }}
-            className="w-full p-2.5 border border-slate-200 rounded-lg bg-white"
-          >
+          <select value={moneda.codigo} onChange={e => setCodigo(e.target.value)} className="w-full p-2.5 border border-slate-200 rounded-lg bg-white">
             {saldo.map(m => <option key={m.codigo} value={m.codigo}>{m.codigo} - {m.nombre}</option>)}
           </select>
         </label>
       </div>
 
-      <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg">
-        {lineas.map(l => (
-          <div key={l.denominacion} className="flex items-center justify-between gap-3 px-3 py-2">
-            <label htmlFor={`mov-${l.denominacion}`} className="font-semibold text-slate-700">
-              Billete {textoBillete(moneda, l.valor)}
-            </label>
-            <div className="flex items-center gap-3">
-              {tipo === 'RETIRO' && <span className="text-[10px] text-slate-400">Disponibles: {l.cantidad}</span>}
-              <CampoCantidad
-                id={`mov-${l.denominacion}`}
-                valor={l.pedida}
-                error={tipo === 'RETIRO' && l.pedida > l.cantidad}
-                onCambio={n => setCantidades({ ...cantidades, [l.denominacion]: n })}
-              />
-            </div>
-          </div>
-        ))}
+      <div className="space-y-1">
+        <div className="flex justify-between font-semibold text-slate-600">
+          <label htmlFor="monto-movimiento">Monto ({moneda.codigo})</label>
+          <span className="font-normal text-slate-400">Saldo actual: {textoBillete(moneda, moneda.total)}</span>
+        </div>
+        <CampoMonto
+          id="monto-movimiento"
+          valor={texto}
+          onCambio={setTexto}
+          decimales={moneda.decimales}
+          error={Boolean(problema)}
+        />
       </div>
 
       <label className="font-semibold text-slate-600 space-y-1 block">
@@ -535,7 +510,7 @@ function ModalMovimiento({
           maxLength={255}
           value={observacion}
           onChange={e => setObservacion(e.target.value)}
-          placeholder="Ej. Remesa de transportadora de valores"
+          placeholder="Ej. Ajuste por diferencia de arqueo"
           className="w-full p-2.5 border border-slate-200 rounded-lg"
         />
       </label>
@@ -543,39 +518,51 @@ function ModalMovimiento({
   )
 }
 
-function ModalArqueo({
-  cajaId, saldo, onCerrar, onRegistrado,
-}: {
+/**
+ * Recuento de la caja por moneda (sistema vs. contado). En modo `arqueo`
+ * solo deja constancia; en modo `cierre` además cierra la caja y devuelve
+ * el efectivo a tesorería (PI-79).
+ */
+function ModalArqueo({ modo, cajaId, saldo, onCerrar, onRegistrado, onCajaCerrada }: {
+  modo: 'arqueo' | 'cierre'
   cajaId: number
   saldo: SaldoMoneda[]
   onCerrar: () => void
   onRegistrado: (arqueo: Arqueo) => void
+  onCajaCerrada: (turno: Turno, saldo: SaldoMoneda[]) => void
 }) {
-  // Arranca con lo que dice el sistema; el cajero corrige lo que difiera.
-  const [contado, setContado] = useState<Record<number, number>>(() => Object.fromEntries(
-    saldo.flatMap(m => m.denominaciones.map(d => [d.denominacion, d.cantidad])),
+  const esCierre = modo === 'cierre'
+  // Arranca con el total del sistema; el cajero corrige lo que difiera.
+  const [contado, setContado] = useState<Record<string, string>>(() => Object.fromEntries(
+    saldo.map(m => [m.codigo, String(m.total)]),
   ))
-  const [codigo, setCodigo] = useState(
-    () => (saldo.find(m => m.cantidadBilletes > 0) ?? saldo[0])?.codigo ?? '',
-  )
   const [observacion, setObservacion] = useState('')
   const [enviando, setEnviando] = useState(false)
   const [error, setError] = useState('')
 
-  const diferenciasDe = (m: SaldoMoneda) =>
-    m.denominaciones.filter(d => (contado[d.denominacion] ?? 0) !== d.cantidad).length
-  const conDiferencias = saldo.filter(m => diferenciasDe(m) > 0)
-  const moneda = saldo.find(m => m.codigo === codigo) ?? saldo[0]
+  const filas = saldo.map(m => {
+    const lectura = leerMonto(contado[m.codigo] ?? '', m.decimales, true)
+    const monto = 'monto' in lectura ? lectura.monto : null
+    return { m, monto, problema: 'error' in lectura ? lectura.error : '', diferencia: monto === null ? 0 : monto - m.total }
+  })
+  const invalidas = filas.filter(f => f.problema)
+  const conDiferencias = filas.filter(f => !f.problema && f.diferencia !== 0)
 
   const confirmar = async (e: React.FormEvent) => {
     e.preventDefault()
+    if (invalidas.length) return
     setEnviando(true)
     setError('')
-    const conteo = saldo.flatMap(m => m.denominaciones)
-      .filter(d => d.cantidad > 0 || (contado[d.denominacion] ?? 0) > 0)
-      .map(d => ({ denominacion: d.denominacion, cantidad: contado[d.denominacion] ?? 0 }))
+    const conteo = filas
+      .filter(f => f.m.total > 0 || (f.monto ?? 0) > 0)
+      .map(f => ({ moneda: f.m.moneda, monto: f.monto ?? 0 }))
     try {
-      onRegistrado(await registrarArqueo(cajaId, conteo, observacion.trim()))
+      if (esCierre) {
+        const res = await cerrarCaja(cajaId, conteo, observacion.trim())
+        onCajaCerrada(res.turno, res.saldo)
+      } else {
+        onRegistrado(await registrarArqueo(cajaId, conteo, observacion.trim()))
+      }
     } catch (err) {
       setError((err as Error).message)
       setEnviando(false)
@@ -584,81 +571,68 @@ function ModalArqueo({
 
   const pie = (
     <>
-      <p className={conDiferencias.length ? 'text-rose-600 font-semibold' : 'text-emerald-700 font-semibold'}>
-        {conDiferencias.length
-          ? `Hay diferencias en ${conDiferencias.map(m => m.codigo).join(', ')}.`
-          : 'Todo coincide con el sistema.'}
+      <p className={invalidas.length || conDiferencias.length ? 'text-rose-600 font-semibold' : 'text-emerald-700 font-semibold'}>
+        {invalidas.length
+          ? `Revisá el monto de ${invalidas.map(f => f.m.codigo).join(', ')}.`
+          : conDiferencias.length
+            ? `Hay diferencias en ${conDiferencias.map(f => f.m.codigo).join(', ')}.`
+            : 'Todo coincide con el sistema.'}
       </p>
       {error && <p role="alert" className="text-rose-600">{error}</p>}
       <BotonesModal
         onCerrar={onCerrar}
-        textoConfirmar={enviando ? 'Guardando…' : 'Guardar arqueo'}
-        deshabilitado={enviando}
+        textoConfirmar={enviando ? 'Guardando…' : esCierre ? 'Cerrar caja' : 'Guardar arqueo'}
+        textoCerrar={esCierre ? 'Volver' : 'Cancelar'}
+        deshabilitado={enviando || invalidas.length > 0}
       />
     </>
   )
 
   return (
-    <Modal titulo="Registrar arqueo de caja" onCerrar={onCerrar} onSubmit={confirmar} pie={pie}>
-      <p className="text-slate-500">
-        Contá los billetes de cada moneda y corregí las cantidades que no coincidan.
-        El arqueo queda como respaldo; no modifica el saldo.
-      </p>
-
-      <div className="flex flex-wrap gap-1.5" aria-label="Moneda del arqueo">
-        {saldo.map(m => {
-          const difs = diferenciasDe(m)
-          const activa = m.codigo === moneda.codigo
-          return (
-            <button
-              key={m.codigo}
-              type="button"
-              aria-pressed={activa}
-              onClick={() => setCodigo(m.codigo)}
-              className={`px-3 py-1.5 rounded-lg font-bold border transition-all ${
-                activa ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400'
-              }`}
-            >
-              {m.codigo}
-              {difs > 0 && <span className="ml-1.5 inline-block w-2 h-2 rounded-full bg-rose-500 align-middle" aria-label="con diferencias" />}
-            </button>
-          )
-        })}
-      </div>
-
-      {moneda && (
-        <div className="border border-slate-200 rounded-lg">
-          <div className="grid grid-cols-[1fr_4.5rem_5rem_3rem] gap-3 px-3 py-2 text-[10px] font-semibold text-slate-400 border-b border-slate-200 bg-slate-50">
-            <span>Billete</span>
-            <span className="text-right">Sistema</span>
-            <span className="text-right">Contado</span>
-            <span className="text-right">Dif.</span>
-          </div>
-          <div className="divide-y divide-slate-100">
-            {moneda.denominaciones.map(d => {
-              const valor = contado[d.denominacion] ?? 0
-              const dif = valor - d.cantidad
-              return (
-                <div key={d.denominacion} className="grid grid-cols-[1fr_4.5rem_5rem_3rem] items-center gap-3 px-3 py-1.5">
-                  <label htmlFor={`arq-${d.denominacion}`} className="font-semibold">{textoBillete(moneda, d.valor)}</label>
-                  <span className="text-right font-mono text-slate-500">{d.cantidad}</span>
-                  <CampoCantidad
-                    id={`arq-${d.denominacion}`}
-                    valor={valor}
-                    mostrarCero
-                    error={dif !== 0}
-                    onCambio={n => setContado({ ...contado, [d.denominacion]: n })}
-                  />
-                  <span className={`text-right font-mono font-bold ${dif === 0 ? 'text-slate-300' : 'text-rose-600'}`}>
-                    {dif > 0 ? `+${dif}` : dif}
-                  </span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
+    <Modal
+      titulo={esCierre ? 'Cerrar caja' : 'Registrar arqueo de caja'}
+      onCerrar={onCerrar}
+      onSubmit={confirmar}
+      pie={pie}
+    >
+      {esCierre ? (
+        <p className="text-slate-600">
+          Hacé el recuento final: contá el efectivo de cada moneda y corregí el total si no coincide.
+          Al cerrar, <strong>el efectivo se devuelve a tesorería</strong>, el saldo queda en 0 y no se
+          puede operar hasta la próxima apertura.
+        </p>
+      ) : (
+        <p className="text-slate-500">
+          Contá el efectivo de cada moneda y corregí el total si no coincide con el sistema.
+          El arqueo queda como respaldo; no modifica el saldo.
+        </p>
       )}
-
+      <div className="border border-slate-200 rounded-lg">
+        <div className="grid grid-cols-[3.5rem_1fr_1fr_5.5rem] gap-3 px-3 py-2 text-[10px] font-semibold text-slate-400 border-b border-slate-200 bg-slate-50">
+          <span>Moneda</span>
+          <span className="text-right">Sistema</span>
+          <span className="text-right">Contado</span>
+          <span className="text-right">Diferencia</span>
+        </div>
+        <div className="divide-y divide-slate-100">
+          {filas.map(({ m, problema, diferencia }) => (
+            <div key={m.codigo} className="grid grid-cols-[3.5rem_1fr_1fr_5.5rem] items-center gap-3 px-3 py-1.5">
+              <label htmlFor={`arq-${m.codigo}`} className="font-bold">{m.codigo}</label>
+              <span className="text-right font-mono text-slate-500 truncate">{textoBillete(m, m.total)}</span>
+              <CampoMonto
+                id={`arq-${m.codigo}`}
+                valor={contado[m.codigo] ?? ''}
+                onCambio={t => setContado({ ...contado, [m.codigo]: t })}
+                decimales={m.decimales}
+                error={Boolean(problema) || diferencia !== 0}
+              />
+              <span className={`text-right font-mono font-bold truncate ${diferencia === 0 ? 'text-slate-300' : 'text-rose-600'}`}>
+                {problema ? '—' : textoDiferencia(m, diferencia)}
+              </span>
+            </div>
+          ))}
+        </div>
+      </div>
       <label className="font-semibold text-slate-600 space-y-1 block">
         <span>Observación</span>
         <input
@@ -666,10 +640,93 @@ function ModalArqueo({
           maxLength={255}
           value={observacion}
           onChange={e => setObservacion(e.target.value)}
-          placeholder="Ej. Cierre de turno mañana"
+          placeholder={esCierre ? 'Ej. Cierre del día' : 'Ej. Arqueo de media mañana'}
           className="w-full p-2.5 border border-slate-200 rounded-lg"
         />
       </label>
+    </Modal>
+  )
+}
+
+/**
+ * Detalle de una entrega pendiente: el cajero cuenta los billetes y
+ * confirma la recepción o la rechaza indicando el motivo.
+ */
+function ModalEntrega({ entrega, onCerrar, onRespondida }: {
+  entrega: Entrega
+  onCerrar: () => void
+  onRespondida: (entrega: Entrega, saldo?: SaldoMoneda[], turno?: Turno | null) => void
+}) {
+  const [rechazando, setRechazando] = useState(false)
+  const [motivo, setMotivo] = useState('')
+  const [enviando, setEnviando] = useState(false)
+  const [error, setError] = useState('')
+
+  const responder = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (rechazando && !motivo.trim()) return
+    setEnviando(true)
+    setError('')
+    try {
+      if (rechazando) {
+        onRespondida(await rechazarEntrega(entrega.id, motivo.trim()))
+      } else {
+        const res = await confirmarEntrega(entrega.id)
+        onRespondida(res.entrega, res.saldo, res.turno)
+      }
+    } catch (err) {
+      setError((err as Error).message)
+      setEnviando(false)
+    }
+  }
+
+  const pie = (
+    <>
+      {rechazando && (
+        <label className="font-semibold text-slate-600 space-y-1 block">
+          <span>Motivo del rechazo</span>
+          <input
+            type="text"
+            maxLength={255}
+            autoFocus
+            value={motivo}
+            onChange={e => setMotivo(e.target.value)}
+            placeholder="Ej. Faltan 2 billetes de USD 100"
+            className="w-full p-2.5 border border-slate-200 rounded-lg bg-white"
+          />
+        </label>
+      )}
+      {error && <p role="alert" className="text-rose-600">{error}</p>}
+      {rechazando ? (
+        <div className="flex gap-2">
+          <button type="button" onClick={() => setRechazando(false)} className="flex-1 py-2.5 border border-slate-300 rounded-lg bg-white text-slate-600 font-semibold">
+            Volver
+          </button>
+          <button type="submit" disabled={enviando || !motivo.trim()} className="flex-1 py-2.5 bg-rose-600 hover:bg-rose-700 text-white font-semibold rounded-lg disabled:opacity-50">
+            {enviando ? 'Enviando…' : 'Rechazar entrega'}
+          </button>
+        </div>
+      ) : (
+        <div className="flex gap-2">
+          <button type="button" onClick={() => setRechazando(true)} className="flex-1 py-2.5 border border-rose-200 rounded-lg bg-white text-rose-600 font-semibold">
+            No coincide, rechazar
+          </button>
+          <button type="submit" disabled={enviando} className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg disabled:opacity-50">
+            {enviando ? 'Confirmando…' : 'Confirmar recepción'}
+          </button>
+        </div>
+      )}
+    </>
+  )
+
+  return (
+    <Modal titulo={`Entrega de billetes #${entrega.id}`} onCerrar={onCerrar} onSubmit={responder} pie={pie}>
+      <p className="text-slate-500">
+        {entrega.entregadoPorNombre || 'El administrador'} entregó estos billetes ({fechaCorta(entrega.creadoEn)}).
+        Contalos antes de confirmar: al confirmar se suman al saldo de la caja.
+      </p>
+      {entrega.observacion && <p className="text-slate-600"><strong>Observación:</strong> {entrega.observacion}</p>}
+      <TablaEntrega entrega={entrega} />
     </Modal>
   )
 }

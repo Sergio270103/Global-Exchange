@@ -1,123 +1,148 @@
 """Serializers del módulo de control de cajas."""
 
+from decimal import Decimal
+
 from rest_framework import serializers
 
 from monedas.models import Moneda
 
 from .models import (
-    ArqueoCaja, Caja, DetalleArqueo, DetalleMovimiento, Denominacion,
-    MovimientoCaja,
+    ArqueoCaja, ArqueoMoneda, Caja, DetalleEntrega, Denominacion,
+    EntregaBilletes, MovimientoCaja, TurnoCaja,
 )
+from .servicios import totales_entrega, turno_abierto
 
 
 def _texto_valor(valor) -> str:
     return f'{valor.normalize():f}'
 
 
+class TurnoResumenSerializer(serializers.ModelSerializer):
+    """Turno abierto de una caja (PI-79), para mostrar quién la tiene."""
+
+    class Meta:
+        model = TurnoCaja
+        fields = ['id', 'cajero_nombre', 'abierto_en', 'entrega_apertura']
+
+
 class CajaSerializer(serializers.ModelSerializer):
+    abierta = serializers.SerializerMethodField()
+    turno_actual = serializers.SerializerMethodField()
+
     class Meta:
         model = Caja
-        fields = ['id', 'nombre', 'sucursal', 'activa', 'creado_en']
-        read_only_fields = ['id', 'creado_en']
+        fields = ['id', 'nombre', 'sucursal', 'activa', 'abierta', 'turno_actual', 'creado_en']
+        read_only_fields = ['id', 'abierta', 'turno_actual', 'creado_en']
+
+    def get_abierta(self, obj) -> bool:
+        return turno_abierto(obj) is not None
+
+    def get_turno_actual(self, obj):
+        turno = turno_abierto(obj)
+        return TurnoResumenSerializer(turno).data if turno else None
 
 
 class DenominacionSerializer(serializers.ModelSerializer):
     moneda_codigo = serializers.CharField(source='moneda.codigo', read_only=True)
+    moneda_nombre = serializers.CharField(source='moneda.nombre', read_only=True)
+    simbolo = serializers.CharField(source='moneda.simbolo', read_only=True)
+    decimales = serializers.IntegerField(source='moneda.decimales', read_only=True)
 
     class Meta:
         model = Denominacion
-        fields = ['id', 'moneda', 'moneda_codigo', 'valor', 'activa']
+        fields = [
+            'id', 'moneda', 'moneda_codigo', 'moneda_nombre', 'simbolo',
+            'decimales', 'valor', 'activa',
+        ]
         read_only_fields = ['id']
 
 
-# --- Movimientos -------------------------------------------------------
-
-class DetalleMovimientoSerializer(serializers.ModelSerializer):
-    valor = serializers.SerializerMethodField()
-
-    class Meta:
-        model = DetalleMovimiento
-        fields = ['denominacion', 'valor', 'cantidad', 'saldo_resultante']
-
-    def get_valor(self, obj) -> str:
-        return _texto_valor(obj.denominacion.valor)
-
+# --- Movimientos (PI-44 / PI-78: por monto) ----------------------------
 
 class MovimientoSerializer(serializers.ModelSerializer):
     tipo_display = serializers.CharField(source='get_tipo_display', read_only=True)
     moneda_codigo = serializers.CharField(source='moneda.codigo', read_only=True)
     caja_nombre = serializers.CharField(source='caja.__str__', read_only=True)
-    detalle = DetalleMovimientoSerializer(many=True, read_only=True)
 
     class Meta:
         model = MovimientoCaja
         fields = [
             'id', 'caja', 'caja_nombre', 'tipo', 'tipo_display', 'moneda',
-            'moneda_codigo', 'total', 'usuario_nombre', 'observacion',
-            'creado_en', 'detalle',
+            'moneda_codigo', 'total', 'saldo_resultante', 'usuario_nombre',
+            'observacion', 'entrega', 'creado_en',
         ]
 
 
 class LineaBilletesSerializer(serializers.Serializer):
+    """Billetes de una denominación (solo se usa en entregas, PI-43)."""
+
     denominacion = serializers.PrimaryKeyRelatedField(
         queryset=Denominacion.objects.select_related('moneda'))
     cantidad = serializers.IntegerField(min_value=1)
 
 
 class NuevoMovimientoSerializer(serializers.Serializer):
-    tipo = serializers.ChoiceField(choices=MovimientoCaja.TIPOS)
+    # Las entregas tienen su propio flujo con confirmación (PI-43).
+    tipo = serializers.ChoiceField(choices=[
+        (MovimientoCaja.TIPO_INGRESO, 'Ingreso'),
+        (MovimientoCaja.TIPO_RETIRO, 'Retiro'),
+    ], error_messages={'invalid_choice': (
+        'Tipo inválido. Las entregas de billetes se registran desde /api/entregas/.')})
     moneda = serializers.PrimaryKeyRelatedField(queryset=Moneda.objects.all())
-    detalle = LineaBilletesSerializer(many=True, allow_empty=False)
+    monto = serializers.DecimalField(max_digits=18, decimal_places=2)
     observacion = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
 
-    def validate(self, attrs):
-        moneda = attrs['moneda']
-        vistos = set()
-        for linea in attrs['detalle']:
-            den = linea['denominacion']
-            if den.moneda_id != moneda.pk:
-                raise serializers.ValidationError(
-                    {'detalle': f'La denominación {den} no corresponde a {moneda.codigo}.'})
-            if den.pk in vistos:
-                raise serializers.ValidationError(
-                    {'detalle': f'La denominación {den} está repetida.'})
-            vistos.add(den.pk)
-        return attrs
 
+# --- Arqueos (PI-78: por total de cada moneda) -------------------------
 
-# --- Arqueos -----------------------------------------------------------
-
-class DetalleArqueoSerializer(serializers.ModelSerializer):
-    valor = serializers.SerializerMethodField()
-    moneda_codigo = serializers.CharField(source='denominacion.moneda.codigo', read_only=True)
-    diferencia = serializers.IntegerField(read_only=True)
+class ArqueoMonedaSerializer(serializers.ModelSerializer):
+    moneda_codigo = serializers.CharField(source='moneda.codigo', read_only=True)
+    simbolo = serializers.CharField(source='moneda.simbolo', read_only=True)
+    decimales = serializers.IntegerField(source='moneda.decimales', read_only=True)
+    diferencia = serializers.DecimalField(max_digits=18, decimal_places=2, read_only=True)
 
     class Meta:
-        model = DetalleArqueo
+        model = ArqueoMoneda
         fields = [
-            'denominacion', 'moneda_codigo', 'valor', 'cantidad_sistema',
-            'cantidad_contada', 'diferencia',
+            'moneda', 'moneda_codigo', 'simbolo', 'decimales',
+            'monto_sistema', 'monto_contado', 'diferencia',
         ]
-
-    def get_valor(self, obj) -> str:
-        return _texto_valor(obj.denominacion.valor)
 
 
 class ArqueoSerializer(serializers.ModelSerializer):
     caja_nombre = serializers.CharField(source='caja.__str__', read_only=True)
-    detalle = DetalleArqueoSerializer(many=True, read_only=True)
+    detalle = ArqueoMonedaSerializer(many=True, read_only=True)
+    es_cierre = serializers.SerializerMethodField()
 
     class Meta:
         model = ArqueoCaja
         fields = [
             'id', 'caja', 'caja_nombre', 'usuario_nombre', 'observacion',
-            'con_diferencias', 'creado_en', 'detalle',
+            'con_diferencias', 'es_cierre', 'creado_en', 'detalle',
+        ]
+
+    def get_es_cierre(self, obj) -> bool:
+        return hasattr(obj, 'turno_cierre')
+
+
+class TurnoSerializer(serializers.ModelSerializer):
+    """Turno de caja completo (PI-79): apertura, cierre y recuento final."""
+
+    caja_nombre = serializers.CharField(source='caja.__str__', read_only=True)
+    abierto = serializers.BooleanField(read_only=True)
+    arqueo_cierre = ArqueoSerializer(read_only=True)
+
+    class Meta:
+        model = TurnoCaja
+        fields = [
+            'id', 'caja', 'caja_nombre', 'abierto', 'cajero_nombre', 'abierto_en',
+            'entrega_apertura', 'cerrado_en', 'cerrado_por_nombre', 'arqueo_cierre',
         ]
 
 
 class LineaConteoSerializer(serializers.Serializer):
-    denominacion = serializers.PrimaryKeyRelatedField(queryset=Denominacion.objects.all())
-    cantidad = serializers.IntegerField(min_value=0)
+    moneda = serializers.PrimaryKeyRelatedField(queryset=Moneda.objects.all())
+    monto = serializers.DecimalField(max_digits=18, decimal_places=2, min_value=Decimal('0'))
 
 
 class NuevoArqueoSerializer(serializers.Serializer):
@@ -125,7 +150,62 @@ class NuevoArqueoSerializer(serializers.Serializer):
     observacion = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
 
     def validate_conteo(self, lineas):
+        ids = [linea['moneda'].pk for linea in lineas]
+        if len(ids) != len(set(ids)):
+            raise serializers.ValidationError('Hay monedas repetidas en el conteo.')
+        return lineas
+
+
+# --- Entregas de billetes (PI-43) --------------------------------------
+
+class DetalleEntregaSerializer(serializers.ModelSerializer):
+    moneda_codigo = serializers.CharField(source='denominacion.moneda.codigo', read_only=True)
+    valor = serializers.SerializerMethodField()
+    subtotal = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DetalleEntrega
+        fields = ['denominacion', 'moneda_codigo', 'valor', 'cantidad', 'subtotal']
+
+    def get_valor(self, obj) -> str:
+        return _texto_valor(obj.denominacion.valor)
+
+    def get_subtotal(self, obj) -> str:
+        return _texto_valor(obj.subtotal)
+
+
+class EntregaSerializer(serializers.ModelSerializer):
+    caja_nombre = serializers.CharField(source='caja.__str__', read_only=True)
+    estado_display = serializers.CharField(source='get_estado_display', read_only=True)
+    detalle = DetalleEntregaSerializer(many=True, read_only=True)
+    totales = serializers.SerializerMethodField()
+
+    class Meta:
+        model = EntregaBilletes
+        fields = [
+            'id', 'caja', 'caja_nombre', 'estado', 'estado_display',
+            'entregado_por_nombre', 'observacion', 'creado_en',
+            'respondido_por_nombre', 'fecha_respuesta', 'motivo',
+            'totales', 'detalle',
+        ]
+
+    def get_totales(self, obj) -> list[dict]:
+        return totales_entrega(obj)
+
+
+class NuevaEntregaSerializer(serializers.Serializer):
+    caja = serializers.PrimaryKeyRelatedField(queryset=Caja.objects.all())
+    detalle = LineaBilletesSerializer(many=True, allow_empty=False)
+    observacion = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+
+    def validate_detalle(self, lineas):
         ids = [linea['denominacion'].pk for linea in lineas]
         if len(ids) != len(set(ids)):
-            raise serializers.ValidationError('Hay denominaciones repetidas en el conteo.')
+            raise serializers.ValidationError('Hay denominaciones repetidas.')
         return lineas
+
+
+class MotivoSerializer(serializers.Serializer):
+    motivo = serializers.CharField(max_length=255, allow_blank=False, trim_whitespace=True,
+                                   error_messages={'blank': 'Indicá el motivo.',
+                                                   'required': 'Indicá el motivo.'})
