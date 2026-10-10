@@ -61,7 +61,7 @@ export interface Operacion {
 }
 
 export type EstadoOperacion = 'PENDIENTE' | 'PAGADA' | 'CANCELADA' | 'ANULADA'
-export type MotivoCancelacion = 'COTIZACION_CAMBIADA' | 'DESISTIO' | 'FONDOS_INSUFICIENTES'
+export type MotivoCancelacion = 'COTIZACION_CAMBIADA' | 'DESISTIO' | 'FONDOS_INSUFICIENTES' | 'PAGO_FALLIDO'
 
 /** Resultado de `confirmarOperacion()`. */
 export type ResultadoConfirmacion =
@@ -224,6 +224,29 @@ export async function listarOperaciones(params: {
   const sufijo = qs.toString() ? `?${qs}` : ''
   const datos = await apiFetch<Record<string, unknown>[]>(`/operaciones/${sufijo}`)
   return datos.map(mapear)
+}
+
+/**
+ * Inicia el cobro por pasarela (Stripe Checkout, redirect externo).
+ *
+ * Solo para operaciones PENDIENTE con método transfer/card/qr. Devuelve
+ * la URL de pago: el frontend redirige ahí y el resultado vuelve por
+ * webhook (el backend marca PAGADA o CANCELADA con PAGO_FALLIDO).
+ */
+export async function iniciarPago(id: number): Promise<{ url: string; session_id: string }> {
+  const r = await apiFetch<{ url: string; session_id: string }>(`/operaciones/${id}/iniciar-pago/`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  })
+  return { url: String(r.url ?? ''), session_id: String(r.session_id ?? '') }
+}
+
+/**
+ * Detalle de una operación (para sondear el retorno del pago).
+ */
+export async function obtenerOperacion(id: number): Promise<Operacion> {
+  const r = await apiFetch<Record<string, unknown>>(`/operaciones/${id}/`)
+  return mapear(r)
 }
 
 /**

@@ -13,7 +13,9 @@ import { apiFetch } from '@/services/api'
 import {
   cancelarOperacion,
   confirmarOperacion,
+  iniciarPago,
   listarOperaciones,
+  obtenerOperacion,
 } from '@/services/operaciones'
 
 const apiFetchMock = vi.mocked(apiFetch)
@@ -153,6 +155,33 @@ describe('cancelarOperacion', () => {
     expect(op.cancelada_por_nombre).toBe('cliente.prueba')
     expect(op.fecha_cancelacion).toBe('2026-09-25T20:01:00Z')
     expect(op.motivo_cancelacion).toBe('COTIZACION_CAMBIADA')
+  })
+})
+
+describe('iniciarPago', () => {
+  it('pide la sesión de Checkout y devuelve su URL', async () => {
+    apiFetchMock.mockResolvedValue({ url: 'https://checkout.stripe.com/pay/cs_x', session_id: 'cs_x' })
+
+    const sesion = await iniciarPago(7)
+
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      '/operaciones/7/iniciar-pago/',
+      expect.objectContaining({ method: 'POST' }),
+    )
+    expect(sesion.url).toContain('checkout.stripe.com')
+    expect(sesion.session_id).toBe('cs_x')
+  })
+})
+
+describe('obtenerOperacion', () => {
+  it('mapea el detalle para sondear el retorno del pago', async () => {
+    apiFetchMock.mockResolvedValue(operacionApi({ estado: 'PAGADA' }))
+
+    const op = await obtenerOperacion(7)
+
+    expect(apiFetchMock).toHaveBeenCalledWith('/operaciones/7/')
+    expect(op.id).toBe(7)
+    expect(op.estado).toBe('PAGADA')
   })
 })
 

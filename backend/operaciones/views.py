@@ -24,6 +24,7 @@
 
 from decimal import Decimal, ROUND_HALF_UP
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import CharField, F, OuterRef, Q, Subquery, Value
 from django.db.models.functions import Coalesce
@@ -307,6 +308,95 @@ class OperacionViewSet(viewsets.ModelViewSet):
         return qs
 
     # ------------------------------------------------------------------
+    # Resumen agregado para el dashboard del administrador.
+    # ------------------------------------------------------------------
+    @action(detail=False, methods=['get'], url_path='resumen')
+    def resumen(self, request):
+        """Agregado de operaciones PAGADA para el dashboard admin.
+
+        Solo administradores (el serializer público oculta
+        ``monto_comision`` a los clientes, así que el total de
+        ganancias no puede calcularse en el frontend).
+
+        Conversión a PYG con la última cotización vigente (lado
+        venta): el bruto en destino es ``monto_recibido +
+        monto_comision`` (vale para COMPRA y VENTA) y la ganancia
+        es ``monto_comision``. Si la moneda destino es PYG se usa
+        directo; sin cotización vigente la operación cuenta en los
+        totales pero no suma al equivalente en PYG
+        (``operaciones_sin_tasa``).
+        """
+        if not _es_personal_autorizado(request.user):
+            return Response(
+                {'detail': 'Solo un administrador puede ver el resumen.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        ultimas: dict[str, Cotizacion] = {}
+        for cot in Cotizacion.objects.select_related('moneda').order_by(
+            'moneda__codigo', '-vigente_desde',
+        ):
+            codigo = cot.moneda.codigo.strip().upper()
+            if codigo not in ultimas:
+                ultimas[codigo] = cot
+
+        ops = Operacion.objects.filter(
+            estado=Operacion.ESTADO_PAGADA,
+        ).select_related('moneda_origen', 'moneda_destino')
+
+        total = compras = ventas = 0
+        sin_tasa = 0
+        volumen_pyg = Decimal('0')
+        ganancias_pyg = Decimal('0')
+        por_moneda: dict[str, dict] = {}
+
+        for op in ops:
+            total += 1
+            if op.tipo_operacion == Operacion.TIPO_COMPRA:
+                compras += 1
+            else:
+                ventas += 1
+            dest = op.moneda_destino.codigo.strip().upper()
+            bruto_dest = op.monto_recibido + op.monto_comision
+            if dest == 'PYG':
+                volumen_pyg += bruto_dest
+                ganancias_pyg += op.monto_comision
+            else:
+                cot = ultimas.get(dest)
+                if cot is None:
+                    sin_tasa += 1
+                    continue
+                tasa = Decimal(str(cot.venta))
+                volumen_pyg += bruto_dest * tasa
+                ganancias_pyg += op.monto_comision * tasa
+            entrada = por_moneda.setdefault(dest, {'total': Decimal('0')})
+            entrada['total'] += op.monto_comision
+
+        comisiones = []
+        for codigo in sorted(por_moneda):
+            total_moneda = por_moneda[codigo]['total']
+            if codigo == 'PYG':
+                equiv = total_moneda
+            else:
+                cot = ultimas.get(codigo)
+                equiv = total_moneda * Decimal(str(cot.venta)) if cot else Decimal('0')
+            comisiones.append({
+                'moneda': codigo,
+                'total': float(total_moneda),
+                'equivalente_pyg': float(equiv.quantize(Decimal('1'))),
+            })
+
+        return Response({
+            'volumen_total_pyg': float(volumen_pyg.quantize(Decimal('1'))),
+            'total_operaciones': total,
+            'compras': compras,
+            'ventas': ventas,
+            'ganancias_pyg': float(ganancias_pyg.quantize(Decimal('1'))),
+            'comisiones_por_moneda': comisiones,
+            'operaciones_sin_tasa': sin_tasa,
+        })
+
+    # ------------------------------------------------------------------
     # Iniciar (queda PENDIENTE con la tasa congelada)
     # ------------------------------------------------------------------
     def create(self, request, *args, **kwargs):
@@ -386,8 +476,15 @@ class OperacionViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST)
 
         # PI-66c: billetera origen con validación de fondos desde el alta.
+        # Con pasarela (Stripe) no hay débito interno: la pasarela es el
+        # origen de los fondos, así que no se usa ni se crea billetera.
+        es_stripe = metodo_pago in settings.STRIPE_METODOS
         billetera_origen = None
         if datos.get('billetera_origen') is not None:
+            if es_stripe:
+                return Response(
+                    {'detail': 'Con pago por pasarela no se usa billetera origen.'},
+                    status=status.HTTP_400_BAD_REQUEST)
             try:
                 billetera_origen = Billetera.objects.get(
                     pk=datos['billetera_origen'])
@@ -403,10 +500,10 @@ class OperacionViewSet(viewsets.ModelViewSet):
                 return Response(
                     {'detail': 'La billetera origen debe ser de la moneda origen.'},
                     status=status.HTTP_400_BAD_REQUEST)
-        elif tipo == 'VENTA' or metodo_pago == METODO_BILLETERA:
+        elif (tipo == 'VENTA' and not es_stripe) or metodo_pago == METODO_BILLETERA:
             # PI-73: se debita de la billetera del cliente en la moneda origen
             # cuando vende divisas (siempre) o cuando compra pagando con su
-            # billetera (método "wallet").
+            # billetera (método "wallet"). Con pasarela no (cobra Stripe).
             billetera_origen, _ = Billetera.objects.get_or_create(
                 cliente=cliente, moneda=cotizacion['moneda_origen'])
 
@@ -455,6 +552,11 @@ class OperacionViewSet(viewsets.ModelViewSet):
             if op.estado != Operacion.ESTADO_PENDIENTE:
                 return Response(
                     {'detail': f'La operación ya está {op.get_estado_display().lower()}.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if op.metodo_pago in settings.STRIPE_METODOS:
+                return Response(
+                    {'detail': 'Esta operación se paga por pasarela (Stripe).'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -544,6 +646,49 @@ class OperacionViewSet(viewsets.ModelViewSet):
             'resultado': RESULTADO_CONFIRMADA,
             'operacion': OperacionPublicSerializer(op).data,
         })
+
+    # ------------------------------------------------------------------
+    # Iniciar el cobro por pasarela (Stripe Checkout, redirect externo)
+    # ------------------------------------------------------------------
+    @action(detail=True, methods=['post'], url_path='iniciar-pago')
+    def iniciar_pago(self, request, pk=None):
+        """Crea la Checkout Session y devuelve su URL de pago.
+
+        La operación queda PENDIENTE con la cotización congelada; el
+        webhook la pasa a PAGADA al acreditarse (vale lo congelado
+        aunque llegue fuera de la ventana) o a CANCELADA con motivo
+        PAGO_FALLIDO al expirar o rechazarse.
+        """
+        from pagos.stripe_pagos import ErrorPasarela, crear_sesion_checkout
+
+        try:
+            op = (
+                Operacion.objects.select_related('cliente', 'moneda_origen', 'moneda_destino')
+                .get(pk=pk)
+            )
+        except Operacion.DoesNotExist:
+            return Response({'detail': 'La operación no existe.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not _cliente_operable(op.cliente, _sub(request)):
+            return Response({'detail': ERROR_CLIENTE}, status=status.HTTP_400_BAD_REQUEST)
+        if op.estado != Operacion.ESTADO_PENDIENTE:
+            return Response(
+                {'detail': 'Solo se puede pagar una operación pendiente.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if op.metodo_pago not in settings.STRIPE_METODOS:
+            return Response(
+                {'detail': 'Esta operación usa saldo interno; confirmala directamente.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            sesion = crear_sesion_checkout(op)
+        except ErrorPasarela as err:
+            return Response({'detail': str(err)}, status=status.HTTP_400_BAD_REQUEST)
+
+        op.stripe_session_id = sesion['id']
+        op.save(update_fields=['stripe_session_id'])
+        return Response({'url': sesion['url'], 'session_id': sesion['id']})
 
     # ------------------------------------------------------------------
     # Cancelar (PI-64)

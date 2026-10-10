@@ -132,3 +132,73 @@ describe('BuySell PI-71 (selects según monedas activas)', () => {
     expect(screen.getByText(/se acreditará en tu billetera PYG/)).toBeInTheDocument()
   })
 })
+
+/**
+ * Cobro por Stripe Checkout: confirmar con transferencia redirige a la
+ * sesión de pago; la venta ofrece billetera o tarjeta.
+ */
+describe('BuySell Stripe (redirect a Checkout)', () => {
+  const ahora = new Date().toISOString()
+  const pendiente = {
+    id: 1, cliente: 1, cliente_nombre: 'Carlos Martínez', usuario_keycloak_id: 'sub',
+    usuario_nombre: 'Carlos', tipo_operacion: 'COMPRA', moneda_origen: 1,
+    moneda_origen_codigo: 'PYG', moneda_destino: 2, moneda_destino_codigo: 'USD',
+    monto_enviado: '765000.00', monto_recibido: '100.00', cotizacion_aplicada: '7650.000000',
+    tasa_origen: null, tasa_destino: '7650.00', metodo_pago: 'transfer',
+    billetera_destino: 2, billetera_destino_detalle: '', cuenta_origen: 5,
+    cuenta_origen_detalle: '', billetera_origen: null, billetera_origen_detalle: '',
+    fecha_creacion: ahora, estado: 'PENDIENTE', fecha_cotizacion: ahora,
+    fecha_confirmacion: null, fecha_cancelacion: null, cancelada_por: '',
+    cancelada_por_nombre: '', motivo_cancelacion: '', tolerancia_segundos: 30,
+    segundos_restantes: 30,
+  }
+
+  let llamadas: string[]
+  const base = mockFetch()
+
+  beforeEach(() => {
+    llamadas = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
+      llamadas.push(`${(init.method ?? 'GET').toUpperCase()} ${url}`)
+      const u = String(url)
+      if (u.includes('/iniciar-pago/')) {
+        return respuesta({ url: 'https://checkout.stripe.com/pay/cs_x', session_id: 'cs_x' })
+      }
+      if (u.includes('/simulador/')) {
+        return respuesta({ tasa_aplicada: 7650, monto_total: 765000, total_tipo: 'pagar' })
+      }
+      if (u.includes('/operaciones/') && (init.method ?? 'GET').toUpperCase() === 'POST') {
+        return respuesta(pendiente, 201)
+      }
+      return base(url)
+    }))
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('confirmar compra por transferencia pide la sesión de pago', async () => {
+    const user = userEvent.setup()
+    render(<BuySell auth={auth} currentClient={{ id: 1, nombre: 'Carlos Martínez' }} />)
+    await screen.findByRole('heading', { name: 'Comprar divisas' })
+    await user.type(screen.getByPlaceholderText('0.00'), '100')
+    await screen.findByText('Resumen de la operación')
+    const cuenta = await screen.findByLabelText(/Cuenta bancaria/)
+    await user.selectOptions(cuenta, 'C:5')
+    await user.click(screen.getByRole('button', { name: /Continuar/ }))
+    await screen.findByRole('heading', { name: 'Confirmar operación' })
+    await user.click(screen.getByRole('button', { name: /Pagar compra con Stripe/ }))
+    expect(llamadas.some(l => l.includes('/operaciones/1/iniciar-pago/'))).toBe(true)
+  })
+
+  it('la venta ofrece billetera o tarjeta Stripe', async () => {
+    const user = userEvent.setup()
+    render(<BuySell auth={auth} currentClient={{ id: 1, nombre: 'Carlos Martínez' }} />)
+    await screen.findByRole('heading', { name: 'Comprar divisas' })
+    await user.click(screen.getByRole('button', { name: /Vender divisas/ }))
+    await screen.findByRole('heading', { name: 'Vender divisas' })
+    expect(screen.getByRole('button', { name: /Tarjeta \(Stripe\)/ })).toBeInTheDocument()
+    // Por defecto sigue debitando la billetera.
+    expect(screen.getByText(/Se descontará de tu billetera USD/)).toBeInTheDocument()
+  })
+})

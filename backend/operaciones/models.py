@@ -58,10 +58,12 @@ class Operacion(models.Model):
     MOTIVO_COTIZACION = 'COTIZACION_CAMBIADA'
     MOTIVO_DESISTIO = 'DESISTIO'
     MOTIVO_FONDOS = 'FONDOS_INSUFICIENTES'
+    MOTIVO_PAGO_FALLIDO = 'PAGO_FALLIDO'
     MOTIVOS_CANCELACION = (
         (MOTIVO_COTIZACION, 'No aceptó la nueva cotización'),
         (MOTIVO_DESISTIO, 'El cliente desistió'),
         (MOTIVO_FONDOS, 'Fondos insuficientes'),
+        (MOTIVO_PAGO_FALLIDO, 'El pago fue rechazado o expiró'),
     )
 
     cliente = models.ForeignKey(
@@ -166,6 +168,10 @@ class Operacion(models.Model):
     motivo_cancelacion = models.CharField(
         'motivo de cancelación', max_length=24, blank=True,
         choices=MOTIVOS_CANCELACION,
+    )
+    stripe_session_id = models.CharField(
+        'sesión de Stripe', max_length=255, null=True, blank=True,
+        help_text='Id de la Checkout Session que cobra la operación.',
     )
 
     class Meta:

@@ -166,3 +166,13 @@ STATIC_URL = 'static/'
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
 # Segundos en que se respeta la tasa congelada al confirmar
 OPERACION_TOLERANCIA_SEGUNDOS = 30
+
+# Pasarela de pago (Stripe Checkout con redirect externo).
+# Claves solo en backend/.env (nunca se commitean).
+PAYMENT_GATEWAY = os.getenv('PAYMENT_GATEWAY', 'stripe')
+STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY', '')
+STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET', '')
+# Origen del frontend para las URLs de retorno de Checkout.
+FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173')
+# Métodos que se cobran por pasarela; 'wallet' es saldo interno.
+STRIPE_METODOS = ('transfer', 'card', 'qr')
