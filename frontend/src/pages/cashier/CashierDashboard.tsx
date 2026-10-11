@@ -5,11 +5,21 @@
  * operaciones de compra/venta de divisas, emitir comprobantes legales y
  * gestionar el arqueo de caja de la sucursal.
  *
+ * PI-45: la identificación de clientes ya consulta la API real. El cajero
+ * busca por documento y, si no existe, lo registra desde el modal; el
+ * cliente nuevo queda seleccionado para la transacción. La emisión de
+ * comprobantes y DNIT sigue siendo local (corresponde a otro PI).
+ *
  * @module CashierDashboard
  */
 import React, { useState } from 'react'
 import { type AuthUser, type Page, type ClienteActivo } from '../../types'
 import { currencies } from '@/data/mockData'
+import {
+  buscarClientePorDocumento,
+  registrarClientePresencial,
+  type Cliente,
+} from '@/services/clientes'
 
 export interface Props {
   auth: AuthUser
@@ -17,12 +27,14 @@ export interface Props {
   navigate: (p: Page) => void
 }
 
+/** Cliente presencial identificado en ventanilla (PI-45). */
 interface Client {
-  id: string
+  id: number
   name: string
   document: string
   email: string
   phone: string
+  tipo: string
 }
 
 type DivisaCodigo = (typeof currencies)[number]['code']
@@ -43,21 +55,33 @@ function tasaEnPyg(codigo: DivisaCodigo): number {
 
 export default function CashierDashboard({ auth, currentClient }: Props) {
   const [searchDoc, setSearchDoc] = useState('')
-  const [selectedClient, setSelectedClient] = useState<Client | null>({
-    id: '1',
-    name: currentClient?.nombre || 'Carlos Martínez',
-    document: '4589201',
-    email: 'carlos.martinez@email.com',
-    phone: '0981123456',
-  })
-
-  const mockClients: Client[] = [
-    { id: '1', name: 'Carlos Martínez', document: '4589201', email: 'carlos.martinez@email.com', phone: '0981123456' },
-    { id: '2', name: 'María Benítez', document: '3820194', email: 'maria.b@email.com', phone: '0971987654' },
-  ]
+  const [selectedClient, setSelectedClient] = useState<Client | null>(null)
+  const [searching, setSearching] = useState(false)
+  const [searchError, setSearchError] = useState('')
 
   const [showRegisterModal, setShowRegisterModal] = useState(false)
-  const [newClient, setNewClient] = useState({ name: '', document: '', email: '', phone: '' })
+  const [registerError, setRegisterError] = useState('')
+  const [savingClient, setSavingClient] = useState(false)
+  const [newClient, setNewClient] = useState({
+    name: '',
+    lastName: '',
+    document: '',
+    email: '',
+    phone: '',
+    type: 'FISICA' as 'FISICA' | 'JURIDICA',
+  })
+
+  /** Traduce la respuesta del backend a la vista del panel. */
+  function aCliente(c: Cliente): Client {
+    return {
+      id: c.id,
+      name: c.nombre_completo || c.nombre,
+      document: c.documento,
+      email: c.email,
+      phone: c.telefono,
+      tipo: c.tipo_display,
+    }
+  }
 
   const [operationType, setOperationType] = useState<'buy' | 'sell'>('buy')
   const [originCurrency, setOriginCurrency] = useState<DivisaCodigo>('PYG')
@@ -92,24 +116,61 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
     },
   ])
 
-  const handleSearchClient = () => {
-    const found = mockClients.find((c) => c.document === searchDoc.trim())
-    if (found) {
-      setSelectedClient(found)
-    } else {
-      alert('Cliente no encontrado. Registre al usuario mediante el botón de nuevo cliente.')
+  /** PI-45: busca por documento y confirma la identidad antes de operar. */
+  const handleSearchClient = async () => {
+    const documento = searchDoc.trim()
+    if (!documento) {
+      setSearchError('Ingrese el número de documento.')
       setSelectedClient(null)
+      return
+    }
+    setSearching(true)
+    setSearchError('')
+    try {
+      const r = await buscarClientePorDocumento(documento)
+      if (r.encontrado && r.cliente) {
+        setSelectedClient(aCliente(r.cliente))
+      } else {
+        setSelectedClient(null)
+        setSearchError('El documento no está registrado. Puede registrarlo ahora.')
+      }
+    } catch (err) {
+      setSelectedClient(null)
+      setSearchError(err instanceof Error ? err.message : 'No se pudo consultar el documento.')
+    } finally {
+      setSearching(false)
     }
   }
 
-  const handleRegisterClient = (e: React.FormEvent) => {
+  const openRegister = (documento = '') => {
+    setRegisterError('')
+    setNewClient((prev) => ({ ...prev, document: documento || prev.document }))
+    setShowRegisterModal(true)
+  }
+
+  /** PI-45: al guardar, el cliente nuevo queda seleccionado para operar. */
+  const handleRegisterClient = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!newClient.name || !newClient.document) return
-    const created: Client = { id: Date.now().toString(), ...newClient }
-    setSelectedClient(created)
-    setShowRegisterModal(false)
-    setNewClient({ name: '', document: '', email: '', phone: '' })
-    alert('Usuario presencial registrado correctamente.')
+    setSavingClient(true)
+    setRegisterError('')
+    try {
+      const creado = await registrarClientePresencial({
+        nombre: newClient.name.trim(),
+        apellido: newClient.lastName.trim(),
+        documento: newClient.document.trim(),
+        email: newClient.email.trim(),
+        telefono: newClient.phone.trim(),
+        tipo: newClient.type,
+      })
+      setSelectedClient(aCliente(creado))
+      setSearchDoc(creado.documento)
+      setShowRegisterModal(false)
+      setNewClient({ name: '', lastName: '', document: '', email: '', phone: '', type: 'FISICA' })
+    } catch (err) {
+      setRegisterError(err instanceof Error ? err.message : 'No se pudo registrar el cliente.')
+    } finally {
+      setSavingClient(false)
+    }
   }
 
   const handleEmitInvoice = () => {
@@ -160,42 +221,59 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
         <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5 space-y-4">
           <h3 className="font-semibold text-slate-900 border-b pb-2 flex justify-between items-center">
             <span>👤 Cliente en Ventanilla</span>
-            <button onClick={() => setShowRegisterModal(true)} className="text-xs text-emerald-600 font-bold hover:underline">
+            <button onClick={() => openRegister()} className="text-xs text-emerald-600 font-bold hover:underline">
               + Nuevo Cliente
             </button>
           </h3>
 
           <div className="space-y-2">
-            <label className="text-xs font-semibold text-slate-500">Documento de Identidad</label>
-            {/* Input y botón perfectamente integrados dentro de la tarjeta */}
+            <label htmlFor="doc-buscar" className="text-xs font-semibold text-slate-500">Documento de Identidad</label>
             <div className="flex gap-2 w-full">
               <input
+                id="doc-buscar"
                 type="text"
                 placeholder="Ej. 4589201"
                 value={searchDoc}
-                onChange={(e) => setSearchDoc(e.target.value)}
+                onChange={(e) => { setSearchDoc(e.target.value); setSearchError('') }}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void handleSearchClient() } }}
                 className="flex-1 min-w-0 px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
               />
               <button
                 onClick={handleSearchClient}
-                className="shrink-0 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-sm font-semibold transition-colors"
+                disabled={searching}
+                className="shrink-0 px-4 py-2 bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white rounded-lg text-sm font-semibold transition-colors"
               >
-                Buscar
+                {searching ? 'Buscando…' : 'Buscar'}
               </button>
             </div>
           </div>
+
+          {searchError && (
+            <div role="alert" className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3 text-xs space-y-2">
+              <div>{searchError}</div>
+              <button onClick={() => openRegister(searchDoc.trim())} className="font-bold text-emerald-700 hover:underline">
+                Registrar cliente →
+              </button>
+            </div>
+          )}
 
           {selectedClient ? (
             <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-1">
               <div className="text-xs text-emerald-600 font-bold">✓ Cliente Seleccionado</div>
               <div className="font-bold text-slate-900">{selectedClient.name}</div>
               <div className="text-xs text-slate-500">Doc: {selectedClient.document}</div>
+              <div className="text-xs text-slate-500">Tipo: {selectedClient.tipo}</div>
               <div className="text-xs text-slate-500">Email: {selectedClient.email}</div>
+              {selectedClient.phone && (
+                <div className="text-xs text-slate-500">Tel: {selectedClient.phone}</div>
+              )}
             </div>
           ) : (
-            <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3 text-xs">
-              Sin cliente seleccionado.
-            </div>
+            !searchError && (
+              <div className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3 text-xs">
+                Sin cliente seleccionado.
+              </div>
+            )
           )}
         </div>
 
@@ -348,25 +426,87 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 space-y-4">
             <h3 className="font-bold text-lg text-slate-900">Registro de Cliente Presencial</h3>
             <form onSubmit={handleRegisterClient} className="space-y-3 text-sm">
-              <div>
-                <label className="text-xs font-semibold text-slate-500">Nombre Completo</label>
-                <input required type="text" className="w-full p-2 border rounded-lg mt-1" value={newClient.name} onChange={(e) => setNewClient({ ...newClient, name: e.target.value })} />
+              {registerError && (
+                <p role="alert" className="text-rose-600 bg-rose-50 border border-rose-200 rounded-lg p-2 text-xs">
+                  {registerError}
+                </p>
+              )}
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label htmlFor="cli-nombre" className="text-xs font-semibold text-slate-500">Nombre</label>
+                  <input
+                    id="cli-nombre" required type="text"
+                    className="w-full p-2 border rounded-lg mt-1"
+                    value={newClient.name}
+                    onChange={(e) => setNewClient({ ...newClient, name: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="cli-apellido" className="text-xs font-semibold text-slate-500">Apellido</label>
+                  <input
+                    id="cli-apellido" required={newClient.type === 'FISICA'} type="text"
+                    className="w-full p-2 border rounded-lg mt-1"
+                    value={newClient.lastName}
+                    onChange={(e) => setNewClient({ ...newClient, lastName: e.target.value })}
+                  />
+                </div>
               </div>
               <div>
-                <label className="text-xs font-semibold text-slate-500">N° Documento</label>
-                <input required type="text" className="w-full p-2 border rounded-lg mt-1" value={newClient.document} onChange={(e) => setNewClient({ ...newClient, document: e.target.value })} />
+                <label htmlFor="cli-tipo" className="text-xs font-semibold text-slate-500">Tipo de Cliente</label>
+                <select
+                  id="cli-tipo"
+                  className="w-full p-2 border rounded-lg mt-1"
+                  value={newClient.type}
+                  onChange={(e) => setNewClient({ ...newClient, type: e.target.value as 'FISICA' | 'JURIDICA' })}
+                >
+                  <option value="FISICA">Persona física</option>
+                  <option value="JURIDICA">Persona jurídica</option>
+                </select>
               </div>
               <div>
-                <label className="text-xs font-semibold text-slate-500">Correo Electrónico</label>
-                <input required type="email" className="w-full p-2 border rounded-lg mt-1" value={newClient.email} onChange={(e) => setNewClient({ ...newClient, email: e.target.value })} />
+                <label htmlFor="cli-doc" className="text-xs font-semibold text-slate-500">
+                  {newClient.type === 'FISICA' ? 'N° Documento' : 'RUC'}
+                </label>
+                <input
+                  id="cli-doc" required type="text"
+                  className="w-full p-2 border rounded-lg mt-1"
+                  value={newClient.document}
+                  onChange={(e) => setNewClient({ ...newClient, document: e.target.value })}
+                />
               </div>
               <div>
-                <label className="text-xs font-semibold text-slate-500">Teléfono</label>
-                <input type="text" className="w-full p-2 border rounded-lg mt-1" value={newClient.phone} onChange={(e) => setNewClient({ ...newClient, phone: e.target.value })} />
+                <label htmlFor="cli-email" className="text-xs font-semibold text-slate-500">Correo Electrónico</label>
+                <input
+                  id="cli-email" required type="email"
+                  className="w-full p-2 border rounded-lg mt-1"
+                  value={newClient.email}
+                  onChange={(e) => setNewClient({ ...newClient, email: e.target.value })}
+                />
+              </div>
+              <div>
+                <label htmlFor="cli-tel" className="text-xs font-semibold text-slate-500">
+                  Teléfono {newClient.type === 'FISICA' && <span className="text-rose-500">(obligatorio)</span>}
+                </label>
+                <input
+                  id="cli-tel" required={newClient.type === 'FISICA'} type="text"
+                  className="w-full p-2 border rounded-lg mt-1"
+                  value={newClient.phone}
+                  onChange={(e) => setNewClient({ ...newClient, phone: e.target.value })}
+                />
               </div>
               <div className="flex gap-2 pt-2">
-                <button type="button" onClick={() => setShowRegisterModal(false)} className="flex-1 py-2 border rounded-lg text-slate-600 font-semibold">Cancelar</button>
-                <button type="submit" className="flex-1 py-2 bg-emerald-600 text-white rounded-lg font-semibold">Guardar y Seleccionar</button>
+                <button
+                  type="button" onClick={() => setShowRegisterModal(false)}
+                  className="flex-1 py-2 border rounded-lg text-slate-600 font-semibold"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit" disabled={savingClient}
+                  className="flex-1 py-2 bg-emerald-600 disabled:opacity-60 text-white rounded-lg font-semibold"
+                >
+                  {savingClient ? 'Guardando…' : 'Guardar y Seleccionar'}
+                </button>
               </div>
             </form>
           </div>

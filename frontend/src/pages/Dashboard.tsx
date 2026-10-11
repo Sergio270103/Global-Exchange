@@ -25,6 +25,7 @@ import { listarMonedas } from '@/services/monedas'
 import { vigentes } from '@/services/cotizaciones'
 import { type Operacion } from '@/services/operaciones'
 import { useTasasDestacadas } from '@/hooks/useTasasDestacadas'
+import ModalAlerta from '@/components/ModalAlerta'
 
 export interface DashboardProps {
   auth: AuthUser
@@ -203,6 +204,9 @@ function UserDashboard({ auth, currentClient, navigate }: DashboardProps) {
 
   return (
     <div className="space-y-6 animate-fadein">
+      {/* PI-38: aviso grande al entrar si hay alertas disparadas sin ver. */}
+      {auth.role === 'user' && <ModalAlerta navigate={navigate} />}
+      {/* Welcome */}
       {/* Welcome */}
       <div className="flex items-start justify-between">
         <div>
