@@ -8,7 +8,7 @@
  * @module CashierDashboard.test
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import CashierDashboard from '@/pages/cashier/CashierDashboard'
 
@@ -59,6 +59,73 @@ function mockApi() {
         return respuesta({ apellido: ['Para persona física son obligatorios el nombre, el apellido, el documento y el correo.'] }, 400)
       }
       return respuesta({ ...ana, ...d, nombre_completo: `${d.nombre} ${d.apellido}`.trim() }, 201)
+    }
+    if (u.endsWith('/cajas/') && metodo === 'GET') {
+      return respuesta([
+        { id: 1, nombre: 'Ventanilla 1', sucursal: 'Central', activa: true,
+          abierta: true, turnoActual: null },
+      ])
+    }
+    if (u.includes('/comprobantes/')) return respuesta([])
+    return respuesta({}, 404)
+  })
+}
+
+/**
+ * PI-75: backend simulado de cajas. `cajaAbierta` y `saldoSuficiente`
+ * permiten probar los caminos bloqueado y con saldo insuficiente.
+ */
+function mockApiCajas(opciones: { cajaAbierta?: boolean; saldoSuficiente?: boolean } = {}) {
+  const { cajaAbierta = true, saldoSuficiente = true } = opciones
+  return vi.fn(async (url: string, init: RequestInit = {}) => {
+    const u = String(url)
+    const metodo = (init.method ?? 'GET').toUpperCase()
+
+    if (u.includes('/buscar-documento/')) {
+      return respuesta({ encontrado: true, cliente: ana })
+    }
+    if (u.endsWith('/cajas/') && metodo === 'GET') {
+      return respuesta([
+        { id: 1, nombre: 'Ventanilla 1', sucursal: 'Central', activa: true,
+          abierta: cajaAbierta, turnoActual: null },
+      ])
+    }
+    if (u.includes('/cotizar/') && metodo === 'POST') {
+      return respuesta({
+        tipo_operacion: 'COMPRA',
+        moneda_origen_codigo: 'PYG', moneda_origen_decimales: 0,
+        moneda_destino_codigo: 'USD', moneda_destino_decimales: 2,
+        monto_enviado: '750000', monto_recibido: '100',
+        tasa_aplicada: '7500.000000',
+        cliente_paga: '750000 PYG',
+        cliente_recibe: '100 USD',
+        caja_abierta: cajaAbierta,
+        saldo_disponible: saldoSuficiente ? '1000' : '10',
+        saldo_suficiente: saldoSuficiente,
+      })
+    }
+    if (u.includes('/operacion/') && metodo === 'POST') {
+      return respuesta({
+        operacion: { id: 42, estado: 'PAGADA', metodo_pago: 'efectivo' },
+        movimientos: [
+          { id: 1, tipo: 'RETIRO', tipo_display: 'Retiro', moneda_codigo: 'USD',
+            total: '100.00', saldo_resultante: '900' },
+          { id: 2, tipo: 'INGRESO', tipo_display: 'Ingreso', moneda_codigo: 'PYG',
+            total: '750000', saldo_resultante: '750000' },
+        ],
+        comprobante: { id: 5, numero: 'CPB-000005', cliente_nombre: 'Ana Barrios',
+                      monto_enviado: '750000.00', monto_recibido: '100.00' },
+        saldo: [
+          { moneda: 1, moneda_codigo: 'PYG', moneda_nombre: 'Guaraní', simbolo: '₲',
+            decimales: 0, total: '750000' },
+          { moneda: 2, moneda_codigo: 'USD', moneda_nombre: 'Dólar', simbolo: '$',
+            decimales: 2, total: '900' },
+        ],
+      }, 201)
+    }
+    if (u.includes('/comprobantes/')) return respuesta([])
+    if (u.includes('/comprobantes/5/')) {
+      return respuesta({ id: 5, numero: 'CPB-000005', cliente_nombre: 'Ana Barrios' })
     }
     return respuesta({}, 404)
   })
@@ -211,17 +278,35 @@ describe('CashierDashboard PI-42 (comprobante interno)', () => {
       if (u.includes('/buscar-documento/')) {
         return respuesta({ encontrado: true, cliente: ana })
       }
-      if (u.includes('/cotizaciones/vigentes/')) {
-        return respuesta([tasaUsd])
+      if (u.endsWith('/cajas/') && metodo === 'GET') {
+        return respuesta([
+          { id: 1, nombre: 'Ventanilla 1', sucursal: 'Central', activa: true,
+            abierta: true, turnoActual: null },
+        ])
       }
-      if (u.includes('/confirmar/') && metodo === 'POST') {
-        return respuesta({ resultado: 'CONFIRMADA', operacion: operacionPagada })
+      if (u.includes('/cotizar/') && metodo === 'POST') {
+        return respuesta({
+          tipo_operacion: 'COMPRA',
+          moneda_origen_codigo: 'PYG', moneda_origen_decimales: 0,
+          moneda_destino_codigo: 'USD', moneda_destino_decimales: 2,
+          monto_enviado: '750000', monto_recibido: '100',
+          tasa_aplicada: '7500.000000',
+          cliente_paga: '750000 PYG', cliente_recibe: '100 USD',
+          caja_abierta: true, saldo_disponible: '1000', saldo_suficiente: true,
+        })
       }
-      if (u.endsWith('/operaciones/') && metodo === 'POST') {
-        return respuesta({ ...operacionPagada, estado: 'PENDIENTE' }, 201)
-      }
-      if (u.endsWith('/comprobantes/') && metodo === 'POST') {
-        return respuesta(comprobante, 201)
+      if (u.includes('/operacion/') && metodo === 'POST') {
+        return respuesta({
+          operacion: { id: 9, estado: 'PAGADA', metodo_pago: 'efectivo' },
+          movimientos: [
+            { id: 1, tipo: 'RETIRO', tipo_display: 'Retiro', moneda_codigo: 'USD',
+              total: '100.00', saldo_resultante: '900' },
+            { id: 2, tipo: 'INGRESO', tipo_display: 'Ingreso', moneda_codigo: 'PYG',
+              total: '750000', saldo_resultante: '750000' },
+          ],
+          comprobante,
+          saldo: [],
+        }, 201)
       }
       if (u.endsWith('/comprobantes/')) {
         return respuesta([comprobante])
@@ -250,18 +335,20 @@ describe('CashierDashboard PI-42 (comprobante interno)', () => {
   it('emite el comprobante con operación real y muestra la vista imprimible', async () => {
     const user = userEvent.setup()
     await seleccionarAna(user)
-    await user.type(screen.getByLabelText(/Monto/), '750000')
+    await user.type(screen.getByLabelText(/Monto/), '100')
+    await screen.findByText('Desglose de la operación')
     await user.click(screen.getByRole('button', { name: /Procesar, Emitir e Imprimir/ }))
     // El número aparece en el historial y en la vista imprimible.
     expect((await screen.findAllByText('CPB-000001')).length).toBeGreaterThanOrEqual(2)
     expect(screen.getAllByText('Ana Barrios').length).toBeGreaterThanOrEqual(2)
     const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>
-    const creoOp = fetchMock.mock.calls.find(([llamada, datos]) =>
-      String(llamada).endsWith('/operaciones/') && (datos as RequestInit).method === 'POST')
-    const cuerpo = JSON.parse(String((creoOp as [string, RequestInit])[1].body))
+    const llamo = fetchMock.mock.calls.find(([url, datos]) =>
+      String(url).includes('/cajas/1/operacion/') && (datos as RequestInit).method === 'POST')
+    const cuerpo = JSON.parse(String((llamo as [string, RequestInit])[1].body))
     expect(cuerpo).toMatchObject({
-      cliente: 7, tipo_operacion: 'COMPRA', moneda: 'USD', metodo_pago: 'efectivo',
+      cliente: 7, tipo_operacion: 'COMPRA', moneda: 'USD',
     })
+    expect(cuerpo.medio_pago).toBe('efectivo')
   })
 
   it('exige cliente seleccionado antes de emitir', async () => {
@@ -278,5 +365,76 @@ describe('CashierDashboard PI-42 (comprobante interno)', () => {
     expect((await screen.findAllByText('CPB-000001')).length).toBeGreaterThanOrEqual(2)
     expect(screen.getByRole('button', { name: '🖨️ Imprimir' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '📥 Descargar PDF' })).toBeInTheDocument()
+  })
+})
+
+/**
+ * PI-75: operación cambiaria presencial. El panel pide el desglose al
+ * backend antes de confirmar y ejecuta la operación en la caja elegida.
+ */
+describe('CashierDashboard PI-75 (operación presencial)', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', mockApiCajas())
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  async function preparar(user: ReturnType<typeof userEvent.setup>) {
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+    await user.type(screen.getByPlaceholderText('Ej. 4589201'), '4589201')
+    await user.click(screen.getByRole('button', { name: 'Buscar' }))
+    await screen.findByText('✓ Cliente Seleccionado')
+    await user.type(screen.getByLabelText(/Monto/), '100')
+    await screen.findByText('Desglose de la operación')
+  }
+
+  it('muestra el desglose del backend antes de confirmar', async () => {
+    const user = userEvent.setup()
+    await preparar(user)
+    expect(screen.getByText('750000 PYG')).toBeInTheDocument()
+    expect(screen.getByText('100 USD')).toBeInTheDocument()
+    expect(screen.getByText('Tasa aplicada')).toBeInTheDocument()
+  })
+
+  it('preselecciona la caja abierta y ofrece los tres medios de pago', async () => {
+    const user = userEvent.setup()
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+    await screen.findByLabelText('Caja')
+    expect(screen.getByLabelText('Caja')).toHaveValue('1')
+    const medio = screen.getByLabelText('Medio de Pago')
+    expect(medio).toHaveValue('efectivo')
+    expect(within(medio).getByRole('option', { name: 'Efectivo' })).toBeInTheDocument()
+    expect(within(medio).getByRole('option', { name: /Tarjeta/ })).toBeInTheDocument()
+    expect(within(medio).getByRole('option', { name: /Transferencia/ })).toBeInTheDocument()
+  })
+
+  it('no ofrece billetera como medio de pago', () => {
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+    const medio = screen.getByLabelText('Medio de Pago')
+    expect(within(medio).queryByRole('option', { name: /Billetera/i })).not.toBeInTheDocument()
+  })
+
+  it('bloquea la operación si la caja no tiene saldo suficiente', async () => {
+    vi.stubGlobal('fetch', mockApiCajas({ saldoSuficiente: false }))
+    const user = userEvent.setup()
+    await preparar(user)
+    expect(screen.getByText(/no tiene saldo suficiente/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Procesar/ })).toBeDisabled()
+  })
+
+  it('avisa cuando la caja está cerrada', async () => {
+    vi.stubGlobal('fetch', mockApiCajas({ cajaAbierta: false }))
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+    expect(await screen.findByText(/está cerrada/i)).toBeInTheDocument()
+  })
+
+  it('ejecuta la operación y confirma los movimientos de caja', async () => {
+    const user = userEvent.setup()
+    await preparar(user)
+    await user.click(screen.getByRole('button', { name: /Procesar, Emitir e Imprimir/ }))
+    expect(await screen.findByText(/Operación #42 registrada/)).toBeInTheDocument()
+    expect(screen.getByText(/Retiro 100.00 USD/)).toBeInTheDocument()
+    expect(screen.getByText(/Ingreso 750000 PYG/)).toBeInTheDocument()
   })
 })

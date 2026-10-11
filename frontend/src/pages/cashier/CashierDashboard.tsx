@@ -23,16 +23,18 @@ import {
   type Cliente,
 } from '@/services/clientes'
 import {
-  confirmarOperacion,
-  crearOperacion,
-} from '@/services/operaciones'
-import {
-  emitirComprobante,
   listarComprobantes,
   obtenerComprobante,
   type Comprobante,
 } from '@/services/comprobantes'
-import { vigentes } from '@/services/cotizaciones'
+import {
+  MEDIOS_PAGO,
+  cotizarOperacion,
+  ejecutarOperacion,
+  type CotizacionVentanilla,
+  type MedioPago,
+} from '@/services/cajasOperacion'
+import { listarCajas, type Caja } from '@/services/cajas'
 import ComprobanteVista from '@/components/ComprobanteVista'
 
 export interface Props {
@@ -52,20 +54,6 @@ interface Client {
 }
 
 type DivisaCodigo = (typeof currencies)[number]['code']
-
-/** Tasas de referencia para mostrar el equivalente en guaraníes. */
-const tasasPyg: Record<DivisaCodigo, number> = {
-  PYG: 1,
-  USD: 7350,
-  EUR: 8250,
-  BRL: 1380,
-  ARS: 5.2,
-  GBP: 9520,
-}
-
-function tasaEnPyg(codigo: DivisaCodigo): number {
-  return tasasPyg[codigo] ?? 1
-}
 
 export default function CashierDashboard({ auth, currentClient }: Props) {
   const [searchDoc, setSearchDoc] = useState('')
@@ -103,6 +91,27 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
   const [amount, setAmount] = useState<number | ''>('')
   const [docType, setDocType] = useState<'Comprobante'>('Comprobante')
 
+  // PI-75: la caja en la que se opera y el medio de pago en ventanilla.
+  const [cajas, setCajas] = useState<Caja[]>([])
+  const [cajaId, setCajaId] = useState<number | ''>('')
+  const [medioPago, setMedioPago] = useState<MedioPago>('efectivo')
+  const [cotizacion, setCotizacion] = useState<CotizacionVentanilla | null>(null)
+  const [cotizando, setCotizando] = useState(false)
+
+  const cajaActual = cajas.find((c) => c.id === cajaId) ?? null
+
+  useEffect(() => {
+    listarCajas()
+      .then((lista) => {
+        setCajas(lista)
+        // Preselecciona la primera caja abierta; si no hay ninguna, la
+        // primera disponible, para que se vea el aviso de caja cerrada.
+        const preferida = lista.find((c) => c.abierta) ?? lista[0]
+        if (preferida) setCajaId(preferida.id)
+      })
+      .catch(() => setEmitError('No se pudieron cargar las cajas.'))
+  }, [])
+
   const handleOperationTypeChange = (value: 'buy' | 'sell') => {
     setOperationType(value)
     if (value === 'buy') {
@@ -114,7 +123,38 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
     }
   }
 
-  const totalPyg = Number(amount || 0) * tasaEnPyg(originCurrency)
+  /** Divisa que el cliente compra o vende (la que opera el backend). */
+  const divisaOperada = operationType === 'buy' ? destinationCurrency : originCurrency
+  const contraparte = operationType === 'buy' ? originCurrency : destinationCurrency
+
+  /** PI-75: pide el desglose al backend; no crea nada. */
+  const refetchCotizacion = async () => {
+    if (!cajaId || !selectedClient || !amount || amount <= 0) {
+      setCotizacion(null)
+      return
+    }
+    setCotizando(true)
+    try {
+      setCotizacion(await cotizarOperacion(cajaId, {
+        cliente: selectedClient.id,
+        tipo_operacion: operationType === 'buy' ? 'COMPRA' : 'VENTA',
+        moneda: divisaOperada,
+        monto_divisa: String(amount),
+        moneda_contraparte: contraparte,
+        medio_pago: medioPago,
+      }))
+    } catch (err) {
+      setCotizacion(null)
+      setEmitError(err instanceof Error ? err.message : 'No se pudo cotizar.')
+    } finally {
+      setCotizando(false)
+    }
+  }
+
+  useEffect(() => {
+    const timer = setTimeout(() => { void refetchCotizacion() }, 350)
+    return () => clearTimeout(timer)
+  }, [cajaId, selectedClient, operationType, divisaOperada, contraparte, amount])
 
   // PI-42: historial real de comprobantes emitidos (reimprimibles).
   const [comprobantes, setComprobantes] = useState<Comprobante[]>([])
@@ -136,9 +176,14 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
   }
 
   /** PI-42: emite el comprobante interno con operación real en efectivo. */
+  /** PI-75: ejecuta la operación presencial completa en una transacción. */
   const handleEmitInvoice = async () => {
     if (!selectedClient) {
       setEmitError('Seleccione un cliente antes de procesar.')
+      return
+    }
+    if (!cajaId) {
+      setEmitError('Seleccione una caja abierta.')
       return
     }
     if (originCurrency === destinationCurrency) {
@@ -153,40 +198,27 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
     setEmitError('')
     setEmitInfo('')
     try {
-      // El monto se tipea en origen; el backend opera en la divisa.
-      const extranjera = operationType === 'buy' ? destinationCurrency : originCurrency
-      let montoDivisa: number
-      if (originCurrency === extranjera) {
-        montoDivisa = Number(amount)
-      } else {
-        const tasas = await vigentes()
-        const tasa = tasas.find(t => t.moneda === extranjera)
-        const venta = tasa ? tasa.venta : 0
-        if (!(venta > 0)) throw new Error('No hay tasa vigente para la divisa.')
-        montoDivisa = Number(amount) / venta
-      }
-      const operacion = await crearOperacion({
-        clienteId: selectedClient.id,
-        tipo: operationType === 'buy' ? 'COMPRA' : 'VENTA',
-        moneda: extranjera,
-        // El backend acepta como máximo 2 decimales en la divisa.
-        montoDivisa: Math.round(montoDivisa * 100) / 100,
-        monedaContraparte: operationType === 'buy' ? originCurrency : destinationCurrency,
-        metodoPago: 'efectivo',
+      const resultado = await ejecutarOperacion(cajaId, {
+        cliente: selectedClient.id,
+        tipo_operacion: operationType === 'buy' ? 'COMPRA' : 'VENTA',
+        moneda: divisaOperada,
+        monto_divisa: String(amount),
+        moneda_contraparte: contraparte,
+        medio_pago: medioPago,
       })
-      let confirmada = await confirmarOperacion(operacion.id)
-      if (confirmada.resultado === 'COTIZACION_CAMBIADA') {
-        // Reintento inmediato con la ventana nueva (ventanilla).
-        confirmada = await confirmarOperacion(operacion.id)
+      if (resultado.comprobante) {
+        const completo = await obtenerComprobante(resultado.comprobante.id)
+        setComprobanteActual(completo)
       }
-      if (confirmada.resultado !== 'CONFIRMADA') {
-        throw new Error(confirmada.detail || 'No se pudo confirmar la operación.')
-      }
-      const comprobante = await emitirComprobante(confirmada.operacion.id)
-      setComprobanteActual(comprobante)
+      const movimientos = resultado.movimientos
+        .map((m) => `${m.tipo_display} ${m.total} ${m.moneda_codigo}`)
+        .join(' · ')
+      setEmitInfo(`Operación #${resultado.operacion.id} registrada. Caja: ${movimientos}.`)
+      setAmount('')
+      setCotizacion(null)
       await recargarComprobantes()
     } catch (err) {
-      setEmitError(err instanceof Error ? err.message : 'No se pudo emitir el comprobante.')
+      setEmitError(err instanceof Error ? err.message : 'No se pudo registrar la operación.')
     } finally {
       setEmitiendo(false)
     }
@@ -393,6 +425,46 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
               />
             </div>
 
+            <div>
+              <label htmlFor="medio-pago" className="text-xs font-semibold text-slate-500">Medio de Pago</label>
+              <select
+                id="medio-pago"
+                value={medioPago}
+                onChange={(e) => setMedioPago(e.target.value as MedioPago)}
+                className="w-full mt-1 p-2 border rounded-lg text-sm"
+              >
+                {MEDIOS_PAGO.map((m) => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+              <p className="text-[11px] text-slate-400 mt-1">
+                Solo el efectivo suma a la caja; con tarjeta o transferencia
+                la caja registra únicamente la divisa entregada.
+              </p>
+            </div>
+
+            <div className="md:col-span-2">
+              <label htmlFor="caja-operacion" className="text-xs font-semibold text-slate-500">Caja</label>
+              <select
+                id="caja-operacion"
+                value={cajaId}
+                onChange={(e) => setCajaId(e.target.value ? Number(e.target.value) : '')}
+                className="w-full mt-1 p-2 border rounded-lg text-sm font-semibold"
+              >
+                <option value="">Seleccione una caja…</option>
+                {cajas.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.nombre} · {c.sucursal} {c.abierta ? '(abierta)' : '(cerrada)'}
+                  </option>
+                ))}
+              </select>
+              {cajaActual && !cajaActual.abierta && (
+                <p role="alert" className="text-[11px] text-amber-700 font-semibold mt-1">
+                  Esta caja está cerrada. Solo se puede operar con una caja abierta.
+                </p>
+              )}
+            </div>
+
             <div className="md:col-span-2">
               <label htmlFor="comprobante-legal" className="text-xs font-semibold text-slate-500">Comprobante</label>
               <select
@@ -407,14 +479,33 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
             </div>
           </div>
 
-          {amount && originCurrency !== destinationCurrency && (
-            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-right">
-              <span className="text-xs text-slate-500 block">
-                {originCurrency} → {destinationCurrency} · Total equivalente Guaraníes:
-              </span>
-              <span className="text-2xl font-bold text-emerald-700">
-                {totalPyg.toLocaleString('es-PY')} ₲
-              </span>
+          {/* PI-75: desglose antes de confirmar, calculado por el backend. */}
+          {cotizando && (
+            <p className="text-slate-400 text-[13px]">Calculando precio final…</p>
+          )}
+          {cotizacion && !cotizando && (
+            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 space-y-1">
+              <div className="text-xs font-semibold text-slate-600">Desglose de la operación</div>
+              <div className="flex justify-between text-[13px]">
+                <span className="text-slate-500">El cliente paga</span>
+                <span className="font-mono font-semibold text-slate-800">{cotizacion.cliente_paga}</span>
+              </div>
+              <div className="flex justify-between text-[13px]">
+                <span className="text-slate-500">El cliente recibe</span>
+                <span className="font-mono font-semibold text-emerald-700">{cotizacion.cliente_recibe}</span>
+              </div>
+              <div className="flex justify-between text-[13px]">
+                <span className="text-slate-500">Tasa aplicada</span>
+                <span className="font-mono text-slate-700">
+                  {Number(cotizacion.tasa_aplicada).toLocaleString('es-PY')}
+                </span>
+              </div>
+              {!cotizacion.saldo_suficiente && (
+                <p role="alert" className="text-[12px] text-rose-600 font-semibold">
+                  La caja no tiene saldo suficiente de {cotizacion.moneda_destino_codigo}
+                  {' '}(tiene {cotizacion.saldo_disponible}).
+                </p>
+              )}
             </div>
           )}
 
@@ -429,7 +520,11 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
             </p>
           )}
 
-          <button onClick={handleEmitInvoice} disabled={emitiendo} className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-bold rounded-lg text-sm shadow transition-all">
+          <button
+            onClick={handleEmitInvoice}
+            disabled={emitiendo || cotizando || (cotizacion !== null && !cotizacion.saldo_suficiente)}
+            className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-bold rounded-lg text-sm shadow transition-all"
+          >
             {emitiendo ? 'Procesando…' : '🖨️ Procesar, Emitir e Imprimir'}
           </button>
         </div>

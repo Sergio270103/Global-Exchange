@@ -4,13 +4,16 @@ from decimal import Decimal
 
 from rest_framework import serializers
 
+from clientes.models import Cliente
 from monedas.models import Moneda
+from operaciones.models import Operacion
 
 from .models import (
     ArqueoCaja, ArqueoMoneda, Caja, DetalleEntrega, Denominacion,
     EntregaBilletes, MovimientoCaja, TurnoCaja,
 )
 from .servicios import totales_entrega, turno_abierto
+from .servicios_operacion import MEDIO_EFECTIVO, MEDIOS_PAGO
 
 
 def _texto_valor(valor) -> str:
@@ -91,6 +94,39 @@ class NuevoMovimientoSerializer(serializers.Serializer):
     moneda = serializers.PrimaryKeyRelatedField(queryset=Moneda.objects.all())
     monto = serializers.DecimalField(max_digits=18, decimal_places=2)
     observacion = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+
+
+# --- Operación cambiaria presencial (PI-75) ----------------------------
+
+class CotizacionVentanillaSerializer(serializers.Serializer):
+    """Desglose que el cajero muestra antes de confirmar (PI-75)."""
+
+    cliente = serializers.PrimaryKeyRelatedField(queryset=Cliente.objects.all())
+    tipo_operacion = serializers.ChoiceField(choices=Operacion.TIPOS)
+    moneda = serializers.CharField(max_length=3, help_text='Divisa a comprar o vender.')
+    monto_divisa = serializers.DecimalField(max_digits=18, decimal_places=2)
+    moneda_contraparte = serializers.CharField(max_length=3, required=False, default='PYG')
+
+
+class OperacionPresencialSerializer(serializers.Serializer):
+    """Alta de la operación presencial (PI-75)."""
+
+    cliente = serializers.PrimaryKeyRelatedField(queryset=Cliente.objects.all())
+    tipo_operacion = serializers.ChoiceField(choices=Operacion.TIPOS)
+    moneda = serializers.CharField(max_length=3)
+    monto_divisa = serializers.DecimalField(max_digits=18, decimal_places=2)
+    moneda_contraparte = serializers.CharField(max_length=3, required=False, default='PYG')
+    medio_pago = serializers.ChoiceField(
+        choices=MEDIOS_PAGO, default=MEDIO_EFECTIVO,
+        help_text='Efectivo, tarjeta o transferencia. No se usa billetera.',
+    )
+    observacion = serializers.CharField(
+        max_length=255, required=False, allow_blank=True, default='')
+
+    def validate_monto_divisa(self, value):
+        if value <= 0:
+            raise serializers.ValidationError('El monto debe ser mayor a cero.')
+        return value
 
 
 # --- Arqueos (PI-78: por total de cada moneda) -------------------------
