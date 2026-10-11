@@ -13,10 +13,15 @@ import { apiFetch } from '@/services/api'
 export interface Cliente {
   id: number
   nombre: string
+  apellido: string
+  nombre_completo: string
   documento: string
   email: string
+  telefono: string
   tipo: 'FISICA' | 'JURIDICA'
+  tipo_display: string
   categoria: 'MINORISTA' | 'CORPORATIVO' | 'VIP'
+  categoria_display: string
   activo: boolean
   creado_en: string
 }
@@ -43,11 +48,13 @@ export async function listarClientes(params: {
   return apiFetch<Cliente[]>(`/clientes/${sufijo}`)
 }
 
-/** Datos del formulario de cliente. */
+/** Datos del formulario de cliente del catálogo administrativo. */
 export interface DatosCliente {
   nombre: string
+  apellido?: string
   documento: string
   email: string
+  telefono?: string
   tipo: 'FISICA' | 'JURIDICA'
   categoria: 'MINORISTA' | 'CORPORATIVO' | 'VIP'
 }
@@ -141,6 +148,49 @@ export function categoriaUI(c: Cliente['categoria']): string {
 export function categoriaAPI(label: string): Cliente['categoria'] {
   const l = label.trim().toLowerCase()
   return l.startsWith('corp') ? 'CORPORATIVO' : l.startsWith('vip') ? 'VIP' : 'MINORISTA'
+}
+
+/**
+ * PI-45: busca un cliente presencial por documento de identidad.
+ *
+ * Distingue de forma explícita entre "no existe" y "existe": el cajero
+ * necesita ofrecer el registro solo en el primer caso.
+ */
+export interface BusquedaPorDocumento {
+  encontrado: boolean
+  cliente: Cliente | null
+}
+
+export async function buscarClientePorDocumento(
+  documento: string,
+): Promise<BusquedaPorDocumento> {
+  const qs = new URLSearchParams({ documento: documento.trim() })
+  return apiFetch<BusquedaPorDocumento>(`/clientes/buscar-documento/?${qs}`)
+}
+
+/** Datos del alta de cliente presencial en ventanilla (PI-45). */
+export interface DatosClientePresencial {
+  nombre: string
+  apellido: string
+  documento: string
+  email: string
+  telefono: string
+  tipo: 'FISICA' | 'JURIDICA'
+  categoria?: Cliente['categoria']
+}
+
+/**
+ * Registra un cliente presencial desde el panel del cajero (PI-45).
+ *
+ * @throws {ApiError} 400 si faltan datos o el documento ya existe.
+ */
+export async function registrarClientePresencial(
+  datos: DatosClientePresencial,
+): Promise<Cliente> {
+  return apiFetch<Cliente>('/clientes/presencial/', {
+    method: 'POST',
+    body: JSON.stringify(datos),
+  })
 }
 
 /**
