@@ -76,3 +76,16 @@ input[type='number']::-webkit-outer-spin-button {
 input[type='number'] {
   -moz-appearance: textfield;
 }
+
+/* PI-42: al imprimir solo sale el comprobante. */
+@media print {
+  body * { visibility: hidden; }
+  #comprobante-print, #comprobante-print * { visibility: visible; }
+  #comprobante-print {
+    position: absolute;
+    inset: 0;
+    border: none;
+  }
+  .no-print { display: none !important; }
+}
+

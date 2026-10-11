@@ -163,3 +163,120 @@ describe('CashierDashboard PI-45 (cliente presencial)', () => {
     expect(screen.getByLabelText(/Teléfono/)).not.toBeRequired()
   })
 })
+
+/**
+ * PI-42: emisión real del comprobante interno (operación en efectivo
+ * + número único + vista imprimible).
+ */
+describe('CashierDashboard PI-42 (comprobante interno)', () => {
+  const tasaUsd = {
+    id: 10, moneda: 2, moneda_codigo: 'USD', moneda_nombre: 'Dólar',
+    compra: '7400', venta: '7500',
+    vigente_desde: '2026-10-11T10:00:00Z', creado_por: 'analista1',
+  }
+  const operacionPagada = {
+    id: 9, cliente: 7, cliente_nombre: 'Ana Barrios',
+    usuario_keycloak_id: 'sub-caja', usuario_nombre: 'Cajero',
+    tipo_operacion: 'COMPRA', moneda_origen: 1, moneda_origen_codigo: 'PYG',
+    moneda_destino: 2, moneda_destino_codigo: 'USD',
+    monto_enviado: '757500.00', monto_recibido: '100.00',
+    cotizacion_aplicada: 10, tasa_origen: '1.000000',
+    tasa_destino: '7500.000000', metodo_pago: 'efectivo',
+    billetera_destino: null, billetera_destino_detalle: '',
+    cuenta_origen: null, cuenta_origen_detalle: '',
+    billetera_origen: null, billetera_origen_detalle: '',
+    fecha_creacion: '2026-10-11T10:00:00Z', estado: 'PAGADA',
+    fecha_cotizacion: '2026-10-11T10:00:00Z',
+    fecha_confirmacion: '2026-10-11T10:00:01Z',
+    fecha_cancelacion: null, cancelada_por: '',
+    cancelada_por_nombre: '', motivo_cancelacion: '',
+    tolerancia_segundos: 300, segundos_restantes: 300,
+  }
+  const comprobante = {
+    id: 1, numero: 'CPB-000001', operacion: 9,
+    cliente_nombre: 'Ana Barrios', cliente_documento: '4589201',
+    tipo_operacion: 'COMPRA', moneda_origen_codigo: 'PYG',
+    moneda_destino_codigo: 'USD', monto_enviado: '757500.00',
+    monto_recibido: '100.00', tasa_origen: '1.000000',
+    tasa_destino: '7500.000000', monto_comision: '7500.00',
+    metodo_pago: 'efectivo', fecha_operacion: '2026-10-11T10:00:01Z',
+    cajero_sub: 'sub-caja', cajero_nombre: 'Cajero',
+    estado: 'emitido', creado: '2026-10-11T10:00:02Z',
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit = {}) => {
+      const u = String(url)
+      const metodo = (init.method ?? 'GET').toUpperCase()
+      if (u.includes('/buscar-documento/')) {
+        return respuesta({ encontrado: true, cliente: ana })
+      }
+      if (u.includes('/cotizaciones/vigentes/')) {
+        return respuesta([tasaUsd])
+      }
+      if (u.includes('/confirmar/') && metodo === 'POST') {
+        return respuesta({ resultado: 'CONFIRMADA', operacion: operacionPagada })
+      }
+      if (u.endsWith('/operaciones/') && metodo === 'POST') {
+        return respuesta({ ...operacionPagada, estado: 'PENDIENTE' }, 201)
+      }
+      if (u.endsWith('/comprobantes/') && metodo === 'POST') {
+        return respuesta(comprobante, 201)
+      }
+      if (u.endsWith('/comprobantes/')) {
+        return respuesta([comprobante])
+      }
+      if (/\/comprobantes\/\d+\//.test(u)) {
+        return respuesta(comprobante)
+      }
+      return respuesta({}, 404)
+    }))
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function renderCajero42() {
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+  }
+
+  async function seleccionarAna(user: ReturnType<typeof userEvent.setup>) {
+    renderCajero42()
+    await user.type(screen.getByPlaceholderText('Ej. 4589201'), '4589201')
+    await user.click(screen.getByRole('button', { name: 'Buscar' }))
+    await screen.findByText('✓ Cliente Seleccionado')
+  }
+
+  it('emite el comprobante con operación real y muestra la vista imprimible', async () => {
+    const user = userEvent.setup()
+    await seleccionarAna(user)
+    await user.type(screen.getByLabelText(/Monto/), '750000')
+    await user.click(screen.getByRole('button', { name: /Procesar, Emitir e Imprimir/ }))
+    // El número aparece en el historial y en la vista imprimible.
+    expect((await screen.findAllByText('CPB-000001')).length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByText('Ana Barrios').length).toBeGreaterThanOrEqual(2)
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>
+    const creoOp = fetchMock.mock.calls.find(([llamada, datos]) =>
+      String(llamada).endsWith('/operaciones/') && (datos as RequestInit).method === 'POST')
+    const cuerpo = JSON.parse(String((creoOp as [string, RequestInit])[1].body))
+    expect(cuerpo).toMatchObject({
+      cliente: 7, tipo_operacion: 'COMPRA', moneda: 'USD', metodo_pago: 'efectivo',
+    })
+  })
+
+  it('exige cliente seleccionado antes de emitir', async () => {
+    const user = userEvent.setup()
+    renderCajero42()
+    await user.click(screen.getByRole('button', { name: /Procesar, Emitir e Imprimir/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Seleccione un cliente/i)
+  })
+
+  it('reimprime un comprobante del historial', async () => {
+    const user = userEvent.setup()
+    await seleccionarAna(user)
+    await user.click(await screen.findByRole('button', { name: /Reimprimir/ }))
+    expect((await screen.findAllByText('CPB-000001')).length).toBeGreaterThanOrEqual(2)
+    expect(screen.getByRole('button', { name: '🖨️ Imprimir' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '📥 Descargar PDF' })).toBeInTheDocument()
+  })
+})

@@ -157,3 +157,10 @@ Asistente: Muse Spark (opencode). Sin commits ni push, solo trabajo local.
 - Leidas/eliminadas persisten recargas (localStorage, helpers en services/alertas.ts) en campanita y feed.
 - Backend 168/168 (13 alertas), frontend 42 archivos 245/245, tsc limpio, build OK. Sin push.
 
+
+## 22. PI-42 comprobante interno (2026-10-11, rama feature/PI-42)
+- services/comprobantes.ts nuevo (emitir/listar/detalle) + 3 tests.
+- ComprobanteVista nuevo: recibo imprimible (window.print + CSS print) + Descargar PDF (jspdf) + 2 tests.
+- CashierDashboard: emision real (crear+confirmar efectivo, comprobante, vista, historial real con Reimprimir) + 3 tests; NC queda informativa (PI facturacion).
+- index.css: reglas @media print. Full suite 45 archivos 270/270, tsc limpio, build OK. Sin push.
+
