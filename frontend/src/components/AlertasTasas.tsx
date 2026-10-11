@@ -187,7 +187,7 @@ export default function AlertasTasas() {
               <div key={a.id} className="flex items-center gap-3 flex-wrap border border-slate-100 rounded-lg p-3">
                 <span className="font-bold text-slate-900 text-sm">{a.moneda_codigo}/PYG</span>
                 <span className="text-[12px] text-slate-500">
-                  {a.direccion === 'supera' ? '📈 supera' : '📉 baja de'} {a.umbral.toLocaleString()}
+                  {a.direccion === 'supera' ? '📈 supera' : '📉 baja de'} {a.umbral.toLocaleString('es-PY')}
                 </span>
                 <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${a.estado === 'activa' ? 'bg-emerald-50 text-emerald-600' : a.estado === 'pausada' ? 'bg-amber-50 text-amber-600' : 'bg-slate-100 text-slate-500'}`}>
                   {a.estado}
@@ -243,8 +243,8 @@ export default function AlertasTasas() {
                 <span className="text-lg">🔔</span>
                 <span className="text-slate-600">
                   <strong className="text-slate-900">{d.moneda_codigo}/PYG</strong>
-                  {' '}{d.direccion === 'supera' ? 'alcanzó o superó' : 'bajó hasta'} {d.tasa_alcanzada.toLocaleString()}
-                  {' '}(umbral {d.umbral.toLocaleString()})
+                  {' '}{d.direccion === 'supera' ? 'alcanzó o superó' : 'bajó hasta'} {d.tasa_alcanzada.toLocaleString('es-PY')}
+                  {' '}(umbral {d.umbral.toLocaleString('es-PY')})
                 </span>
                 <span className="ml-auto text-[11px] text-slate-400 whitespace-nowrap">
                   {new Date(d.creado).toLocaleString()}

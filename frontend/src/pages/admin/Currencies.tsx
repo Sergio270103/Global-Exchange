@@ -320,7 +320,7 @@ export default function Currencies({ auth }: { auth: AuthUser }) {
                     </div>
                   ) : vigente ? (
                     <div className="text-[12px] font-mono font-semibold text-emerald-700 mt-1">
-                      C ₲{vigente.compra.toLocaleString()} · V ₲{vigente.venta.toLocaleString()}
+                      C ₲{vigente.compra.toLocaleString('es-PY')} · V ₲{vigente.venta.toLocaleString('es-PY')}
                     </div>
                   ) : (
                     <div className="mt-1">
