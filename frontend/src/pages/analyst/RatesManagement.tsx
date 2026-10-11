@@ -1,41 +1,128 @@
 /**
  * Gestión de tasas de cambio (analista cambiario).
  *
- * Permite al analista modificar las tasas de compra/venta de las monedas,
- * registrando un historial de actualización para trazabilidad.
+ * Permite al analista modificar las tasas de compra/venta de las monedas.
+ * Cada guardado registra una cotización real en el backend (historial
+ * inmutable) y puede disparar las alertas de tasa configuradas (PI-38).
  *
  * @module RatesManagement
  */
-import { useState } from 'react'
-import { editableRates } from '@/data/mockData'
+import { useEffect, useState } from 'react'
+import {
+  crearCotizacion,
+  historial,
+  vigentes,
+  type Cotizacion,
+} from '@/services/cotizaciones'
+import { listarMonedas } from '@/services/monedas'
 
-type Rate = typeof editableRates[0] & { isDirty?: boolean }
+interface Rate {
+  currency: string
+  name: string
+  flag: string
+  monedaId: number
+  buy: number
+  sell: number
+  updatedAt: string
+  updatedBy: string
+  isDirty?: boolean
+}
+
+interface LogEntry {
+  time: string
+  user: string
+  action: string
+}
 
 export default function RatesManagement() {
-  const [rates, setRates] = useState<Rate[]>(editableRates.map(r => ({ ...r })))
+  const [rates, setRates] = useState<Rate[]>([])
+  const [log, setLog] = useState<LogEntry[]>([])
+  const [cargando, setCargando] = useState(true)
+  const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+
+  useEffect(() => {
+    Promise.all([vigentes(), listarMonedas(true)])
+      .then(([cotizaciones, monedas]) => {
+        const idPorCodigo = new Map(monedas.map(m => [m.code, m.id]))
+        setRates(cotizaciones.map(c => ({
+          currency: c.moneda,
+          name: c.nombre,
+          flag: c.flag,
+          monedaId: idPorCodigo.get(c.moneda) ?? 0,
+          buy: c.compra,
+          sell: c.venta,
+          updatedAt: new Date(c.vigente_desde).toLocaleString(),
+          updatedBy: c.creado_por || '—',
+        })))
+        setError('')
+      })
+      .catch(() => {
+        setError('No se pudieron cargar las tasas vigentes.')
+      })
+      .finally(() => {
+        setCargando(false)
+      })
+  }, [])
 
   const setRate = (currency: string, field: 'buy' | 'sell', value: string) => {
     setRates(prev => prev.map(r => r.currency === currency ? { ...r, [field]: parseFloat(value) || 0, isDirty: true } : r))
     setSaved(false)
   }
 
-  const saveRates = () => {
+  const saveRates = async () => {
+    const sucias = rates.filter(r => r.isDirty)
+    if (sucias.length === 0) return
     setSaving(true)
-    setTimeout(() => {
-      setRates(prev => prev.map(r => ({
-        ...r,
-        isDirty: false,
-        updatedAt: `${new Date().toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })} - 15 Ene 2024`,
-        updatedBy: 'Juan Analista',
-      })))
-      setSaving(false)
+    setError('')
+    try {
+      const creadas: Cotizacion[] = []
+      for (const r of sucias) {
+        if (!r.monedaId) throw new Error(`Sin id para ${r.currency}.`)
+        if (r.sell < r.buy) throw new Error(`Venta menor que compra en ${r.currency}.`)
+        creadas.push(await crearCotizacion(r.monedaId, r.buy, r.sell))
+      }
+      setRates(prev => prev.map(r => {
+        const c = creadas.find(x => x.moneda === r.currency)
+        return c ? {
+          ...r,
+          isDirty: false,
+          updatedAt: new Date(c.vigente_desde).toLocaleString(),
+          updatedBy: c.creado_por || '—',
+        } : r
+      }))
+      // Registro real de los cambios recién guardados.
+      const entradas: LogEntry[] = []
+      for (const r of sucias) {
+        try {
+          const hist = await historial(r.currency)
+          const ultima = hist[hist.length - 1]
+          if (ultima) {
+            entradas.push({
+              time: new Date(ultima.vigente_desde).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' }),
+              user: ultima.creado_por || '—',
+              action: `Actualizó ${r.currency}: Compra ₲${ultima.compra.toLocaleString()} → Venta ₲${ultima.venta.toLocaleString()}`,
+            })
+          }
+        } catch {
+          // Si falla el historial, igual se guarda la tasa.
+        }
+      }
+      if (entradas.length > 0) setLog(entradas)
       setSaved(true)
-    }, 1000)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'No se pudieron guardar las tasas.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const dirtyCount = rates.filter(r => r.isDirty).length
+
+  if (cargando) {
+    return <p className="text-slate-400 text-[13px]">Cargando tasas vigentes…</p>
+  }
 
   return (
     <div className="space-y-5 animate-fadein">
@@ -74,6 +161,12 @@ export default function RatesManagement() {
         </div>
       </div>
 
+      {error && (
+        <div className="px-5 py-3 rounded-xl border border-red-100 bg-red-50 text-red-700 text-[13px] font-semibold">
+          {error}
+        </div>
+      )}
+
       {/* Table */}
       <div className="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden">
         <table className="w-full">
@@ -87,7 +180,7 @@ export default function RatesManagement() {
           <tbody className="divide-y divide-slate-50">
             {rates.map(rate => {
               const spread = rate.sell - rate.buy
-              const spreadPct = ((spread / rate.buy) * 100).toFixed(2)
+              const spreadPct = rate.buy > 0 ? ((spread / rate.buy) * 100).toFixed(2) : '0.00'
               return (
                 <tr key={rate.currency} className={`transition-colors ${rate.isDirty ? 'bg-amber-50/40' : 'hover:bg-slate-50/60'}`}>
                   <td className="px-5 py-4">
@@ -130,7 +223,7 @@ export default function RatesManagement() {
                   <td className="px-5 py-4">
                     <div className="flex items-center gap-2">
                       <div className="w-5 h-5 rounded-full bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center text-white text-[9px] font-bold">
-                        {rate.updatedBy.charAt(0)}
+                        {(rate.updatedBy || '—').charAt(0)}
                       </div>
                       <span className="text-[12px] text-slate-600">{rate.updatedBy}</span>
                     </div>
@@ -145,20 +238,19 @@ export default function RatesManagement() {
       {/* Audit log */}
       <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-6">
         <h4 className="font-semibold text-slate-800 text-[14px] mb-4" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Registro de cambios recientes</h4>
-        <div className="space-y-3">
-          {[
-            { time: '14:32', user: 'Juan Analista', action: 'Actualizó USD: Compra ₲7,580 → Venta ₲7,650' },
-            { time: '14:30', user: 'Laura Operadora', action: 'Actualizó ARS: Compra ₲5.20 → Venta ₲5.80' },
-            { time: '09:00', user: 'Juan Analista', action: 'Actualizó EUR: Compra ₲8,250 → Venta ₲8,340' },
-            { time: 'Ayer 18:45', user: 'Juan Analista', action: 'Actualizó BRL: Compra ₲1,380 → Venta ₲1,420' },
-          ].map((entry, i) => (
-            <div key={i} className="flex items-center gap-3 text-[13px]">
-              <span className="text-slate-300 font-mono text-[11px] w-20 shrink-0">{entry.time}</span>
-              <div className="w-5 h-5 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 text-[9px] font-bold shrink-0">{entry.user.charAt(0)}</div>
-              <span className="text-slate-500"><span className="text-slate-700 font-medium">{entry.user}</span> — {entry.action}</span>
-            </div>
-          ))}
-        </div>
+        {log.length === 0 ? (
+          <p className="text-slate-400 text-[13px]">Los cambios que guardes aparecerán aquí.</p>
+        ) : (
+          <div className="space-y-3">
+            {log.map((entry, i) => (
+              <div key={i} className="flex items-center gap-3 text-[13px]">
+                <span className="text-slate-300 font-mono text-[11px] w-20 shrink-0">{entry.time}</span>
+                <div className="w-5 h-5 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 text-[9px] font-bold shrink-0">{entry.user.charAt(0)}</div>
+                <span className="text-slate-500"><span className="text-slate-700 font-medium">{entry.user}</span> — {entry.action}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

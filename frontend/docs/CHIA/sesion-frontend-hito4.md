@@ -131,3 +131,29 @@ Asistente: Muse Spark (opencode). Sin commits ni push, solo trabajo local.
 - Full suite 35 archivos 142/142 en verde; 2 timeouts ampliados a 30s (Register, Clients) por carga paralela.
 - tests-global-exchange.txt en Escritorio para la profesora. Sin push.
 
+
+## 18. PI-38 alertas de tasas (2026-10-10, rama feature/PI-38)
+- services/alertas.ts nuevo (listar/crear/actualizar/pausar/eliminar/historial) + 6 tests.
+- components/AlertasTasas.tsx nuevo: pestana real en Notifications (form par+direccion+umbral, editar/pausar/eliminar, historial) + 5 tests.
+- Notifications.tsx: disparos ejecutados tambien en el feed (filtro Rate); resto mock hasta PI de notificaciones generales.
+- Fix tsc latente PI-72 en CashierDashboard.test.tsx (cast HTMLElement). Full suite 41 archivos 236/236, build OK. Sin push.
+
+
+## 19. PI-38 flujo real del analista (2026-10-10, rama feature/PI-38)
+- RatesManagement era mock (setTimeout, sin POST): se conecto al backend (vigentes + listarMonedas al abrir, crearCotizacion por moneda editada al guardar, historial real en auditoria, validacion venta>=compra, error 403 visible).
+- RatesManagement.test.tsx reescrito con servicios mockeados (3 tests). Full suite 41 archivos 238/238, tsc limpio, build OK. Sin push.
+
+
+## 20. PI-38 campanita real + modal al entrar (2026-10-10, rama feature/PI-38)
+- Navbar: campanita con disparos reales (historialDisparos), sin mocks; vacio muestra 'Sin notificaciones'.
+- Notifications: feed real sin mocks (filtros Todas/No leidas/Tasas/Alertas); Transactions/Invoice mock eliminados.
+- ModalAlerta nuevo: recuadro grande al entrar al dashboard (rol user) con disparos no vistos + X (sessionStorage una vez por sesion) + boton Ver en Notificaciones.
+- Tests: Navbar (11), Notifications (4), ModalAlerta (4), Dashboard mock alertas. Full suite 42 archivos 244/244, tsc limpio, build OK. Sin push.
+
+
+## 21. PI-38 re-arme + modal + leidas persistentes (2026-10-10, rama feature/PI-38)
+- Re-arme: si la tasa vuelve al lado previo, ejecutada->activa y el proximo cruce dispara de nuevo (historial suma disparo; sin duplicar del mismo lado).
+- ModalAlerta: max-h 90vh con scroll + responsive (estaba cortado).
+- Leidas/eliminadas persisten recargas (localStorage, helpers en services/alertas.ts) en campanita y feed.
+- Backend 168/168 (13 alertas), frontend 42 archivos 245/245, tsc limpio, build OK. Sin push.
+
