@@ -7,12 +7,14 @@
  *
  * PI-45: la identificación de clientes ya consulta la API real. El cajero
  * busca por documento y, si no existe, lo registra desde el modal; el
- * cliente nuevo queda seleccionado para la transacción. La emisión de
- * comprobantes y DNIT sigue siendo local (corresponde a otro PI).
+ * cliente nuevo queda seleccionado para la transacción.
+ * PI-42: la emisión es real — crea y confirma la operación en efectivo
+ * en nombre del cliente y emite el comprobante interno (único, guardado
+ * y reimprimible). La factura electrónica/DNIT corresponde a otro PI.
  *
  * @module CashierDashboard
  */
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { type AuthUser, type Page, type ClienteActivo } from '../../types'
 import { currencies } from '@/data/mockData'
 import {
@@ -20,6 +22,18 @@ import {
   registrarClientePresencial,
   type Cliente,
 } from '@/services/clientes'
+import {
+  confirmarOperacion,
+  crearOperacion,
+} from '@/services/operaciones'
+import {
+  emitirComprobante,
+  listarComprobantes,
+  obtenerComprobante,
+  type Comprobante,
+} from '@/services/comprobantes'
+import { vigentes } from '@/services/cotizaciones'
+import ComprobanteVista from '@/components/ComprobanteVista'
 
 export interface Props {
   auth: AuthUser
@@ -102,19 +116,93 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
 
   const totalPyg = Number(amount || 0) * tasaEnPyg(originCurrency)
 
-  const [invoices, setInvoices] = useState([
-    {
-      id: 'INV-001',
-      client: 'Carlos Martínez',
-      doc: '4589201',
-      type: 'Factura',
-      amount: '$ 500',
-      totalPyg: '3.675.000 ₲',
-      dnitStatus: 'Enviado API',
-      emailStatus: 'Enviado',
-      date: '2026-08-28 09:15',
-    },
-  ])
+  // PI-42: historial real de comprobantes emitidos (reimprimibles).
+  const [comprobantes, setComprobantes] = useState<Comprobante[]>([])
+  const [emitiendo, setEmitiendo] = useState(false)
+  const [emitError, setEmitError] = useState('')
+  const [emitInfo, setEmitInfo] = useState('')
+  const [comprobanteActual, setComprobanteActual] = useState<Comprobante | null>(null)
+
+  useEffect(() => {
+    listarComprobantes().then(setComprobantes).catch(() => {})
+  }, [])
+
+  async function recargarComprobantes() {
+    try {
+      setComprobantes(await listarComprobantes())
+    } catch {
+      // El historial es secundario: no bloquea la emisión.
+    }
+  }
+
+  /** PI-42: emite el comprobante interno con operación real en efectivo. */
+  const handleEmitInvoice = async () => {
+    if (!selectedClient) {
+      setEmitError('Seleccione un cliente antes de procesar.')
+      return
+    }
+    if (originCurrency === destinationCurrency) {
+      setEmitError('La divisa origen y la divisa destino deben ser distintas.')
+      return
+    }
+    if (!amount || amount <= 0) {
+      setEmitError('Ingrese un monto válido.')
+      return
+    }
+    setEmitiendo(true)
+    setEmitError('')
+    setEmitInfo('')
+    try {
+      // El monto se tipea en origen; el backend opera en la divisa.
+      const extranjera = operationType === 'buy' ? destinationCurrency : originCurrency
+      let montoDivisa: number
+      if (originCurrency === extranjera) {
+        montoDivisa = Number(amount)
+      } else {
+        const tasas = await vigentes()
+        const tasa = tasas.find(t => t.moneda === extranjera)
+        const venta = tasa ? tasa.venta : 0
+        if (!(venta > 0)) throw new Error('No hay tasa vigente para la divisa.')
+        montoDivisa = Number(amount) / venta
+      }
+      const operacion = await crearOperacion({
+        clienteId: selectedClient.id,
+        tipo: operationType === 'buy' ? 'COMPRA' : 'VENTA',
+        moneda: extranjera,
+        // El backend acepta como máximo 2 decimales en la divisa.
+        montoDivisa: Math.round(montoDivisa * 100) / 100,
+        monedaContraparte: operationType === 'buy' ? originCurrency : destinationCurrency,
+        metodoPago: 'efectivo',
+      })
+      let confirmada = await confirmarOperacion(operacion.id)
+      if (confirmada.resultado === 'COTIZACION_CAMBIADA') {
+        // Reintento inmediato con la ventana nueva (ventanilla).
+        confirmada = await confirmarOperacion(operacion.id)
+      }
+      if (confirmada.resultado !== 'CONFIRMADA') {
+        throw new Error(confirmada.detail || 'No se pudo confirmar la operación.')
+      }
+      const comprobante = await emitirComprobante(confirmada.operacion.id)
+      setComprobanteActual(comprobante)
+      await recargarComprobantes()
+    } catch (err) {
+      setEmitError(err instanceof Error ? err.message : 'No se pudo emitir el comprobante.')
+    } finally {
+      setEmitiendo(false)
+    }
+  }
+
+  const handleReimprimir = async (id: number) => {
+    try {
+      setComprobanteActual(await obtenerComprobante(id))
+    } catch {
+      setEmitError('No se pudo recuperar el comprobante.')
+    }
+  }
+
+  const handleAnular = () => {
+    setEmitInfo('La Nota de Crédito y la anulación fiscal corresponden al PI de facturación electrónica.')
+  }
 
   /** PI-45: busca por documento y confirma la identidad antes de operar. */
   const handleSearchClient = async () => {
@@ -149,8 +237,7 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
   }
 
   /** PI-45: al guardar, el cliente nuevo queda seleccionado para operar. */
-  const handleRegisterClient = async (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleRegisterClient = async (e: React.FormEvent) => {    e.preventDefault()
     setSavingClient(true)
     setRegisterError('')
     try {
@@ -170,47 +257,6 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
       setRegisterError(err instanceof Error ? err.message : 'No se pudo registrar el cliente.')
     } finally {
       setSavingClient(false)
-    }
-  }
-
-  const handleEmitInvoice = () => {
-    if (!selectedClient) {
-      alert('Seleccione un cliente antes de procesar.')
-      return
-    }
-    if (originCurrency === destinationCurrency) {
-      alert('La divisa origen y la divisa destino deben ser distintas.')
-      return
-    }
-    if (!amount || amount <= 0) {
-      alert('Ingrese un monto válido.')
-      return
-    }
-
-    const totalPyg = (Number(amount) * tasaEnPyg(originCurrency)).toLocaleString('es-PY') + ' ₲'
-    const newInv = {
-      id: `INV-00${invoices.length + 1}`,
-      client: selectedClient.name,
-      doc: selectedClient.document,
-      type: docType,
-      amount: `${amount} ${originCurrency} → ${destinationCurrency}`,
-      totalPyg,
-      dnitStatus: 'Enviado API',
-      emailStatus: 'Enviado',
-      date: new Date().toLocaleString(),
-    }
-
-    setInvoices([newInv, ...invoices])
-    alert(`Comprobante (${docType}) emitido con éxito.`)
-  }
-
-  const handleAnular = (id: string) => {
-    if (confirm(`¿Solicitar emisión de Nota de Crédito / Anulación sobre el comprobante ${id}?`)) {
-      setInvoices(
-        invoices.map((inv) =>
-          inv.id === id ? { ...inv, type: 'Nota de Crédito (Anulada)', dnitStatus: 'Anulación DNIT' } : inv
-        )
-      )
     }
   }
 
@@ -372,46 +418,61 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
             </div>
           )}
 
-          <button onClick={handleEmitInvoice} className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-sm shadow transition-all">
-            🖨️ Procesar, Emitir e Imprimir
+          {emitError && (
+            <p role="alert" className="bg-rose-50 border border-rose-200 text-rose-700 rounded-lg p-3 text-xs font-semibold">
+              {emitError}
+            </p>
+          )}
+          {emitInfo && (
+            <p className="bg-amber-50 border border-amber-200 text-amber-800 rounded-lg p-3 text-xs font-semibold">
+              {emitInfo}
+            </p>
+          )}
+
+          <button onClick={handleEmitInvoice} disabled={emitiendo} className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-bold rounded-lg text-sm shadow transition-all">
+            {emitiendo ? 'Procesando…' : '🖨️ Procesar, Emitir e Imprimir'}
           </button>
         </div>
       </div>
 
-      {/* Control DNIT */}
+      {/* Historial real de comprobantes internos (PI-42) */}
       <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5 space-y-4">
-        <h3 className="font-semibold text-slate-900 border-b pb-2">📋 Historial de Comprobantes & API DNIT</h3>
+        <h3 className="font-semibold text-slate-900 border-b pb-2">📋 Historial de Comprobantes Internos</h3>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b text-slate-500">
-                <th className="p-3">N° Doc</th>
+                <th className="p-3">N° Comprobante</th>
                 <th className="p-3">Cliente</th>
-                <th className="p-3">Comprobante</th>
-                <th className="p-3">Monto Divisa</th>
-                <th className="p-3">Monto PYG</th>
-                <th className="p-3">Estado DNIT</th>
-                <th className="p-3">Email Cliente</th>
+                <th className="p-3">Tipo</th>
+                <th className="p-3">Monto</th>
+                <th className="p-3">Fecha</th>
                 <th className="p-3">Acciones</th>
               </tr>
             </thead>
             <tbody>
-              {invoices.map((inv) => (
-                <tr key={inv.id} className="border-b hover:bg-slate-50">
-                  <td className="p-3 font-bold">{inv.id}</td>
-                  <td className="p-3">{inv.client} ({inv.doc})</td>
-                  <td className="p-3"><span className="px-2 py-1 rounded bg-slate-100 font-semibold">{inv.type}</span></td>
-                  <td className="p-3 font-semibold">{inv.amount}</td>
-                  <td className="p-3 text-emerald-700 font-bold">{inv.totalPyg}</td>
-                  <td className="p-3"><span className="text-emerald-600 font-semibold">✓ {inv.dnitStatus}</span></td>
-                  <td className="p-3 text-slate-500">{inv.emailStatus}</td>
+              {comprobantes.length === 0 && (
+                <tr><td colSpan={6} className="p-4 text-center text-slate-400">Sin comprobantes emitidos.</td></tr>
+              )}
+              {comprobantes.map((comp) => (
+                <tr key={comp.id} className="border-b hover:bg-slate-50">
+                  <td className="p-3 font-bold">{comp.numero}</td>
+                  <td className="p-3">{comp.cliente_nombre} ({comp.cliente_documento})</td>
+                  <td className="p-3"><span className="px-2 py-1 rounded bg-slate-100 font-semibold">{comp.tipo_operacion}</span></td>
+                  <td className="p-3 font-semibold">
+                    {comp.monto_enviado.toLocaleString()} {comp.moneda_origen_codigo} → {comp.monto_recibido.toLocaleString()} {comp.moneda_destino_codigo}
+                  </td>
+                  <td className="p-3 text-slate-500">{new Date(comp.fecha_operacion).toLocaleString()}</td>
                   <td className="p-3">
-                    {!inv.type.includes('Anulada') && (
-                      <button onClick={() => handleAnular(inv.id)} className="px-2 py-1 bg-rose-50 border border-rose-200 text-rose-600 rounded font-semibold text-[11px]">
+                    <div className="flex gap-2">
+                      <button onClick={() => handleReimprimir(comp.id)} className="px-2 py-1 bg-slate-900 text-white rounded font-semibold text-[11px]">
+                        🖨️ Reimprimir
+                      </button>
+                      <button onClick={handleAnular} className="px-2 py-1 bg-rose-50 border border-rose-200 text-rose-600 rounded font-semibold text-[11px]">
                         Solicitar NC / Anulación
                       </button>
-                    )}
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -419,6 +480,11 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
           </table>
         </div>
       </div>
+
+      {/* Vista imprimible del comprobante recién emitido o reimpreso */}
+      {comprobanteActual && (
+        <ComprobanteVista comprobante={comprobanteActual} onClose={() => setComprobanteActual(null)} />
+      )}
 
       {/* Modal Registro Cliente */}
       {showRegisterModal && (

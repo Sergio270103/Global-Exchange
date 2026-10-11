@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     'operaciones',
     'cajas',
     'alertas',
+    'comprobantes',
 ]
 
 MIDDLEWARE = [

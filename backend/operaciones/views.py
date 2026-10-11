@@ -37,6 +37,7 @@ from rest_framework.response import Response
 
 from billeteras.models import Billetera, Movimiento
 from clientes.models import Cliente, ClienteUsuario, Comision
+from clientes.permisos import es_cajero
 from cotizaciones.models import Cotizacion
 from monedas.models import Moneda
 from monedas.permisos import es_admin
@@ -60,6 +61,9 @@ RESULTADO_COTIZACION_CAMBIADA = 'COTIZACION_CAMBIADA'
 RESULTADO_FONDOS_INSUFICIENTES = 'FONDOS_INSUFICIENTES'
 ERROR_FONDOS = 'Fondos insuficientes en la billetera origen. La operación fue cancelada.'
 METODO_BILLETERA = 'wallet'
+#: Pago en efectivo en ventanilla (PI-42): sin billeteras ni cuentas,
+#: solo para el cajero operando en nombre del cliente presencial.
+METODO_EFECTIVO = 'efectivo'
 
 
 class ErrorCotizacion(Exception):
@@ -110,6 +114,19 @@ def _cliente_operable(cliente: Cliente, sub: str) -> bool:
     """Cliente activo y asociado al usuario Keycloak."""
     asociado = ClienteUsuario.objects.filter(cliente=cliente, keycloak_id=sub).exists()
     return bool(cliente.activo and asociado)
+
+
+def _puede_operar_por(cliente: Cliente, usuario) -> bool:
+    """¿Puede el solicitante operar en nombre del cliente? (PI-42).
+
+    Además de la asociación normal, el cajero puede operar por
+    cualquier cliente activo (ventanilla presencial): la operación
+    queda a nombre del cliente y firmada por el cajero.
+    """
+    sub = getattr(usuario, 'id', '') or ''
+    if _cliente_operable(cliente, sub):
+        return True
+    return bool(es_cajero(usuario) and cliente.activo)
 
 
 def _porcentaje_ajuste(cliente: Cliente) -> Decimal:
@@ -295,9 +312,15 @@ class OperacionViewSet(viewsets.ModelViewSet):
         # Seguridad (PI-65): un usuario ve solo lo de sus clientes asociados,
         # aunque llame a la API sin ?mine=1. Aplica también al detalle
         # GET /operaciones/{id}/ (una operación ajena da 404).
+        # PI-42: el cajero además ve las que él mismo creó en ventanilla.
         solo_propias = params.get('mine') in ('1', 'true', 'si', 'sí')
         if solo_propias or not _es_personal_autorizado(self.request.user):
-            qs = qs.filter(cliente_id__in=_clientes_del_usuario(self.request))
+            if es_cajero(self.request.user):
+                qs = qs.filter(
+                    Q(cliente_id__in=_clientes_del_usuario(self.request))
+                    | Q(usuario_keycloak_id=_sub(self.request)))
+            else:
+                qs = qs.filter(cliente_id__in=_clientes_del_usuario(self.request))
 
         cliente = params.get('cliente')
         if cliente:
@@ -433,14 +456,20 @@ class OperacionViewSet(viewsets.ModelViewSet):
         monto_div = Decimal(str(datos['monto_divisa']))
         metodo_pago = str(datos.get('metodo_pago') or '').strip().lower()[:24]
 
-        # Cliente + asociación Keycloak.
+        # Cliente + asociación Keycloak (o cajero en ventanilla, PI-42).
         sub = _sub(request)
         try:
             cliente = Cliente.objects.get(id=datos['cliente'])
         except Cliente.DoesNotExist:
             return Response({'detail': ERROR_CLIENTE}, status=status.HTTP_400_BAD_REQUEST)
-        if not _cliente_operable(cliente, sub):
+        if not _puede_operar_por(cliente, request.user):
             return Response({'detail': ERROR_CLIENTE}, status=status.HTTP_400_BAD_REQUEST)
+
+        es_efectivo = metodo_pago == METODO_EFECTIVO
+        if es_efectivo and not es_cajero(request.user):
+            return Response(
+                {'detail': 'El pago en efectivo es solo en ventanilla.'},
+                status=status.HTTP_400_BAD_REQUEST)
 
         try:
             cotizacion = _cotizar(
@@ -451,8 +480,14 @@ class OperacionViewSet(viewsets.ModelViewSet):
 
         # PI-66: vinculación de billetera destino y cuenta origen.
         # Solo registro: los fondos se mueven al confirmar (fuera de PI-66).
+        # En efectivo (PI-42) no hay acreditación digital: el cliente
+        # recibe/paga billetes físicos en ventanilla.
         billetera_destino = None
         if datos.get('billetera_destino') is not None:
+            if es_efectivo:
+                return Response(
+                    {'detail': 'Con pago en efectivo no se usan billeteras.'},
+                    status=status.HTTP_400_BAD_REQUEST)
             try:
                 billetera_destino = Billetera.objects.select_related('moneda').get(
                     pk=datos['billetera_destino'])
@@ -471,10 +506,16 @@ class OperacionViewSet(viewsets.ModelViewSet):
         else:
             # PI-73: si no se eligió, se acredita siempre en la billetera
             # del cliente en la moneda destino (se crea en cero si no existe).
-            billetera_destino, _ = Billetera.objects.get_or_create(
-                cliente=cliente, moneda=cotizacion['moneda_destino'])
+            # En efectivo no se crea ni se acredita nada digital.
+            if not es_efectivo:
+                billetera_destino, _ = Billetera.objects.get_or_create(
+                    cliente=cliente, moneda=cotizacion['moneda_destino'])
         cuenta_origen = None
         if datos.get('cuenta_origen') is not None:
+            if es_efectivo:
+                return Response(
+                    {'detail': 'Con pago en efectivo no se usan cuentas.'},
+                    status=status.HTTP_400_BAD_REQUEST)
             # La cuenta bancaria es el origen de la transferencia en la compra.
             # No tiene saldo en el sistema (cuenta externa), así que no puede
             # ser origen de una venta: esa se debita de la billetera.
@@ -500,9 +541,12 @@ class OperacionViewSet(viewsets.ModelViewSet):
         # PI-66c: billetera origen con validación de fondos desde el alta.
         # Con pasarela (Stripe) no hay débito interno: la pasarela es el
         # origen de los fondos, así que no se usa ni se crea billetera.
+        # En efectivo tampoco: el cliente entrega billetes físicos.
         es_stripe = metodo_pago in settings.STRIPE_METODOS
         billetera_origen = None
-        if datos.get('billetera_origen') is not None:
+        if es_efectivo:
+            pass
+        elif datos.get('billetera_origen') is not None:
             if es_stripe:
                 return Response(
                     {'detail': 'Con pago por pasarela no se usa billetera origen.'},
@@ -569,7 +613,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
             except Operacion.DoesNotExist:
                 return Response({'detail': 'La operación no existe.'}, status=status.HTTP_404_NOT_FOUND)
 
-            if not _cliente_operable(op.cliente, sub):
+            if not _puede_operar_por(op.cliente, request.user):
                 return Response({'detail': ERROR_CLIENTE}, status=status.HTTP_400_BAD_REQUEST)
             if op.estado != Operacion.ESTADO_PENDIENTE:
                 return Response(

@@ -70,3 +70,9 @@ Asistente: Muse Spark (opencode). Sin commits ni push, solo trabajo local.
 - Endpoints api/alertas/ (CRUD solo-mias + historial/); evaluacion en cotizaciones perform_create (supera=venta, baja=compra; send_mail consola en dev).
 - 12 tests nuevos; suite total 167/167 OK (incl. PI-43/44/78/79 de companeros). Sin push.
 
+
+## PI-42 comprobante interno (2026-10-11, rama feature/PI-42)
+- Nueva app comprobantes: Comprobante (numero unico CPB-000123, foto inmutable, OneToOne con operacion).
+- Cajero opera sin asociacion (clientes activos) + metodo efectivo sin billeteras; ve sus operaciones creadas.
+- 8 tests nuevos; suite total 205/205 OK. Sin push.
+
