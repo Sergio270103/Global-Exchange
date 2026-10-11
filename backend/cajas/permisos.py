@@ -35,7 +35,12 @@ class PersonalCaja(BasePermission):
     message = 'Solo el cajero o un administrador pueden acceder a las cajas.'
 
     #: Acciones que el cajero puede usar aunque escriban (POST).
-    ACCIONES_CAJERO = ('saldo', 'movimientos', 'arqueos', 'cerrar')
+    #: ``cotizar`` y ``operacion_presencial`` son la operación cambiaria
+    #: presencial del cajero (PI-75).
+    ACCIONES_CAJERO = (
+        'saldo', 'movimientos', 'arqueos', 'cerrar', 'cotizar',
+        'operacion_presencial',
+    )
 
     def has_permission(self, request, view) -> bool:
         usuario = request.user

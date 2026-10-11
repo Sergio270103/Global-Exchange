@@ -245,7 +245,8 @@ class AnulacionTest(APITestCase):
         self.assertEqual(usd_desp, usd_antes + comp.monto_recibido)
         movs = MovimientoCaja.objects.filter(caja=self.caja).order_by('id')
         self.assertEqual(movs.count(), 2)
-        self.assertEqual(movs[0].tipo, 'RETIRO')
+        self.assertEqual(movs[0].tipo, 'INGRESO')
+        self.assertEqual(movs[1].tipo, 'RETIRO')
         self.assertIn(f'Reversa {comp.numero}', movs[0].observacion)
 
     def test_admin_tambien_anula(self):
@@ -319,7 +320,7 @@ class AnulacionTest(APITestCase):
         self.assertEqual(movs[0].tipo, 'CREDITO')
         self.assertEqual(movs[1].tipo, 'DEBITO')
 
-    def test_no_anula_comprobante_no_efectivo(self):
+    def test_no_anula_medio_no_presencial(self):
         comp = self._emitido()
         comp.metodo_pago = 'transfer'
         comp.save(update_fields=['metodo_pago'])
@@ -327,3 +328,24 @@ class AnulacionTest(APITestCase):
         self.assertEqual(resp.status_code, 400)
         comp.refresh_from_db()
         self.assertEqual(comp.estado, 'emitido')
+
+    def test_anula_tarjeta_revierte_solo_la_salida(self):
+        from cajas.models import MovimientoCaja, SaldoCaja
+        comp = self._emitido()
+        comp.metodo_pago = 'tarjeta'
+        comp.save(update_fields=['metodo_pago'])
+        pyg_antes = SaldoCaja.objects.get(caja=self.caja, moneda=self.pyg).monto
+        usd_antes = SaldoCaja.objects.get(caja=self.caja, moneda=self.usd).monto
+        resp = self._anular(self.cajero, comp.pk)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        # Con tarjeta nada entró: solo vuelve lo entregado (USD).
+        movs = MovimientoCaja.objects.filter(caja=self.caja).order_by('id')
+        self.assertEqual(movs.count(), 1)
+        self.assertEqual(movs[0].tipo, 'INGRESO')
+        self.assertEqual(
+            SaldoCaja.objects.get(caja=self.caja, moneda=self.usd).monto,
+            usd_antes + comp.monto_recibido)
+        self.assertEqual(
+            SaldoCaja.objects.get(caja=self.caja, moneda=self.pyg).monto, pyg_antes)
+        op = Operacion.objects.get(pk=comp.operacion_id)
+        self.assertEqual(op.estado, 'CANCELADA')

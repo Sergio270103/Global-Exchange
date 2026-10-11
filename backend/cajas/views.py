@@ -14,6 +14,11 @@
   de aperturas y cierres (PI-79).
 - ``POST /api/cajas/{id}/cerrar/`` cierre con el recuento final de cada moneda;
   el efectivo se devuelve a tesorería (PI-79).
+- ``POST /api/cajas/{id}/cotizar/`` desglose de la operación presencial antes de
+  confirmar, sin efectos (PI-75).
+- ``POST /api/cajas/{id}/operacion/`` ejecuta la operación cambiaria presencial:
+  crea la operación, mueve el efectivo de la caja y emite el comprobante
+  interno, todo en una transacción (PI-75 + PI-42).
 - ``GET /api/denominaciones/?moneda=&activas=1`` catálogo de billetes (lo usa
   el formulario de entregas); escritura solo admin.
 - ``GET|POST /api/entregas/`` entregas de billetes a una caja (PI-43, RF57).
@@ -24,23 +29,34 @@
 - ``POST /api/entregas/{id}/cancelar/`` el admin anula una pendiente.
 """
 
+from decimal import Decimal
+
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 
+from monedas.models import Moneda
+from operaciones.serializers import OperacionPublicSerializer
+
 from .models import ArqueoCaja, Caja, Denominacion, EntregaBilletes, MovimientoCaja, TurnoCaja
 from .servicios import (
-    cancelar_entrega, cerrar_caja, confirmar_entrega, crear_entrega,
-    rechazar_entrega, registrar_arqueo, registrar_movimiento, saldo_por_moneda,
-    turno_abierto,
+    CajaCerrada, SaldoInsuficiente, cancelar_entrega, cerrar_caja, confirmar_entrega,
+    crear_entrega, rechazar_entrega, registrar_arqueo, registrar_movimiento,
+    saldo_por_moneda, turno_abierto,
 )
 from .permisos import PermisoEntregas, PersonalCaja
 from .serializers import (
-    ArqueoSerializer, CajaSerializer, DenominacionSerializer, EntregaSerializer,
-    MotivoSerializer, MovimientoSerializer, NuevaEntregaSerializer,
-    NuevoArqueoSerializer, NuevoMovimientoSerializer, TurnoSerializer,
+    ArqueoSerializer, CajaSerializer, CotizacionVentanillaSerializer,
+    DenominacionSerializer, EntregaSerializer, MotivoSerializer,
+    MovimientoSerializer, NuevaEntregaSerializer, NuevoArqueoSerializer,
+    NuevoMovimientoSerializer, OperacionPresencialSerializer, TurnoSerializer,
+)
+from comprobantes.serializers import ComprobanteSerializer
+from .servicios_operacion import (
+    MEDIO_EFECTIVO, MEDIOS_PAGO, cotizar_ventanilla, registrar_operacion_presencial,
+    saldo_disponible,
 )
 
 
@@ -71,6 +87,37 @@ def _limite(request) -> int:
         return LIMITE_HISTORIAL
 
 
+def emitir_comprobante_presencial(operacion, sub: str, nombre: str):
+    """Emite el comprobante interno de una operación presencial (PI-42).
+
+    Va dentro de la misma transacción de la operación: si el comprobante no
+    se puede guardar, la operación tampoco.
+    """
+    from comprobantes.models import Comprobante
+
+    if hasattr(operacion, 'comprobante'):
+        return ComprobanteSerializer(operacion.comprobante).data
+    cliente = operacion.cliente
+    comprobante = Comprobante.objects.create(
+        operacion=operacion,
+        cliente_nombre=(cliente.nombre_completo or str(cliente))[:200],
+        cliente_documento=cliente.documento or '',
+        tipo_operacion=operacion.tipo_operacion,
+        moneda_origen_codigo=operacion.moneda_origen.codigo,
+        moneda_destino_codigo=operacion.moneda_destino.codigo,
+        monto_enviado=operacion.monto_enviado,
+        monto_recibido=operacion.monto_recibido,
+        tasa_origen=operacion.tasa_origen,
+        tasa_destino=operacion.tasa_destino,
+        monto_comision=operacion.monto_comision,
+        metodo_pago=operacion.metodo_pago,
+        fecha_operacion=operacion.fecha_confirmacion or operacion.fecha_creacion,
+        cajero_sub=sub[:160],
+        cajero_nombre=nombre[:160],
+    )
+    return ComprobanteSerializer(comprobante).data
+
+
 class CajaViewSet(viewsets.ModelViewSet):
     """Control de cajas y saldos por divisa.
 
@@ -84,6 +131,11 @@ class CajaViewSet(viewsets.ModelViewSet):
     * ``GET    /api/cajas/{id}/turno/`` estado del turno actual
     * ``GET    /api/cajas/{id}/turnos/`` historial de aperturas y cierres (PI-79)
     * ``POST   /api/cajas/{id}/cerrar/`` cierre con recuento final (PI-79)
+    * ``POST   /api/cajas/{id}/cotizar/`` desglose previo de la operación
+      presencial (PI-75), sin efectos sobre caja ni operación
+    * ``POST   /api/cajas/{id}/operacion/`` ejecuta la operación cambiaria
+      presencial: crea la operación, mueve el efectivo y emite el
+      comprobante (PI-75 + PI-42)
     """
 
     queryset = Caja.objects.all()
@@ -124,6 +176,88 @@ class CajaViewSet(viewsets.ModelViewSet):
               .select_related('caja', 'arqueo_cierre')
               .prefetch_related('arqueo_cierre__detalle__moneda'))
         return Response(TurnoSerializer(qs[:_limite(request)], many=True).data)
+
+    # ------------------------------------------------------------------
+    # Operación cambiaria presencial (PI-75)
+    # ------------------------------------------------------------------
+    @action(detail=True, methods=['post'], url_path='cotizar')
+    def cotizar(self, request, pk=None):
+        """Desglose de la operación antes de confirmar (PI-75).
+
+        No crea nada: solo devuelve la cotización vigente y los montos, para
+        que el cajero le muestre el precio al cliente. También informa
+        ``caja_abierta`` y ``saldisponible`` en la divisa a entregar, para
+        avisar antes de intentar ejecutar.
+        """
+        caja = self.get_object()
+        entrada = CotizacionVentanillaSerializer(data=request.data)
+        if not entrada.is_valid():
+            return Response(entrada.errors, status=status.HTTP_400_BAD_REQUEST)
+        datos = entrada.validated_data
+        try:
+            desglose = cotizar_ventanilla(
+                cliente=datos['cliente'],
+                tipo_operacion=datos['tipo_operacion'],
+                moneda=datos['moneda'],
+                monto_divisa=datos['monto_divisa'],
+                moneda_contraparte=datos.get('moneda_contraparte') or 'PYG',
+            )
+        except DjangoValidationError as exc:
+            return Response({'detail': _mensaje(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        destino = Moneda.objects.get(pk=desglose['moneda_destino'])
+        abierto = turno_abierto(caja) is not None
+        disponible = saldo_disponible(caja, destino)
+        return Response({
+            **desglose,
+            'caja_abierta': abierto,
+            'saldo_disponible': f'{disponible.normalize():f}',
+            'saldo_suficiente': disponible >= Decimal(desglose['monto_recibido']),
+        })
+
+    @action(detail=True, methods=['post'], url_path='operacion')
+    def operacion_presencial(self, request, pk=None):
+        """Ejecuta la operación cambiaria presencial (PI-75).
+
+        Todo en una sola transacción: crea la operación como PAGADA (en
+        ventanilla el pago y la entrega son inmediatos), registra el retiro
+        de la divisa que el cliente recibe y, si paga en efectivo, el
+        ingreso de la que trae. Con tarjeta o transferencia la caja solo
+        registra la salida. Si el saldo no alcanza no queda nada registrado.
+        """
+        caja = self.get_object()
+        entrada = OperacionPresencialSerializer(data=request.data)
+        if not entrada.is_valid():
+            return Response(entrada.errors, status=status.HTTP_400_BAD_REQUEST)
+        datos = entrada.validated_data
+        sub, nombre = _usuario(request)
+        try:
+            operacion, movimientos = registrar_operacion_presencial(
+                caja=caja,
+                cliente=datos['cliente'],
+                tipo_operacion=datos['tipo_operacion'],
+                moneda=datos['moneda'],
+                monto_divisa=datos['monto_divisa'],
+                moneda_contraparte=datos.get('moneda_contraparte') or 'PYG',
+                medio_pago=datos['medio_pago'],
+                usuario_id=sub,
+                usuario_nombre=nombre,
+                observacion=datos.get('observacion') or '',
+            )
+        except CajaCerrada as exc:
+            return Response({'detail': _mensaje(exc)}, status=status.HTTP_409_CONFLICT)
+        except SaldoInsuficiente as exc:
+            return Response({'detail': _mensaje(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except DjangoValidationError as exc:
+            return Response({'detail': _mensaje(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        comprobante = emitir_comprobante_presencial(operacion, sub, nombre)
+        return Response({
+            'operacion': OperacionPublicSerializer(operacion).data,
+            'movimientos': MovimientoSerializer(movimientos, many=True).data,
+            'comprobante': comprobante,
+            'saldo': saldo_por_moneda(caja),
+        }, status=status.HTTP_201_CREATED)
 
     @action(detail=True, methods=['post'])
     def cerrar(self, request, pk=None):

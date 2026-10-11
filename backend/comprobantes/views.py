@@ -128,16 +128,21 @@ class ComprobanteViewSet(viewsets.ModelViewSet):
         """Anula el comprobante revirtiendo caja y billeteras.
 
         Solo el cajero que lo emitió o un administrador, y solo para
-        operaciones en efectivo (las de pasarela no tocan la caja).
-        En una transacción atómica: registra el par inverso en la
-        primera caja activa (``RETIRO`` de lo ingresado + ``INGRESO``
-        de lo entregado), devuelve los saldos de billetera movidos al
+        operaciones presenciales (efectivo, tarjeta o transferencia: las
+        de pasarela o billetera no tocan la caja).
+        En una transacción atómica: registra la reversa en la primera
+        caja activa (siempre el ``INGRESO`` de lo entregado; el
+        ``RETIRO`` de lo ingresado solo si pagó en efectivo, que es lo
+        único que entró), devuelve los saldos de billetera movidos al
         confirmar y pasa la operación a ``CANCELADA`` con motivo
         ``ANULADA``. Todo o nada: caja cerrada, saldo insuficiente en
         caja o en billetera destino → 400 sin tocar nada.
         Cuerpo opcional: ``{"motivo": "..."}``.
         """
         from billeteras.models import Billetera, Movimiento
+
+        #: Medios cuya reversa toca la caja (ver PI-75 en cajas).
+        MEDIOS_ANULABLES = ('efectivo', 'tarjeta', 'transferencia')
 
         comp = self.get_object()
         if comp.estado != Comprobante.ESTADO_EMITIDO:
@@ -152,9 +157,9 @@ class ComprobanteViewSet(viewsets.ModelViewSet):
             return Response(
                 {'detail': 'No podés anular este comprobante.'},
                 status=status.HTTP_403_FORBIDDEN)
-        if comp.metodo_pago != 'efectivo':
+        if comp.metodo_pago not in MEDIOS_ANULABLES:
             return Response(
-                {'detail': 'Solo se anulan comprobantes de operaciones en efectivo.'},
+                {'detail': 'Solo se anulan comprobantes de operaciones presenciales.'},
                 status=status.HTTP_400_BAD_REQUEST)
         motivo = ''
         if isinstance(request.data, dict):
@@ -187,16 +192,20 @@ class ComprobanteViewSet(viewsets.ModelViewSet):
                 if op.estado != Operacion.ESTADO_PAGADA:
                     raise DjangoValidationError(
                         'Solo se anula el comprobante de una operación pagada.')
-                registrar_movimiento(
-                    caja=caja, tipo=MovimientoCaja.TIPO_RETIRO,
-                    moneda=moneda_origen, monto=comp.monto_enviado,
-                    usuario_id=sub, usuario_nombre=nombre, observacion=obs,
-                )
+                # Reversa de lo que la operación presencial movió en caja:
+                # siempre vuelve lo entregado; lo ingresado solo si pagó
+                # en efectivo (con tarjeta o transferencia nada entró).
                 registrar_movimiento(
                     caja=caja, tipo=MovimientoCaja.TIPO_INGRESO,
                     moneda=moneda_destino, monto=comp.monto_recibido,
                     usuario_id=sub, usuario_nombre=nombre, observacion=obs,
                 )
+                if comp.metodo_pago == 'efectivo':
+                    registrar_movimiento(
+                        caja=caja, tipo=MovimientoCaja.TIPO_RETIRO,
+                        moneda=moneda_origen, monto=comp.monto_enviado,
+                        usuario_id=sub, usuario_nombre=nombre, observacion=obs,
+                    )
                 # Revierte las billeteras movidas al confirmar.
                 if op.billetera_origen_id:
                     origen = Billetera.objects.select_for_update().get(
