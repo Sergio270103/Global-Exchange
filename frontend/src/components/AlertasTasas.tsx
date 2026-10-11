@@ -157,6 +157,8 @@ export default function AlertasTasas() {
             <input
               aria-label="Umbral objetivo"
               type="number"
+              inputMode="decimal"
+              step="any"
               min="0"
               placeholder="Ej. 7500"
               value={umbral}
@@ -197,6 +199,8 @@ export default function AlertasTasas() {
                     <input
                       aria-label="Nuevo umbral"
                       type="number"
+                      inputMode="decimal"
+                      step="any"
                       min="0"
                       value={umbralEdicion}
                       onChange={e => setUmbralEdicion(e.target.value)}
