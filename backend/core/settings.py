@@ -53,6 +53,7 @@ INSTALLED_APPS = [
     'billeteras',
     'operaciones',
     'cajas',
+    'alertas',
 ]
 
 MIDDLEWARE = [

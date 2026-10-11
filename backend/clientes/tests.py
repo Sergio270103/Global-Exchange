@@ -77,6 +77,112 @@ class ClienteViewSetTest(APITestCase):
         self.assertEqual(resp.data[0]['cliente'], self.c.pk)
 
 
+class ClientePresencialTest(APITestCase):
+    """PI-45: el cajero busca por documento y registra al cliente en ventanilla."""
+
+    def setUp(self):
+        self.existente = Cliente.objects.create(
+            nombre='Ana', apellido='Barrios', documento='4589201',
+            email='ana@x.com', telefono='0981000000',
+        )
+        self.factory = APIRequestFactory()
+
+    def _buscar(self, documento, roles=('cashier',)):
+        req = self.factory.get(f'/api/clientes/buscar-documento/?documento={documento}')
+        force_authenticate(req, user=UsuarioFake(roles=roles))
+        return ClienteViewSet.as_view({'get': 'buscar_documento'})(req)
+
+    def _registrar(self, datos, roles=('cashier',)):
+        req = self.factory.post('/api/clientes/presencial/', datos, format='json')
+        force_authenticate(req, user=UsuarioFake(roles=roles))
+        return ClienteViewSet.as_view({'post': 'presencial'})(req)
+
+    def test_cajero_busca_por_documento_y_ve_sus_datos(self):
+        res = self._buscar('4589201')
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.data['encontrado'])
+        self.assertEqual(res.data['cliente']['nombre'], 'Ana')
+        self.assertEqual(res.data['cliente']['apellido'], 'Barrios')
+        self.assertEqual(res.data['cliente']['tipo_display'], 'Persona física')
+
+    def test_busqueda_ignora_espacios(self):
+        res = self._buscar(' 4589201 ')
+        self.assertTrue(res.data['encontrado'])
+        self.assertEqual(res.data['cliente']['documento'], '4589201')
+
+    def test_documento_inexistente_informa_que_no_existe(self):
+        res = self._buscar('0000000')
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data['encontrado'])
+        self.assertIsNone(res.data['cliente'])
+
+    def test_documento_vacio_es_400(self):
+        self.assertEqual(self._buscar('').status_code, 400)
+
+    def test_registra_cliente_presencial_y_lo_devuelve(self):
+        res = self._registrar({
+            'nombre': 'Pedro', 'apellido': 'Test', 'documento': '9999999',
+            'email': 'pedro@x.com', 'telefono': '0981000000', 'tipo': 'FISICA',
+        })
+        self.assertEqual(res.status_code, 201, res.data)
+        self.assertEqual(res.data['nombre_completo'], 'Pedro Test')
+        self.assertTrue(Cliente.objects.filter(documento='9999999').exists())
+
+    def test_documento_duplicado_se_rechaza(self):
+        res = self._registrar({
+            'nombre': 'Otro', 'apellido': 'Nombre', 'documento': '4589201',
+            'email': 'otro@x.com', 'telefono': '0981000000', 'tipo': 'FISICA',
+        })
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('documento', res.data)
+        self.assertEqual(Cliente.objects.filter(documento='4589201').count(), 1)
+
+    def test_avisa_datos_obligatorios_faltantes(self):
+        res = self._registrar({'nombre': 'Solo', 'tipo': 'FISICA'})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('documento', res.data)
+        self.assertIn('email', res.data)
+
+    def test_persona_fisica_exige_apellido(self):
+        res = self._registrar({
+            'nombre': 'Sin', 'documento': '6666666', 'email': 's@x.com',
+            'telefono': '0981000000', 'tipo': 'FISICA',
+        })
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('apellido', res.data)
+
+    def test_persona_fisica_exige_telefono(self):
+        res = self._registrar({
+            'nombre': 'Sin', 'apellido': 'Tel', 'documento': '7777777',
+            'email': 'sin@x.com', 'tipo': 'FISICA',
+        })
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('telefono', res.data)
+
+    def test_admin_tambien_puede_operar_ventanilla(self):
+        res = self._registrar({
+            'nombre': 'Corp', 'apellido': '', 'documento': '80-1',
+            'email': 'corp@x.com', 'telefono': '', 'tipo': 'JURIDICA',
+            'categoria': 'CORPORATIVO',
+        }, roles=('admin',))
+        self.assertEqual(res.status_code, 201, res.data)
+
+    def test_usuario_comun_no_puede_registrar_presencial(self):
+        res = self._registrar({
+            'nombre': 'Ana', 'apellido': 'Barrios', 'documento': '1111111',
+            'email': 'a@x.com', 'telefono': '0981000000', 'tipo': 'FISICA',
+        }, roles=('user',))
+        self.assertEqual(res.status_code, 403)
+
+    def test_alta_normal_sigue_siendo_solo_admin(self):
+        req = self.factory.post('/api/clientes/', {
+            'nombre': 'PorCatalogo', 'documento': '1231234', 'email': 'cat@x.com',
+        }, format='json')
+        force_authenticate(req, user=UsuarioFake(roles=('cashier',)))
+        res = ClienteViewSet.as_view({'post': 'create'})(req)
+        self.assertEqual(res.status_code, 403)
+
+
 class ComisionTest(APITestCase):
     def test_categoria_unica_y_simulador(self):
         Comision.objects.update_or_create(

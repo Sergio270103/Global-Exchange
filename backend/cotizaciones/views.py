@@ -47,6 +47,9 @@ class CotizacionViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         usuario = getattr(self.request.user, 'username', '') or str(self.request.user)
         serializer.save(creado_por=usuario[:160])
+        # PI-38: una tasa nueva puede disparar alertas configuradas.
+        from alertas.servicios import evaluar_alertas
+        evaluar_alertas(serializer.instance)
 
     @action(detail=False, methods=['get'], url_path='vigentes')
     def vigentes(self, request):
