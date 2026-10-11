@@ -3,7 +3,6 @@
 from decimal import Decimal
 from unittest.mock import patch
 
-import stripe
 from django.test import TestCase
 from rest_framework.test import APIRequestFactory, force_authenticate
 
@@ -465,34 +464,11 @@ class DebitoTests(TestCase):
         self.assertEqual(self.billetera_usd.saldo, Decimal('600'))
 
     def test_compra_por_transferencia_no_toca_billetera_pyg(self):
-        """Stripe: la transferencia se cobra por pasarela; no debita la billetera."""
-        from pagos.views import webhook_stripe
-
+        """Transferencia es confirmación directa; no debita la billetera."""
         res = self._crear_compra({'metodo_pago': 'transfer'})
         op = Operacion.objects.get(pk=res.data['id'])
         self.assertIsNone(op.billetera_origen_id)
-        self.assertEqual(op.estado, Operacion.ESTADO_PENDIENTE)
-
-        vista_pago = OperacionViewSet.as_view({'post': 'iniciar_pago'})
-        sesion = {'id': 'cs_test_1', 'url': 'https://checkout.stripe.com/pay/cs_test_1'}
-        with patch('stripe.checkout.Session.create', return_value=dict(sesion)):
-            with self.settings(STRIPE_SECRET_KEY='sk_test_x'):
-                req = self.factory.post(
-                    f'/api/operaciones/{op.pk}/iniciar-pago/', {}, format='json')
-                res_pago = _auth(vista_pago, req, pk=op.pk)
-        self.assertEqual(res_pago.status_code, 200, res_pago.data)
-
-        evento = {'type': 'checkout.session.completed',
-                  'data': {'object': {'id': 'cs_test_1', 'payment_status': 'paid'}}}
-        req_wh = self.factory.post(
-            '/api/payments/webhook/', data='{}', content_type='application/json',
-            HTTP_STRIPE_SIGNATURE='t=1,v1=x')
-        real = stripe.Event.construct_from(evento, key='sk_test_x')
-        with patch('stripe.Webhook.construct_event', return_value=real):
-            res_wh = webhook_stripe(req_wh)
-        self.assertEqual(res_wh.status_code, 200)
-        op.refresh_from_db()
-        self.assertEqual(op.estado, Operacion.ESTADO_PAGADA)
+        self.assertEqual(self._confirmar(op).data['resultado'], 'CONFIRMADA')
         self.billetera_pyg.refresh_from_db()
         self.billetera_usd.refresh_from_db()
         self.assertEqual(self.billetera_pyg.saldo, Decimal('0'))

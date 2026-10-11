@@ -15,7 +15,7 @@
  */
 import { useEffect, useState } from 'react'
 import { type AuthUser, type Page, type ClienteActivo } from '@/types'
-import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { ComposedChart, Line, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import CashierDashboard from './cashier/CashierDashboard'
 import AdminDashboard from './admin/AdminDashboard'
 import OperacionesRecientes from '@/components/OperacionesRecientes'
@@ -55,16 +55,46 @@ function fechaCorta(iso: string): string {
     : d.toLocaleDateString('es-PY', { day: '2-digit', month: 'short', year: 'numeric' })
 }
 
-/** Claves `AAAA-M` y etiquetas de los últimos N meses (incluye el actual). */
-function clavesUltimosMeses(n: number): { key: string; label: string }[] {
-  const salida: { key: string; label: string }[] = []
+/** Punto del gráfico: una operación PAGADA en el rango. */
+export interface PuntoOperacion {
+  /** Secuencia cronológica (la más antigua es 1). */
+  seq: number
+  /** Monto neto convertido a PYG. */
+  pyg: number
+  tipo: 'COMPRA' | 'VENTA'
+  fecha: string
+}
+
+/**
+ * Construye los puntos del gráfico de dispersión por operación.
+ *
+ * Filtra por fecha, ordena cronológicamente y numera 1..N; convierte
+ * cada monto a PYG (tasa congelada con respaldo a la vigente) y omite
+ * las operaciones sin tasa disponible.
+ */
+export function puntosPorOperacion(
+  pagadas: Operacion[],
+  desde: Date,
+  ventas: Map<string, number>,
+): PuntoOperacion[] {
+  return pagadas
+    .filter(o => {
+      const d = new Date(o.fecha_creacion)
+      return !Number.isNaN(d.getTime()) && d >= desde
+    })
+    .sort((a, b) => new Date(a.fecha_creacion).getTime() - new Date(b.fecha_creacion).getTime())
+    .reduce<PuntoOperacion[]>((acc, o) => {
+      const pyg = pygNeto(o, ventas)
+      if (pyg == null) return acc
+      acc.push({ seq: acc.length + 1, pyg: Math.round(pyg), tipo: o.tipo_operacion, fecha: o.fecha_creacion })
+      return acc
+    }, [])
+}
+
+/** Inicio del rango (primer día del mes actual menos N-1 meses). */
+function inicioRango(meses: number): Date {
   const ahora = new Date()
-  for (let i = n - 1; i >= 0; i--) {
-    const d = new Date(ahora.getFullYear(), ahora.getMonth() - i, 1)
-    const corto = d.toLocaleDateString('es', { month: 'short' }).replace('.', '')
-    salida.push({ key: `${d.getFullYear()}-${d.getMonth()}`, label: corto.charAt(0).toUpperCase() + corto.slice(1) })
-  }
-  return salida
+  return new Date(ahora.getFullYear(), ahora.getMonth() - (meses - 1), 1)
 }
 
 /**
@@ -136,21 +166,10 @@ function UserDashboard({ auth, currentClient, navigate }: DashboardProps) {
   }, 0)
 
   const ultimas = ops.slice(0, 2)
-  const meses = clavesUltimosMeses(Number(rango))
-  const datosGrafico = meses.map(m => {
-    let compra = 0
-    let venta = 0
-    for (const o of pagadas) {
-      const d = new Date(o.fecha_creacion)
-      if (Number.isNaN(d.getTime())) continue
-      if (`${d.getFullYear()}-${d.getMonth()}` !== m.key) continue
-      const pyg = pygNeto(o, ventas)
-      if (pyg == null) continue
-      if (o.tipo_operacion === 'COMPRA') compra += pyg
-      else venta += pyg
-    }
-    return { month: m.label, Compra: Math.round(compra), Venta: Math.round(venta) }
-  })
+  const desde = inicioRango(Number(rango))
+  const puntos = puntosPorOperacion(pagadas, desde, ventas)
+  const comprasPts = puntos.filter(p => p.tipo === 'COMPRA')
+  const ventasPts = puntos.filter(p => p.tipo === 'VENTA')
 
   const greeting = (() => {
     const h = new Date().getHours()
@@ -252,7 +271,7 @@ function UserDashboard({ auth, currentClient, navigate }: DashboardProps) {
           <div className="flex items-center justify-between mb-6">
             <div>
               <h3 className="font-semibold text-slate-800 text-[15px]" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Evolución de operaciones</h3>
-              <p className="text-slate-400 text-[12px] mt-0.5">Suma mensual en PYG por tipo</p>
+              <p className="text-slate-400 text-[12px] mt-0.5">Monto en PYG por operación</p>
             </div>
             <select
               aria-label="Rango del gráfico"
@@ -271,29 +290,44 @@ function UserDashboard({ auth, currentClient, navigate }: DashboardProps) {
           </div>
           {cargando ? (
             <p className="py-6 text-center text-[13px] text-slate-400">Cargando operaciones…</p>
+          ) : puntos.length === 0 ? (
+            <p className="py-6 text-center text-[13px] text-slate-400">Todavía no hay operaciones en este rango.</p>
           ) : (
-            <ResponsiveContainer width="100%" height={200}>
-              <AreaChart data={datosGrafico}>
-                <defs>
-                  <linearGradient id="compraGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#10b981" stopOpacity={0.15}/>
-                    <stop offset="100%" stopColor="#10b981" stopOpacity={0}/>
-                  </linearGradient>
-                  <linearGradient id="ventaGrad" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.15}/>
-                    <stop offset="100%" stopColor="#3b82f6" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false}/>
-                <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false}/>
-                <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={v => `₲${(v/1000000).toFixed(1)}M`}/>
+            <ResponsiveContainer width="100%" height={220}>
+              <ComposedChart margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                <XAxis
+                  dataKey="seq"
+                  type="number"
+                  allowDecimals={false}
+                  tick={{ fontSize: 11, fill: '#94a3b8' }}
+                  axisLine={false}
+                  tickLine={false}
+                  domain={[1, (max: number) => max + 1]}
+                  label={{ value: 'Nº operación', position: 'insideBottomRight', offset: -2, fontSize: 11, fill: '#94a3b8' }}
+                />
+                <YAxis
+                  dataKey="pyg"
+                  type="number"
+                  tick={{ fontSize: 11, fill: '#94a3b8' }}
+                  axisLine={false}
+                  tickLine={false}
+                  tickFormatter={v => `₲${(v/1000000).toFixed(1)}M`}
+                  label={{ value: 'Monto (PYG)', angle: -90, position: 'insideLeft', fontSize: 11, fill: '#94a3b8' }}
+                />
                 <Tooltip
                   contentStyle={{ borderRadius: 10, border: '1px solid #e2e8f0', boxShadow: '0 4px 20px rgba(0,0,0,0.08)', fontSize: 12 }}
-                  formatter={(v: unknown, name: unknown) => [`₲ ${(v as number).toLocaleString('es-PY')}`, String(name)]}
+                  formatter={(v: unknown) => [`₲ ${(v as number).toLocaleString('es-PY')}`, 'Monto']}
+                  labelFormatter={(_, payload) => {
+                    const p = payload?.[0]?.payload as PuntoOperacion | undefined
+                    return p ? `Operación #${p.seq} · ${p.tipo === 'COMPRA' ? 'Compra' : 'Venta'} · ${fechaCorta(p.fecha)}` : ''
+                  }}
                 />
-                <Area type="monotone" dataKey="Compra" stroke="#10b981" strokeWidth={2} fill="url(#compraGrad)"/>
-                <Area type="monotone" dataKey="Venta" stroke="#3b82f6" strokeWidth={2} fill="url(#ventaGrad)"/>
-              </AreaChart>
+                <Line dataKey="pyg" data={comprasPts} stroke="#10b981" strokeWidth={2} dot={false} legendType="none" />
+                <Line dataKey="pyg" data={ventasPts} stroke="#3b82f6" strokeWidth={2} dot={false} legendType="none" />
+                <Scatter name="Compra" data={comprasPts} fill="#10b981" />
+                <Scatter name="Venta" data={ventasPts} fill="#3b82f6" />
+              </ComposedChart>
             </ResponsiveContainer>
           )}
         </div>

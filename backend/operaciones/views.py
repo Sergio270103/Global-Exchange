@@ -654,12 +654,14 @@ class OperacionViewSet(viewsets.ModelViewSet):
     def iniciar_pago(self, request, pk=None):
         """Crea la Checkout Session y devuelve su URL de pago.
 
-        La operación queda PENDIENTE con la cotización congelada; el
-        webhook la pasa a PAGADA al acreditarse (vale lo congelado
-        aunque llegue fuera de la ventana) o a CANCELADA con motivo
-        PAGO_FALLIDO al expirar o rechazarse.
+        Si ya hay una sesión guardada y sigue abierta, devuelve su URL
+        para retomar el pago con el mismo monto y cotización congelada.
+        La operación queda PENDIENTE; el webhook la pasa a PAGADA al
+        acreditarse (vale lo congelado aunque llegue fuera de la
+        ventana) o a CANCELADA con motivo PAGO_FALLIDO al expirar o
+        rechazarse (la sesión expira a los 30 minutos).
         """
-        from pagos.stripe_pagos import ErrorPasarela, crear_sesion_checkout
+        from pagos.stripe_pagos import ErrorPasarela, crear_sesion_checkout, sesion_abierta
 
         try:
             op = (
@@ -678,9 +680,12 @@ class OperacionViewSet(viewsets.ModelViewSet):
             )
         if op.metodo_pago not in settings.STRIPE_METODOS:
             return Response(
-                {'detail': 'Esta operación usa saldo interno; confirmala directamente.'},
+                {'detail': 'Esta operación usa confirmación directa.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        url = sesion_abierta(op.stripe_session_id)
+        if url:
+            return Response({'url': url, 'session_id': op.stripe_session_id})
         try:
             sesion = crear_sesion_checkout(op)
         except ErrorPasarela as err:

@@ -175,5 +175,6 @@ STRIPE_SECRET_KEY = os.getenv('STRIPE_SECRET_KEY', '')
 STRIPE_WEBHOOK_SECRET = os.getenv('STRIPE_WEBHOOK_SECRET', '')
 # Origen del frontend para las URLs de retorno de Checkout.
 FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173')
-# Métodos que se cobran por pasarela; 'wallet' es saldo interno.
-STRIPE_METODOS = ('transfer', 'card', 'qr')
+# Métodos que se cobran por pasarela; 'transfer' es confirmación directa
+# (sin verificación de saldo) y 'wallet' es saldo interno.
+STRIPE_METODOS = ('card',)

@@ -11,12 +11,13 @@ import { afterEach, describe, it, expect, vi } from 'vitest'
 import { act, cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
-vi.mock('@/services/operaciones', () => ({ obtenerOperacion: vi.fn() }))
+vi.mock('@/services/operaciones', () => ({ obtenerOperacion: vi.fn(), iniciarPago: vi.fn() }))
 
-import { obtenerOperacion } from '@/services/operaciones'
+import { iniciarPago, obtenerOperacion } from '@/services/operaciones'
 import RetornoPago from '@/components/RetornoPago'
 
 const obtenerMock = vi.mocked(obtenerOperacion)
+const iniciarMock = vi.mocked(iniciarPago)
 
 function operacion(estado: string, motivo = '') {
   return {
@@ -72,6 +73,24 @@ describe('RetornoPago', () => {
       const user = userEvent.setup()
       await user.click(screen.getByRole('button', { name: 'Reintentar' }))
       expect(reintentar).toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('retoma la sesión de pago abierta', async () => {
+    vi.useFakeTimers()
+    try {
+      obtenerMock.mockResolvedValue(operacion('PENDIENTE') as never)
+      iniciarMock.mockResolvedValue({ url: 'https://checkout.stripe.com/pay/cs_x', session_id: 'cs_x' })
+      render(<RetornoPago opId={1} resultado="cancelado" onVerHistorial={vi.fn()} onReintentar={vi.fn()} />)
+      for (let i = 0; i < 11; i++) {
+        await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+      }
+      vi.useRealTimers()
+      const user = userEvent.setup()
+      await user.click(await screen.findByRole('button', { name: 'Volver al pago' }))
+      expect(iniciarMock).toHaveBeenCalledWith(1)
     } finally {
       vi.useRealTimers()
     }

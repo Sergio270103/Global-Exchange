@@ -107,6 +107,46 @@ class StripePagosTests(TestCase):
         res = _auth(vista, self.factory.post(f'/api/operaciones/{op.id}/iniciar-pago/'), pk=op.pk)
         self.assertEqual(res.status_code, 400)
 
+    def test_iniciar_pago_rechaza_transferencia(self):
+        op = self._operacion(metodo='transfer')
+        vista = OperacionViewSet.as_view({'post': 'iniciar_pago'})
+        res = _auth(vista, self.factory.post(f'/api/operaciones/{op.id}/iniciar-pago/'), pk=op.pk)
+        self.assertEqual(res.status_code, 400)
+
+    @override_settings(STRIPE_SECRET_KEY='sk_test_x')
+    def test_iniciar_pago_reutiliza_sesion_abierta(self):
+        op = self._operacion()
+        op.stripe_session_id = 'cs_abierta'
+        op.save(update_fields=['stripe_session_id'])
+        vista = OperacionViewSet.as_view({'post': 'iniciar_pago'})
+        req = self.factory.post(f'/api/operaciones/{op.id}/iniciar-pago/')
+        abierta = {'id': 'cs_abierta', 'url': 'https://checkout.stripe.com/pay/cs_abierta', 'status': 'open'}
+        with patch('stripe.checkout.Session.retrieve', return_value=dict(abierta)) as ver:
+            with patch('stripe.checkout.Session.create') as crear:
+                res = _auth(vista, req, pk=op.pk)
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data['url'], abierta['url'])
+        ver.assert_called_once_with('cs_abierta')
+        crear.assert_not_called()
+
+    @override_settings(STRIPE_SECRET_KEY='sk_test_x')
+    def test_iniciar_pago_crea_nueva_si_cerro(self):
+        op = self._operacion()
+        op.stripe_session_id = 'cs_vieja'
+        op.save(update_fields=['stripe_session_id'])
+        vista = OperacionViewSet.as_view({'post': 'iniciar_pago'})
+        req = self.factory.post(f'/api/operaciones/{op.id}/iniciar-pago/')
+        cerrada = {'id': 'cs_vieja', 'status': 'complete'}
+        nueva = {'id': 'cs_nueva', 'url': 'https://checkout.stripe.com/pay/cs_nueva'}
+        with patch('stripe.checkout.Session.retrieve', return_value=dict(cerrada)):
+            with patch('stripe.checkout.Session.create', return_value=dict(nueva)) as crear:
+                res = _auth(vista, req, pk=op.pk)
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertEqual(res.data['session_id'], 'cs_nueva')
+        crear.assert_called_once()
+        op.refresh_from_db()
+        self.assertEqual(op.stripe_session_id, 'cs_nueva')
+
     def test_iniciar_pago_solo_pendiente(self):
         op = self._operacion(estado=Operacion.ESTADO_PAGADA)
         vista = OperacionViewSet.as_view({'post': 'iniciar_pago'})
