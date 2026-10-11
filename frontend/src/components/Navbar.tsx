@@ -9,8 +9,18 @@
  */
 import { useEffect, useState } from 'react'
 import { type Page, type AuthUser, type ClienteActivo } from '@/types'
-import { notifications as mockNotifications, demoClients } from '@/data/mockData'
+import { demoClients } from '@/data/mockData'
 import { misClientes } from '@/services/clientes'
+import { historialDisparos, leidasIds, marcarLeidas } from '@/services/alertas'
+
+/** Aviso real mostrado en la campanita (disparo de alerta de tasa). */
+interface Aviso {
+  id: number
+  title: string
+  message: string
+  time: string
+  read: boolean
+}
 
 /** Mapa de títulos por página de la aplicación. */
 const pageTitles: Record<string, string> = {
@@ -66,7 +76,7 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
   const [showNotifications, setShowNotifications] = useState(false)
   const [showProfile, setShowProfile] = useState(false)
   const [showClientDropdown, setShowClientDropdown] = useState(false)
-  const [notifList, setNotifList] = useState(mockNotifications)
+  const [notifList, setNotifList] = useState<Aviso[]>([])
 
   // Clientes que el usuario puede representar (RF10/RF11 + Hito
   // Operaciones). Se guardan como {id, nombre} para validar activo +
@@ -90,6 +100,24 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth.role])
 
+  // PI-38: la campanita muestra disparos reales de alertas de tasa
+  // (sin mocks). Las leídas persisten recargas (localStorage).
+  // Si la API falla, queda vacía con "Sin notificaciones".
+  useEffect(() => {
+    historialDisparos()
+      .then(disparos => {
+        const leidas = leidasIds()
+        setNotifList(disparos.map(d => ({
+          id: d.id,
+          title: `Alerta ejecutada: ${d.moneda_codigo}/PYG`,
+          message: `La tasa ${d.direccion === 'supera' ? 'alcanzó o superó' : 'bajó hasta'} ${d.tasa_alcanzada} (umbral ${d.umbral}).`,
+          time: new Date(d.creado).toLocaleString(),
+          read: leidas.includes(d.id),
+        })))
+      })
+      .catch(() => {})
+  }, [])
+
   const unread = notifList.filter(n => !n.read).length
 
   // Si está en el dashboard y el rol es cajero, muestra "Cajero" o "Panel Cajero"
@@ -97,13 +125,9 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
     ? 'Cajero'
     : pageTitles[currentPage] || 'Panel'
 
-  const markAllRead = () => setNotifList(n => n.map(x => ({ ...x, read: true })))
-
-  const notifIcon: Record<string, string> = {
-    rate: '📈',
-    transaction: '💸',
-    invoice: '📄',
-    system: '⚙️',
+  const markAllRead = () => {
+    marcarLeidas(notifList.map(n => n.id))
+    setNotifList(n => n.map(x => ({ ...x, read: true })))
   }
 
   // 👈 Se agrega la validación para mostrar 'Cajero' cuando auth.role es 'cashier'
@@ -202,12 +226,17 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
               <button onClick={markAllRead} className="text-xs text-emerald-600 hover:text-emerald-700 font-medium">Marcar todas como leídas</button>
             </div>
             <div className="max-h-72 overflow-y-auto">
+              {notifList.length === 0 && (
+                <div className="px-4 py-8 text-center text-[13px] text-slate-400 font-medium">
+                  🔔 Sin notificaciones
+                </div>
+              )}
               {notifList.slice(0, 5).map(n => (
                 <div
                   key={n.id}
                   className={`flex gap-3 px-4 py-3 border-b border-slate-50 last:border-0 hover:bg-slate-50 transition-colors ${!n.read ? 'bg-emerald-50/40' : ''}`}
                 >
-                  <div className="text-base shrink-0 mt-0.5">{notifIcon[n.type] || '🔔'}</div>
+                  <div className="text-base shrink-0 mt-0.5">🔔</div>
                   <div className="flex-1 min-w-0">
                     <div className={`text-[13px] font-semibold leading-tight ${!n.read ? 'text-slate-800' : 'text-slate-600'}`}>{n.title}</div>
                     <div className="text-[12px] text-slate-400 mt-0.5 leading-snug">{n.message}</div>

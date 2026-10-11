@@ -56,7 +56,7 @@ describe('CashierDashboard (mock local)', () => {
     renderCajero()
     await user.click(screen.getByRole('button', { name: '+ Nuevo Cliente' }))
     expect(screen.getByText('Registro de Cliente Presencial')).toBeInTheDocument()
-    const modal = screen.getByText('Registro de Cliente Presencial').closest('div.bg-white')!
+    const modal = screen.getByText('Registro de Cliente Presencial').closest('div.bg-white') as HTMLElement
     const inputs = within(modal).getAllByRole('textbox')
     await user.type(inputs[0], 'Pedro Test')
     await user.type(inputs[1], '9999999')

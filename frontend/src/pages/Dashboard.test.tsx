@@ -13,6 +13,19 @@ vi.mock('@/services/historial', async importOriginal => {
   return { ...real, listarHistorial: vi.fn().mockResolvedValue([]) }
 })
 
+// PI-38: el modal de alertas no debe aparecer en estos tests.
+vi.mock('@/services/alertas', async importOriginal => {
+  const real = await importOriginal<typeof import('@/services/alertas')>()
+  return {
+    ...real,
+    listarAlertas: vi.fn().mockResolvedValue([]),
+    crearAlerta: vi.fn(),
+    actualizarAlerta: vi.fn(),
+    eliminarAlerta: vi.fn(),
+    historialDisparos: vi.fn().mockResolvedValue([]),
+  }
+})
+
 import Dashboard from '@/pages/Dashboard'
 
 const auth = { name: 'Ana López', email: 'ana@email.com', role: 'user' as const, avatar: '' }

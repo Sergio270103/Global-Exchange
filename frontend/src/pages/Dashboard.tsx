@@ -13,6 +13,7 @@ import { wallets, exchangeRates, earningsData } from '@/data/mockData'
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import CashierDashboard from './cashier/CashierDashboard'
 import OperacionesRecientes from '@/components/OperacionesRecientes'
+import ModalAlerta from '@/components/ModalAlerta'
 
 export interface DashboardProps {
   auth: AuthUser
@@ -41,6 +42,9 @@ export default function Dashboard({ auth, currentClient, navigate }: DashboardPr
 
   return (
     <div className="space-y-6 animate-fadein">
+      {/* PI-38: aviso grande al entrar si hay alertas disparadas sin ver. */}
+      {auth.role === 'user' && <ModalAlerta navigate={navigate} />}
+      {/* Welcome */}
       {/* Welcome */}
       <div className="flex items-start justify-between">
         <div>
