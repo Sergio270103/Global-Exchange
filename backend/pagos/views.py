@@ -33,6 +33,20 @@ logger = logging.getLogger(__name__)
 
 
 class MetodoPagoViewSet(viewsets.ModelViewSet):
+    """Catálogo global de métodos de pago.
+
+    Solo administrador puede crear, editar o dar de baja lógica los métodos.
+    Los usuarios comunes solo ven los métodos activos.
+
+    Rutas:
+    * ``GET    /api/metodos-pago/``       catálogo
+    * ``POST   /api/metodos-pago/``       nuevo método (admin solo)
+    * ``GET    /api/metodos-pago/{id}/``  detalle
+    * ``PUT    /api/metodos-pago/{id}/``  reemplazo completo
+    * ``PATCH  /api/metodos-pago/{id}/``  edición parcial
+    * ``DELETE /api/metodos-pago/{id}/``  baja lógica (admin solo)
+    """
+
     queryset = MetodoPago.objects.all()
     serializer_class = MetodoPagoSerializer
     permission_classes = [SoloAdminEscribe]
@@ -56,6 +70,21 @@ class MetodoPagoViewSet(viewsets.ModelViewSet):
 
 
 class CuentaBancariaViewSet(viewsets.ModelViewSet):
+    """Catálogo de cuentas bancarias del cliente.
+
+    Cualquier usuario autenticado puede listar y operar sobre sus propias
+    cuentas. Los filtros disponibles son ``?cliente=``, ``?activa=`` y
+    ``?buscar=``. La baja es lógica (marca la cuenta como inactiva).
+
+    Rutas:
+    * ``GET    /api/cuentas-bancarias/``       lista de cuentas
+    * ``POST   /api/cuentas-bancarias/``       nueva cuenta (propia o admin)
+    * ``GET    /api/cuentas-bancarias/{id}/`` detalle
+    * ``PUT    /api/cuentas-bancarias/{id}/`` reemplazo completo
+    * ``PATCH  /api/cuentas-bancarias/{id}/`` edición parcial
+    * ``POST   /api/cuentas-bancarias/{id}/`` desactivar (lógica)
+    """
+
     queryset = CuentaBancaria.objects.select_related('cliente', 'moneda').all()
     serializer_class = CuentaBancariaSerializer
     permission_classes = [IsAuthenticated]
@@ -94,6 +123,12 @@ def webhook_stripe(request):
     criptográfica del webhook. Idempotente: solo transiciona desde
     PENDIENTE y solo si el evento trae la sesión vigente guardada en
     la operación (una sesión vieja reemplazada se ignora).
+
+    Eventos manejados:
+    * ``checkout.session.completed``: pago acreditado → PAGADA.
+    * ``checkout.session.async_payment_succeeded``: pago acreditado → PAGADA.
+    * ``checkout.session.expired``: sesión expirada → CANCELADA/PAGO_FALLIDO.
+    * ``checkout.session.async_payment_failed``: fallo de pago → CANCELADA/PAGO_FALLIDO.
     """
     firma = request.headers.get('Stripe-Signature', '')
     try:

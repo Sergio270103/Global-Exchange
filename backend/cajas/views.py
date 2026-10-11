@@ -1,30 +1,27 @@
-"""Vistas del módulo de control de cajas (PI-44).
+"""Vistas del módulo de control de cajas (PI-44, PI-43, PI-78).
 
 - ``GET /api/cajas/`` cajas activas (``?todas=1`` incluye inactivas).
   Alta y edición solo admin.
-- ``GET /api/cajas/{id}/saldo/`` saldo de la caja por divisa (RF56;
-  PI-78: por total, sin detalle de billetes).
-- ``GET|POST /api/cajas/{id}/movimientos/`` historial y registro de
-  ingresos y retiros por monto; el saldo se actualiza en el mismo paso
-  (RF58). Filtros ``?moneda=`` (código o id) y ``?tipo=``.
-- ``GET|POST /api/cajas/{id}/arqueos/`` recuento de la caja: total
-  según sistema vs. total contado de cada moneda.
+- ``GET /api/cajas/{id}/saldo/`` saldo de la caja por divisa (RF56; PI-78:
+  por total, sin detalle de billetes).
+- ``GET|POST /api/cajas/{id}/movimientos/`` historial y registro de ingresos y
+  retiros por monto; el saldo se actualiza en el mismo paso (RF58). Filtros
+  ``?moneda=`` (código o id) y ``?tipo=``.
+- ``GET|POST /api/cajas/{id}/arqueos/`` recuento de la caja: total según
+  sistema vs. total contado de cada moneda.
 - ``GET /api/cajas/{id}/turno/`` ``{"turno": ...}`` con el turno abierto
-  (``null`` si la caja está cerrada) y ``GET /api/cajas/{id}/turnos/`` historial de aperturas y
-  cierres (PI-79).
-- ``POST /api/cajas/{id}/cerrar/`` cierre con el recuento final de cada
-  moneda; el efectivo se devuelve a tesorería (PI-79).
-- ``GET /api/denominaciones/?moneda=&activas=1`` catálogo de billetes
-  (lo usa el formulario de entregas); escritura solo admin.
-- ``GET|POST /api/entregas/`` entregas de billetes a una caja (PI-43,
-  RF57). El admin las registra y quedan pendientes; filtros ``?caja=`` y
-  ``?estado=``.
-- ``POST /api/entregas/{id}/confirmar/`` el cajero confirma que recibió
-  los billetes: recién ahí se suman al saldo.
+  (``null`` si la caja está cerrada) y ``GET /api/cajas/{id}/turnos/`` historial
+  de aperturas y cierres (PI-79).
+- ``POST /api/cajas/{id}/cerrar/`` cierre con el recuento final de cada moneda;
+  el efectivo se devuelve a tesorería (PI-79).
+- ``GET /api/denominaciones/?moneda=&activas=1`` catálogo de billetes (lo usa
+  el formulario de entregas); escritura solo admin.
+- ``GET|POST /api/entregas/`` entregas de billetes a una caja (PI-43, RF57).
+  El admin las registra y quedan pendientes; filtros ``?caja=`` y ``?estado=``.
+- ``POST /api/entregas/{id}/confirmar/`` el cajero confirma que recibió los
+  billetes: recién ahí se suman al saldo.
 - ``POST /api/entregas/{id}/rechazar/`` el cajero rechaza, con motivo.
 - ``POST /api/entregas/{id}/cancelar/`` el admin anula una pendiente.
-
-Movimientos, arqueos y entregas no tienen endpoints de edición ni borrado.
 """
 
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
@@ -34,16 +31,16 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 
 from .models import ArqueoCaja, Caja, Denominacion, EntregaBilletes, MovimientoCaja, TurnoCaja
+from .servicios import (
+    cancelar_entrega, cerrar_caja, confirmar_entrega, crear_entrega,
+    rechazar_entrega, registrar_arqueo, registrar_movimiento, saldo_por_moneda,
+    turno_abierto,
+)
 from .permisos import PermisoEntregas, PersonalCaja
 from .serializers import (
     ArqueoSerializer, CajaSerializer, DenominacionSerializer, EntregaSerializer,
     MotivoSerializer, MovimientoSerializer, NuevaEntregaSerializer,
     NuevoArqueoSerializer, NuevoMovimientoSerializer, TurnoSerializer,
-)
-from .servicios import (
-    cancelar_entrega, cerrar_caja, confirmar_entrega, crear_entrega,
-    rechazar_entrega, registrar_arqueo, registrar_movimiento, saldo_por_moneda,
-    turno_abierto,
 )
 
 
@@ -75,6 +72,20 @@ def _limite(request) -> int:
 
 
 class CajaViewSet(viewsets.ModelViewSet):
+    """Control de cajas y saldos por divisa.
+
+    Rutas generadas por el router:
+
+    * ``GET    /api/cajas/``           cajas activas (``?todas=1`` incluye inactivas);
+      alta y edición solo admin
+    * ``GET    /api/cajas/{id}/saldo/`` saldo de la caja por divisa (RF56; PI-78)
+    * ``GET|POST /api/cajas/{id}/movimientos/`` historial y registro de movimientos (RF58)
+    * ``GET|POST /api/cajas/{id}/arqueos/`` recuento de la caja (RF56)
+    * ``GET    /api/cajas/{id}/turno/`` estado del turno actual
+    * ``GET    /api/cajas/{id}/turnos/`` historial de aperturas y cierres (PI-79)
+    * ``POST   /api/cajas/{id}/cerrar/`` cierre con recuento final (PI-79)
+    """
+
     queryset = Caja.objects.all()
     serializer_class = CajaSerializer
     permission_classes = [PersonalCaja]
@@ -88,6 +99,7 @@ class CajaViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'])
     def saldo(self, request, pk=None):
+        """Saldo de la caja por divisa (RF56; PI-78)."""
         caja = self.get_object()
         return Response({
             'caja': caja.pk,
@@ -98,12 +110,16 @@ class CajaViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'])
     def turno(self, request, pk=None):
-        # Envuelto en un objeto: un ``Response(None)`` sale con cuerpo vacío
-        # y el frontend no lo puede leer como JSON.
+        """Estado del turno actual de la caja.
+
+        Devuelve un objeto JSON con el turno abierto o ``null`` si la caja
+        está cerrada. El frontend no puede leer ``Response(None)`` como JSON.
+        """
         return Response({'turno': _turno_json(self.get_object())})
 
     @action(detail=True, methods=['get'])
     def turnos(self, request, pk=None):
+        """Historial de aperturas y cierres de turnos (PI-79)."""
         qs = (TurnoCaja.objects.filter(caja=self.get_object())
               .select_related('caja', 'arqueo_cierre')
               .prefetch_related('arqueo_cierre__detalle__moneda'))
@@ -111,6 +127,10 @@ class CajaViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def cerrar(self, request, pk=None):
+        """Cierre de caja con recuento final de cada moneda (PI-79).
+
+        Informa el conteo de cada moneda y devuelve el efectivo a tesorería.
+        """
         caja = self.get_object()
         entrada = NuevoArqueoSerializer(data=request.data)
         entrada.is_valid(raise_exception=True)
@@ -132,6 +152,11 @@ class CajaViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get', 'post'])
     def movimientos(self, request, pk=None):
+        """Historial y registro de movimientos de caja (RF58).
+
+        GET: lista los movimientos con filtros opcionales ``?moneda`` y ``?tipo``.
+        POST: registra un nuevo movimiento (ingreso, retiro, entrega, devolución).
+        """
         caja = self.get_object()
         if request.method == 'GET':
             qs = MovimientoCaja.objects.filter(caja=caja).select_related('moneda', 'caja')
@@ -164,6 +189,7 @@ class CajaViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get', 'post'])
     def arqueos(self, request, pk=None):
+        """Arqueos de la caja: recuento vs. sistema (RF56)."""
         caja = self.get_object()
         if request.method == 'GET':
             qs = (ArqueoCaja.objects.filter(caja=caja)
@@ -188,6 +214,12 @@ class CajaViewSet(viewsets.ModelViewSet):
 
 
 class DenominacionViewSet(viewsets.ModelViewSet):
+    """Catálogo de denominaciones de billetes por moneda.
+
+    Escritura solo para personal de caja. Se puede filtrar por moneda
+    y por si están activas.
+    """
+
     queryset = Denominacion.objects.select_related('moneda').all()
     serializer_class = DenominacionSerializer
     permission_classes = [PersonalCaja]
@@ -205,7 +237,15 @@ class DenominacionViewSet(viewsets.ModelViewSet):
 
 
 class EntregaViewSet(viewsets.ReadOnlyModelViewSet):
-    """Entregas de billetes del administrador a las cajas (PI-43)."""
+    """Entregas de billetes del administrador a las cajas (PI-43).
+
+    Solo lectura para el cajero (ver entregas pendientes y su estado).
+    El admin puede crear nuevas entregas.
+
+    Endpoints:
+    * ``GET /api/entregas/`` lista con filtros ``?caja=`` y ``?estado=``
+    * ``GET /api/entregas/{id}/`` detalle
+    """
 
     queryset = (EntregaBilletes.objects.select_related('caja')
                 .prefetch_related('detalle__denominacion__moneda'))
@@ -258,6 +298,7 @@ class EntregaViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=['post'])
     def confirmar(self, request, pk=None):
+        """Cajero confirma la entrega de billetes: los fondos se suman al saldo."""
         resultado = self._responder(request, confirmar_entrega, con_motivo=False)
         if isinstance(resultado, Response):
             return resultado
@@ -269,6 +310,7 @@ class EntregaViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=['post'])
     def rechazar(self, request, pk=None):
+        """Cajero rechaza la entrega con un motivo registrado."""
         resultado = self._responder(request, rechazar_entrega, con_motivo=True)
         if isinstance(resultado, Response):
             return resultado
@@ -276,6 +318,7 @@ class EntregaViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=['post'])
     def cancelar(self, request, pk=None):
+        """Admin cancela una entrega pendiente."""
         resultado = self._responder(request, cancelar_entrega, con_motivo=True)
         if isinstance(resultado, Response):
             return resultado

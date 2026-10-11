@@ -238,6 +238,28 @@ def _dentro_de_tolerancia(op: Operacion) -> bool:
 
 
 class OperacionViewSet(viewsets.ModelViewSet):
+    """Vistas completas para operaciones (COMPRA/VENTA con métodos variados).
+
+    Endpoints principales:
+    * ``GET /api/operaciones/`` historial filtrado por cliente, fechas,
+      tipo, moneda y estado. El usuario ve solo sus clientes (``?mine=1``)
+      o todas si es admin (PI-65).
+    * ``POST /api/operaciones/`` crea una operación en estado PENDIENTE con
+      la cotización congelada (RF34/RF35).
+    * ``POST /api/operaciones/{id}/confirmar/`` (PI-64, RF27): confirma el
+      pago dentro/afuera de la ventana de tolerancia; si la tasa cambió responde
+      ``COTIZACION_CAMBIADA`` y abre una nueva ventana.
+    * ``POST /api/operaciones/{id}/cancelar/`` (PI-64): cancela una operación
+      pendiente registrando quién y cuándo.
+    * ``POST /api/operaciones/{id}/iniciar-pago/`` (PI-66c): inicia pago por
+      pasarela Stripe (solo tarjeta); la sesión expira a los 30 minutos.
+    * ``GET /api/operaciones/resumen/`` (solo admin): volumen y ganancias en
+      PYG por moneda.
+
+    Filtros comunes de lista: ``?desde`` ``?hasta`` ``?tipo`` ``?moneda``
+    ``?estado`` ``?cliente`` ``?buscar``.
+    """
+
     queryset = Operacion.objects.select_related(
         'cliente', 'moneda_origen', 'moneda_destino',
     ).all()

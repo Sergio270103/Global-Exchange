@@ -20,12 +20,20 @@ from .serializers import BilleteraSerializer, MedioAcreditacionSerializer
 
 
 class BilleteraViewSet(viewsets.ModelViewSet):
+    """Vista de billeteras por cliente.
+
+    Solo lectura (GET, HEAD, OPTIONS). Devuelve los saldos multidivisa
+    de un cliente. Si se pasa ``?cliente=``, se aseguran las billeteras
+    perezosas para todas las monedas activas.
+    """
+
     queryset = Billetera.objects.select_related('cliente', 'moneda').all()
     serializer_class = BilleteraSerializer
     permission_classes = [IsAuthenticated]
     http_method_names = ['get', 'head', 'options']
 
     def get_queryset(self):
+        """Filtrar billeteras por cliente; activan creación perezosa."""
         qs = super().get_queryset()
         cliente_id = self.request.query_params.get('cliente')
         if cliente_id:
@@ -40,8 +48,16 @@ class BilleteraViewSet(viewsets.ModelViewSet):
 
 
 class MedioAcreditacionViewSet(viewsets.ModelViewSet):
+    """CRUD de medios de acreditación (billetera o cuenta bancaria).
+
+    Permite ver, crear y gestionar los medios por los que el cliente
+    puede recibir fondos. Marcar uno como ``es_default`` desmarca los
+    demás del mismo cliente.
+    """
+
     queryset = MedioAcreditacion.objects.select_related(
-        'cliente', 'billetera__moneda', 'cuenta').all()
+        'cliente', 'billetera__moneda', 'cuenta',
+    ).all()
     serializer_class = MedioAcreditacionSerializer
     permission_classes = [IsAuthenticated]
 

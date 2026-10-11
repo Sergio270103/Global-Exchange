@@ -29,6 +29,23 @@ from .serializers import (
 
 
 class ClienteViewSet(viewsets.ModelViewSet):
+    """CRUD completo sobre clientes.
+
+    Solo administrador puede crear, editar y dar de baja.
+    El cajero tiene acceso restringido a ``buscar-documento`` y ``presencial``.
+
+    Rutas generadas por el router:
+
+    * ``GET    /api/clientes/``        lista con filtros opcionales
+    * ``POST   /api/clientes/``        alta (admin solo)
+    * ``GET    /api/clientes/{id}/``   detalle
+    * ``PUT    /api/clientes/{id}/``   reemplazo completo
+    * ``PATCH  /api/clientes/{id}/``   edición parcial
+    * ``DELETE /api/clientes/{id}/``   baja lógica (admin solo)
+    * ``GET    /api/clientes/buscar-documento/`` busca por documento (cajero/admin)
+    * ``POST   /api/clientes/presencial/`` registra cliente presencial (cajero/admin)
+    """
+
     queryset = Cliente.objects.all()
     serializer_class = ClienteSerializer
     permission_classes = [SoloAdminEscribe]
@@ -68,7 +85,7 @@ class ClienteViewSet(viewsets.ModelViewSet):
         """Busca un cliente por documento de identidad (PI-45).
 
         Devuelve ``{"encontrado": bool, "cliente": {...} | null}`` para que
-        el cajero distinguisha de forma explícita entre "no existe" y "hay
+        el cajero distinguishas de forma explícita entre "no existe" y "hay
         uno inactivo", sin romper la forma de la respuesta.
         """
         documento = (request.query_params.get('documento') or '').strip()
@@ -121,6 +138,13 @@ class ClienteViewSet(viewsets.ModelViewSet):
 
 
 class ClienteUsuarioViewSet(viewsets.ModelViewSet):
+    """Gestión de asociaciones Keycloak con clientes.
+
+    Cada usuario de Keycloak puede estar asociado a uno o más clientes.
+    El queryset se puede filtrar por ``?cliente=`` o por ``?mine=1`` para
+    ver solo las asociaciones del usuario actual.
+    """
+
     queryset = ClienteUsuario.objects.select_related('cliente').all()
     serializer_class = ClienteUsuarioSerializer
     permission_classes = [SoloAdminEscribe]

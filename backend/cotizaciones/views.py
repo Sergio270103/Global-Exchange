@@ -1,10 +1,13 @@
-"""Vistas del módulo de cotizaciones.
+"""
+Vistas del módulo de cotizaciones.
 
+Endpoints disponibles:
 - ``GET /api/cotizaciones/`` historial con filtros ``?moneda=USD``
   ``?desde=2026-01-01`` ``?hasta=2026-12-31`` (RF33).
 - ``GET /api/cotizaciones/vigentes/`` última tasa por moneda para la
   visualización del día y el simulador (RF31).
 - ``POST`` solo admin/analista; guarda el usuario creador (RNF26).
+- ``GET /api/simular/`` simula una conversión y devuelve el precio final.
 """
 
 from decimal import Decimal
@@ -26,6 +29,23 @@ from .serializers import CotizacionSerializer
 
 
 class CotizacionViewSet(viewsets.ModelViewSet):
+    """Historial y gestión de cotizaciones de cambio.
+
+    El queryset por defecto trae todas las cotizaciones ordenadas por
+    fecha de vigencia (más reciente primero). Se pueden filtrar por
+    moneda y rango de fechas.
+
+    Rutas generadas por el router:
+
+    * ``GET    /api/cotizaciones/``        lista con filtros opcionales
+    * ``POST   /api/cotizaciones/``        nueva cotización (admin/analista)
+    * ``GET    /api/cotizaciones/{id}/``   detalle
+    * ``PUT    /api/cotizaciones/{id}/``   reemplazo completo
+    * ``PATCH  /api/cotizaciones/{id}/``   edición parcial
+    * ``DELETE /api/cotizaciones/{id}/``   baja
+    * ``GET    /api/cotizaciones/vigentes/`` última tasa por moneda (RF31)
+    """
+
     queryset = Cotizacion.objects.select_related('moneda').all()
     serializer_class = CotizacionSerializer
     permission_classes = [SoloEditorTasasEscribe]
@@ -70,10 +90,22 @@ def simular(request):
 
     El ajuste interno por categoría se aplica para calcular el total, pero no
     se devuelve su porcentaje ni su monto: el cliente ve la tasa y el total
-    final de la operación.
+    final de la operación. El mismo mecanismo de cotización que usa
+    ``POST /operaciones/`` garantiza que el precio congelado en la operación
+    coincida con el que el cliente vio al crear la orden.
 
-    Parámetros:
-    ``?moneda=USD&moneda_contraparte=PYG&monto=1000&operacion=compra&cliente=1``.
+    Parámetros de query:
+        ``?moneda=USD&moneda_contraparte=PYG&monto=1000&operacion=compra&cliente=1``.
+
+    Returns:
+        ``moneda``: divisa origen.
+        ``moneda_contraparte``: divisa destino.
+        ``operacion``: 'compra' o 'venta'.
+        ``monto_origen``: monto en moneda origen.
+        ``tasa_aplicada``: tasa convertida a 6 decimales.
+        ``monto_total``: monto final en moneda destino.
+        ``total_tipo``: 'pagar' para compra, 'recibir' para venta.
+        ``vigente_desde``: fecha de la última cotización vigente.
     """
     codigo_div = (request.query_params.get('moneda') or '').strip().upper()
     codigo_contra = (
