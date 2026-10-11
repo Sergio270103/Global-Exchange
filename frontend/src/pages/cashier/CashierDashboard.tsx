@@ -101,7 +101,7 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
   const [originCurrency, setOriginCurrency] = useState<DivisaCodigo>('PYG')
   const [destinationCurrency, setDestinationCurrency] = useState<DivisaCodigo>('USD')
   const [amount, setAmount] = useState<number | ''>('')
-  const [docType, setDocType] = useState<'Factura' | 'Nota de Crédito'>('Factura')
+  const [docType, setDocType] = useState<'Comprobante'>('Comprobante')
 
   const handleOperationTypeChange = (value: 'buy' | 'sell') => {
     setOperationType(value)
@@ -394,16 +394,16 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
             </div>
 
             <div className="md:col-span-2">
-              <label htmlFor="comprobante-legal" className="text-xs font-semibold text-slate-500">Comprobante Legal</label>
+              <label htmlFor="comprobante-legal" className="text-xs font-semibold text-slate-500">Comprobante</label>
               <select
                 id="comprobante-legal"
                 value={docType}
-                onChange={(e) => setDocType(e.target.value as 'Factura' | 'Nota de Crédito')}
+                onChange={(e) => setDocType(e.target.value as 'Comprobante')}
                 className="w-full mt-1 p-2 border rounded-lg text-sm font-semibold"
               >
-                <option value="Factura">Factura Electrónica</option>
-                <option value="Nota de Crédito">Nota de Crédito</option>
+                <option value="Comprobante">Comprobante</option>
               </select>
+              <p className="text-[11px] text-slate-400 mt-1">Comprobante interno de la operación (no es factura electrónica).</p>
             </div>
           </div>
 
