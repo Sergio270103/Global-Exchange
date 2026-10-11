@@ -64,3 +64,9 @@ Asistente: Muse Spark (opencode). Sin commits ni push, solo trabajo local.
 - Con su token: monedas 200, alta cotización 201 (creado_por registrado), vigentes 200, simulador 200 con desglose.
 - Usuario común: lectura 200, alta de tasa 403, simulador 200. Direct grant reactivado solo para la prueba y restaurado a false.
 
+
+## PI-38 alertas de tasas (2026-10-10, rama feature/PI-38)
+- Nueva app alertas: AlertaTasa (sub, moneda, umbral, direccion supera/baja, estado activa/pausada/ejecutada) + DisparoAlerta (historial).
+- Endpoints api/alertas/ (CRUD solo-mias + historial/); evaluacion en cotizaciones perform_create (supera=venta, baja=compra; send_mail consola en dev).
+- 12 tests nuevos; suite total 167/167 OK (incl. PI-43/44/78/79 de companeros). Sin push.
+
