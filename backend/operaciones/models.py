@@ -59,11 +59,13 @@ class Operacion(models.Model):
     MOTIVO_DESISTIO = 'DESISTIO'
     MOTIVO_FONDOS = 'FONDOS_INSUFICIENTES'
     MOTIVO_PAGO_FALLIDO = 'PAGO_FALLIDO'
+    MOTIVO_ANULADA = 'ANULADA'
     MOTIVOS_CANCELACION = (
         (MOTIVO_COTIZACION, 'No aceptó la nueva cotización'),
         (MOTIVO_DESISTIO, 'El cliente desistió'),
         (MOTIVO_FONDOS, 'Fondos insuficientes'),
         (MOTIVO_PAGO_FALLIDO, 'El pago fue rechazado o expiró'),
+        (MOTIVO_ANULADA, 'Comprobante anulado en ventanilla'),
     )
 
     cliente = models.ForeignKey(

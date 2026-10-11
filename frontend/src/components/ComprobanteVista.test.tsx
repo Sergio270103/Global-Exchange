@@ -17,7 +17,8 @@ const comprobante: Comprobante = {
   monto_comision: 7500, metodo_pago: 'efectivo',
   fecha_operacion: '2026-10-11T10:00:00Z',
   cajero_sub: 'sub-caja', cajero_nombre: 'Cajero',
-  estado: 'emitido', creado: '2026-10-11T10:00:00Z',
+  estado: 'emitido', motivo_anulacion: '', anulado_por_nombre: '',
+  fecha_anulacion: null, creado: '2026-10-11T10:00:00Z',
 }
 
 describe('ComprobanteVista (recibo interno)', () => {

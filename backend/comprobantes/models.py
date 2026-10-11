@@ -13,7 +13,8 @@ class Comprobante(models.Model):
     """Recibo interno de una operación pagada."""
 
     ESTADO_EMITIDO = 'emitido'
-    ESTADOS = [(ESTADO_EMITIDO, 'emitido')]
+    ESTADO_ANULADO = 'anulado'
+    ESTADOS = [(ESTADO_EMITIDO, 'emitido'), (ESTADO_ANULADO, 'anulado')]
 
     numero = models.CharField(
         'número', max_length=20, unique=True, null=True, blank=True,
@@ -44,6 +45,14 @@ class Comprobante(models.Model):
     cajero_nombre = models.CharField('cajero', max_length=160, blank=True)
     estado = models.CharField(
         'estado', max_length=10, choices=ESTADOS, default=ESTADO_EMITIDO)
+    motivo_anulacion = models.CharField(
+        'motivo de anulación', max_length=255, blank=True)
+    anulado_por_sub = models.CharField(
+        'anulado por (sub)', max_length=160, blank=True)
+    anulado_por_nombre = models.CharField(
+        'anulado por', max_length=160, blank=True)
+    fecha_anulacion = models.DateTimeField(
+        'fecha y hora de anulación', null=True, blank=True)
     creado = models.DateTimeField('emitido el', auto_now_add=True)
 
     class Meta:

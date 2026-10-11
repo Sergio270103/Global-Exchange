@@ -6,15 +6,26 @@
 - ``GET /api/comprobantes/`` y ``GET /api/comprobantes/<id>/`` listan
   y reimprimen (el cajero ve los que emitió; cada usuario, los de sus
   clientes; el admin, todos).
+- ``POST /api/comprobantes/<id>/anular/`` anula un comprobante emitido
+  (emisor o admin): revierte el efectivo en la primera caja activa con
+  el par inverso y marca el comprobante como anulado, todo en una
+  transacción atómica. La operación sigue PAGADA (no hay nota de
+  crédito): la anulación es solo del comprobante y su efecto en caja.
 """
 
-from django.db import IntegrityError
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import IntegrityError, transaction
 from django.db.models import Q
+from django.utils import timezone
 from rest_framework import status, viewsets
+from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from cajas.models import Caja, MovimientoCaja
+from cajas.servicios import registrar_movimiento
 from clientes.permisos import es_cajero
+from monedas.models import Moneda
 from monedas.permisos import es_admin
 from operaciones.models import Operacion
 
@@ -111,3 +122,125 @@ class ComprobanteViewSet(viewsets.ModelViewSet):
         return Response(
             ComprobanteSerializer(comprobante).data,
             status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='anular')
+    def anular(self, request, pk=None):
+        """Anula el comprobante revirtiendo caja y billeteras.
+
+        Solo el cajero que lo emitió o un administrador, y solo para
+        operaciones en efectivo (las de pasarela no tocan la caja).
+        En una transacción atómica: registra el par inverso en la
+        primera caja activa (``RETIRO`` de lo ingresado + ``INGRESO``
+        de lo entregado), devuelve los saldos de billetera movidos al
+        confirmar y pasa la operación a ``CANCELADA`` con motivo
+        ``ANULADA``. Todo o nada: caja cerrada, saldo insuficiente en
+        caja o en billetera destino → 400 sin tocar nada.
+        Cuerpo opcional: ``{"motivo": "..."}``.
+        """
+        from billeteras.models import Billetera, Movimiento
+
+        comp = self.get_object()
+        if comp.estado != Comprobante.ESTADO_EMITIDO:
+            return Response(
+                {'detail': 'El comprobante ya está anulado.'},
+                status=status.HTTP_400_BAD_REQUEST)
+        usuario = request.user
+        sub = _sub(usuario)
+        es_emisor = bool(comp.cajero_sub and comp.cajero_sub == sub)
+        if not (getattr(usuario, 'is_superuser', False)
+                or es_admin(usuario) or es_emisor):
+            return Response(
+                {'detail': 'No podés anular este comprobante.'},
+                status=status.HTTP_403_FORBIDDEN)
+        if comp.metodo_pago != 'efectivo':
+            return Response(
+                {'detail': 'Solo se anulan comprobantes de operaciones en efectivo.'},
+                status=status.HTTP_400_BAD_REQUEST)
+        motivo = ''
+        if isinstance(request.data, dict):
+            motivo = str(request.data.get('motivo') or '')[:255]
+
+        caja = Caja.objects.filter(activa=True).first()
+        if caja is None:
+            return Response(
+                {'detail': 'No hay cajas activas para revertir.'},
+                status=status.HTTP_400_BAD_REQUEST)
+        try:
+            moneda_origen = Moneda.objects.get(codigo=comp.moneda_origen_codigo)
+            moneda_destino = Moneda.objects.get(codigo=comp.moneda_destino_codigo)
+        except Moneda.DoesNotExist:
+            return Response(
+                {'detail': 'La caja no maneja una de las monedas del comprobante.'},
+                status=status.HTTP_400_BAD_REQUEST)
+        nombre = (getattr(usuario, 'nombre', '')
+                  or getattr(usuario, 'username', '') or str(usuario))[:160]
+        obs = f'Reversa {comp.numero} OP-{comp.operacion_id}'
+        if motivo:
+            obs = f'{obs}: {motivo}'
+        obs = obs[:255]
+        try:
+            with transaction.atomic():
+                comp = Comprobante.objects.select_for_update().get(pk=comp.pk)
+                if comp.estado != Comprobante.ESTADO_EMITIDO:
+                    raise DjangoValidationError('El comprobante ya está anulado.')
+                op = Operacion.objects.select_for_update().get(pk=comp.operacion_id)
+                if op.estado != Operacion.ESTADO_PAGADA:
+                    raise DjangoValidationError(
+                        'Solo se anula el comprobante de una operación pagada.')
+                registrar_movimiento(
+                    caja=caja, tipo=MovimientoCaja.TIPO_RETIRO,
+                    moneda=moneda_origen, monto=comp.monto_enviado,
+                    usuario_id=sub, usuario_nombre=nombre, observacion=obs,
+                )
+                registrar_movimiento(
+                    caja=caja, tipo=MovimientoCaja.TIPO_INGRESO,
+                    moneda=moneda_destino, monto=comp.monto_recibido,
+                    usuario_id=sub, usuario_nombre=nombre, observacion=obs,
+                )
+                # Revierte las billeteras movidas al confirmar.
+                if op.billetera_origen_id:
+                    origen = Billetera.objects.select_for_update().get(
+                        pk=op.billetera_origen_id)
+                    origen.saldo = origen.saldo + op.monto_enviado
+                    origen.save(update_fields=['saldo', 'actualizado_en'])
+                    Movimiento.objects.create(
+                        billetera=origen, operacion=op,
+                        tipo=Movimiento.TIPO_CREDITO,
+                        monto=op.monto_enviado, saldo_resultante=origen.saldo,
+                    )
+                if op.billetera_destino_id:
+                    destino = Billetera.objects.select_for_update().get(
+                        pk=op.billetera_destino_id)
+                    if destino.saldo < op.monto_recibido:
+                        raise DjangoValidationError(
+                            'La billetera destino ya no tiene el saldo para revertir.')
+                    destino.saldo = destino.saldo - op.monto_recibido
+                    destino.save(update_fields=['saldo', 'actualizado_en'])
+                    Movimiento.objects.create(
+                        billetera=destino, operacion=op,
+                        tipo=Movimiento.TIPO_DEBITO,
+                        monto=op.monto_recibido, saldo_resultante=destino.saldo,
+                    )
+                op.estado = Operacion.ESTADO_CANCELADA
+                op.fecha_cancelacion = timezone.now()
+                op.cancelada_por = sub[:64]
+                op.cancelada_por_nombre = nombre
+                op.motivo_cancelacion = Operacion.MOTIVO_ANULADA
+                op.save(update_fields=[
+                    'estado', 'fecha_cancelacion', 'cancelada_por',
+                    'cancelada_por_nombre', 'motivo_cancelacion',
+                ])
+                comp.estado = Comprobante.ESTADO_ANULADO
+                comp.motivo_anulacion = motivo
+                comp.anulado_por_sub = sub[:160]
+                comp.anulado_por_nombre = nombre
+                comp.fecha_anulacion = timezone.now()
+                comp.save(update_fields=[
+                    'estado', 'motivo_anulacion', 'anulado_por_sub',
+                    'anulado_por_nombre', 'fecha_anulacion',
+                ])
+        except DjangoValidationError as exc:
+            return Response(
+                {'detail': ' '.join(exc.messages)},
+                status=status.HTTP_400_BAD_REQUEST)
+        return Response(ComprobanteSerializer(comp).data)

@@ -14,6 +14,7 @@ class ComprobanteSerializer(serializers.ModelSerializer):
             'moneda_destino_codigo', 'monto_enviado', 'monto_recibido',
             'tasa_origen', 'tasa_destino', 'monto_comision', 'metodo_pago',
             'fecha_operacion', 'cajero_sub', 'cajero_nombre', 'estado',
-            'creado',
+            'motivo_anulacion', 'anulado_por_sub', 'anulado_por_nombre',
+            'fecha_anulacion', 'creado',
         ]
         read_only_fields = fields

@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
+  anularComprobante,
   emitirComprobante,
   listarComprobantes,
   obtenerComprobante,
@@ -39,6 +40,14 @@ describe('comprobantes (servicio API)', () => {
         if (cuerpo.operacion === 404) return respuesta({ detail: 'La operación no existe.' }, 404)
         return respuesta({ ...comprobanteApi, operacion: cuerpo.operacion }, 201)
       }
+      if (/\/comprobantes\/\d+\/anular\//.test(u) && method === 'POST') {
+        return respuesta({
+          ...comprobanteApi, estado: 'anulado',
+          motivo_anulacion: 'error de monto',
+          anulado_por_nombre: 'Cajero',
+          fecha_anulacion: '2026-10-11T10:05:00Z',
+        })
+      }
       if (/\/comprobantes\/\d+\//.test(u)) return respuesta(comprobanteApi)
       if (u.endsWith('/comprobantes/')) return respuesta([comprobanteApi])
       return respuesta([])
@@ -65,5 +74,12 @@ describe('comprobantes (servicio API)', () => {
     expect(lista).toHaveLength(1)
     const uno = await obtenerComprobante(1)
     expect(uno.numero).toBe('CPB-000001')
+  })
+
+  it('anula con reversa y mapea el estado', async () => {
+    const c = await anularComprobante(1, 'error de monto')
+    expect(c.estado).toBe('anulado')
+    expect(c.motivo_anulacion).toBe('error de monto')
+    expect(c.anulado_por_nombre).toBe('Cajero')
   })
 })

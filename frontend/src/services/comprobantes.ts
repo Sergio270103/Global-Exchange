@@ -5,10 +5,16 @@
  *   (número único secuencial + foto inmutable).
  * - `listarComprobantes()`: historial del cajero (para reimprimir).
  * - `obtenerComprobante()`: detalle para reimpresión.
+ * - `anularComprobante()`: anula con reversa atómica en caja
+ *   (`POST /comprobantes/{id}/anular/`); el servidor registra el par
+ *   inverso y marca el comprobante como anulado.
  *
  * @module services/comprobantes
  */
 import { apiFetch } from '@/services/api'
+
+/** Estado del comprobante: emitido o anulado (con reversa en caja). */
+export type EstadoComprobante = 'emitido' | 'anulado'
 
 /** Comprobante interno tal como lo devuelve el backend. */
 export interface Comprobante {
@@ -29,7 +35,10 @@ export interface Comprobante {
   fecha_operacion: string
   cajero_sub: string
   cajero_nombre: string
-  estado: string
+  estado: EstadoComprobante
+  motivo_anulacion: string
+  anulado_por_nombre: string
+  fecha_anulacion: string | null
   creado: string
 }
 
@@ -57,7 +66,10 @@ function mapear(c: Record<string, unknown>): Comprobante {
     fecha_operacion: String(c.fecha_operacion ?? ''),
     cajero_sub: String(c.cajero_sub ?? ''),
     cajero_nombre: String(c.cajero_nombre ?? ''),
-    estado: String(c.estado ?? ''),
+    estado: String(c.estado) === 'anulado' ? 'anulado' : 'emitido',
+    motivo_anulacion: String(c.motivo_anulacion ?? ''),
+    anulado_por_nombre: String(c.anulado_por_nombre ?? ''),
+    fecha_anulacion: c.fecha_anulacion == null ? null : String(c.fecha_anulacion),
     creado: String(c.creado ?? ''),
   }
 }
@@ -84,5 +96,20 @@ export async function listarComprobantes(): Promise<Comprobante[]> {
 /** Detalle de un comprobante (reimpresión). */
 export async function obtenerComprobante(id: number): Promise<Comprobante> {
   const dato = await apiFetch<Record<string, unknown>>(`/comprobantes/${id}/`)
+  return mapear(dato)
+}
+
+/**
+ * Anula el comprobante con reversa atómica en caja.
+ *
+ * El servidor registra el par inverso en la primera caja activa y marca
+ * el comprobante como anulado (quién, cuándo y motivo). Solo el cajero
+ * que lo emitió o un administrador.
+ */
+export async function anularComprobante(id: number, motivo = ''): Promise<Comprobante> {
+  const dato = await apiFetch<Record<string, unknown>>(`/comprobantes/${id}/anular/`, {
+    method: 'POST',
+    body: JSON.stringify({ motivo }),
+  })
   return mapear(dato)
 }

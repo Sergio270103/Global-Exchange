@@ -214,6 +214,36 @@ describe('CashierDashboard PI-42 (comprobante interno)', () => {
       if (u.includes('/cotizaciones/vigentes/')) {
         return respuesta([tasaUsd])
       }
+      if (u.includes('/cajas/') && u.includes('/movimientos/') && metodo === 'POST') {
+        const d = JSON.parse(String(init.body ?? '{}'))
+        return respuesta({
+          movimiento: {
+            id: 1, tipo: d.tipo, tipo_display: d.tipo,
+            moneda_codigo: 'USD', total: d.monto, saldo_resultante: null,
+            usuario_nombre: 'Cajero', observacion: '', creado_en: '2026-10-11T10:00:01Z',
+          },
+          monedas: [],
+        }, 201)
+      }
+      if (u.endsWith('/cajas/')) {
+        return respuesta([{
+          id: 1, nombre: 'Central', sucursal: 'Asunción', activa: true,
+          abierta: true, turno_actual: null,
+        }])
+      }
+      if (u.includes('/saldo/')) {
+        return respuesta({ monedas: [
+          { moneda: 1, moneda_codigo: 'PYG', moneda_nombre: 'Guaraní', simbolo: '₲', decimales: 0, total: '10000000' },
+          { moneda: 2, moneda_codigo: 'USD', moneda_nombre: 'Dólar', simbolo: '$', decimales: 2, total: '5000' },
+        ] })
+      }
+      if (u.includes('/turno/')) {
+        return respuesta({ turno: {
+          id: 1, abierto: true, cajero_nombre: 'Cajero',
+          abierto_en: '2026-10-11T08:00:00Z', entrega_apertura: null,
+          cerrado_en: null, cerrado_por_nombre: '', arqueo_cierre: null,
+        } })
+      }
       if (u.includes('/confirmar/') && metodo === 'POST') {
         return respuesta({ resultado: 'CONFIRMADA', operacion: operacionPagada })
       }
@@ -262,6 +292,14 @@ describe('CashierDashboard PI-42 (comprobante interno)', () => {
     expect(cuerpo).toMatchObject({
       cliente: 7, tipo_operacion: 'COMPRA', moneda: 'USD', metodo_pago: 'efectivo',
     })
+    // PI-75: imputa INGRESO (PYG que entrega el cliente) + RETIRO (USD).
+    const movs = fetchMock.mock.calls
+      .filter(([llamada, datos]) =>
+        String(llamada).includes('/movimientos/') && (datos as RequestInit).method === 'POST')
+      .map(([, datos]) => JSON.parse(String((datos as RequestInit).body)))
+    expect(movs).toHaveLength(2)
+    expect(movs[0]).toMatchObject({ tipo: 'INGRESO', moneda: 1 })
+    expect(movs[1]).toMatchObject({ tipo: 'RETIRO', moneda: 2 })
   })
 
   it('exige cliente seleccionado antes de emitir', async () => {
@@ -278,5 +316,203 @@ describe('CashierDashboard PI-42 (comprobante interno)', () => {
     expect((await screen.findAllByText('CPB-000001')).length).toBeGreaterThanOrEqual(2)
     expect(screen.getByRole('button', { name: '🖨️ Imprimir' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '📥 Descargar PDF' })).toBeInTheDocument()
+  })
+})
+
+/**
+ * Historial del panel: solo los últimos 10, con "Ver todo" hacia
+ * Transacciones.
+ */
+describe('CashierDashboard historial (top 10 + Ver todo)', () => {
+  function comprobanteN(n: number) {
+    return {
+      id: n, numero: `CPB-${String(n).padStart(6, '0')}`, operacion: n,
+      cliente_nombre: 'Ana Barrios', cliente_documento: '4589201',
+      tipo_operacion: 'COMPRA', moneda_origen_codigo: 'PYG',
+      moneda_destino_codigo: 'USD', monto_enviado: '757500.00',
+      monto_recibido: '100.00', tasa_origen: null,
+      tasa_destino: null, monto_comision: null,
+      metodo_pago: 'efectivo', fecha_operacion: '2026-10-11T10:00:01Z',
+      cajero_sub: 'sub-caja', cajero_nombre: 'Cajero',
+      estado: 'emitido', creado: '2026-10-11T10:00:02Z',
+    }
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).includes('/comprobantes/')) {
+        return respuesta(Array.from({ length: 12 }, (_, i) => comprobanteN(i + 1)))
+      }
+      return respuesta({}, 404)
+    }))
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('muestra 10 y redirige a Transacciones con Ver todo', async () => {
+    const user = userEvent.setup()
+    const navigate = vi.fn()
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={navigate} />)
+    // 12 comprobantes en la API, solo 10 filas en el panel.
+    expect(await screen.findByText('CPB-000001')).toBeInTheDocument()
+    expect(screen.queryByText('CPB-000011')).not.toBeInTheDocument()
+    expect(screen.queryByText('CPB-000012')).not.toBeInTheDocument()
+    await user.click(screen.getAllByRole('button', { name: /Ver todo/ })[0])
+    expect(navigate).toHaveBeenCalledWith('transactions')
+  })
+})
+
+/**
+ * PI-75: la emisión imputa el efectivo en caja y la anulación lo revierte
+ * con el par inverso (sin NC en el backend).
+ */
+describe('CashierDashboard PI-75 (caja: imputación y reversa)', () => {
+  const comprobante = {
+    id: 1, numero: 'CPB-000001', operacion: 9,
+    cliente_nombre: 'Ana Barrios', cliente_documento: '4589201',
+    tipo_operacion: 'COMPRA', moneda_origen_codigo: 'PYG',
+    moneda_destino_codigo: 'USD', monto_enviado: '757500.00',
+    monto_recibido: '100.00', tasa_origen: null,
+    tasa_destino: null, monto_comision: null,
+    metodo_pago: 'efectivo', fecha_operacion: '2026-10-11T10:00:01Z',
+    cajero_sub: 'sub-caja', cajero_nombre: 'Cajero',
+    estado: 'emitido', creado: '2026-10-11T10:00:02Z',
+  }
+  const caja = [{
+    id: 1, nombre: 'Central', sucursal: 'Asunción', activa: true,
+    abierta: true, turno_actual: null,
+  }]
+  const turnoAbierto = { turno: {
+    id: 1, abierto: true, cajero_nombre: 'Cajero',
+    abierto_en: '2026-10-11T08:00:00Z', entrega_apertura: null,
+    cerrado_en: null, cerrado_por_nombre: '', arqueo_cierre: null,
+  } }
+
+  function mockCaja(opciones: { turno?: unknown; saldos?: Record<string, string> } = {}) {
+    const saldoBase = [
+      { moneda: 1, moneda_codigo: 'PYG', moneda_nombre: 'Guaraní', simbolo: '₲', decimales: 0, total: '10000000' },
+      { moneda: 2, moneda_codigo: 'USD', moneda_nombre: 'Dólar', simbolo: '$', decimales: 2, total: '5000' },
+    ]
+    return vi.fn(async (url: string, init: RequestInit = {}) => {
+      const u = String(url)
+      const metodo = (init.method ?? 'GET').toUpperCase()
+      if (u.includes('/buscar-documento/')) {
+        return respuesta({ encontrado: true, cliente: ana })
+      }
+      if (u.includes('/cotizaciones/vigentes/')) {
+        return respuesta([{
+          id: 10, moneda: 2, moneda_codigo: 'USD', moneda_nombre: 'Dólar',
+          compra: '7400', venta: '7500',
+          vigente_desde: '2026-10-11T10:00:00Z', creado_por: 'analista1',
+        }])
+      }
+      if (u.includes('/movimientos/') && metodo === 'POST') {
+        const d = JSON.parse(String(init.body ?? '{}'))
+        return respuesta({
+          movimiento: {
+            id: 1, tipo: d.tipo, tipo_display: d.tipo,
+            moneda_codigo: 'USD', total: d.monto, saldo_resultante: null,
+            usuario_nombre: 'Cajero', observacion: '', creado_en: '2026-10-11T10:00:01Z',
+          },
+          monedas: [],
+        }, 201)
+      }
+      if (/\/comprobantes\/\d+\/anular\//.test(u) && metodo === 'POST') {
+        if ('turno' in opciones && opciones.turno === null) {
+          return respuesta({ detail: 'La caja está cerrada.' }, 400)
+        }
+        return respuesta({
+          ...comprobante, estado: 'anulado', motivo_anulacion: '',
+          anulado_por_nombre: 'Cajero',
+          fecha_anulacion: '2026-10-11T10:05:00Z',
+        })
+      }
+      if (u.endsWith('/cajas/')) return respuesta(caja)
+      if (u.includes('/saldo/')) {
+        const monedas = saldoBase.map(m => (
+          opciones.saldos?.[m.moneda_codigo] !== undefined
+            ? { ...m, total: opciones.saldos[m.moneda_codigo] }
+            : m))
+        return respuesta({ monedas })
+      }
+      if (u.includes('/turno/')) {
+        return respuesta('turno' in opciones ? { turno: opciones.turno } : turnoAbierto)
+      }
+      if (u.endsWith('/comprobantes/')) return respuesta([comprobante])
+      return respuesta({}, 404)
+    })
+  }
+
+  const cuerposMov = (fetchMock: ReturnType<typeof vi.fn>) => fetchMock.mock.calls
+    .filter(([llamada, datos]) =>
+      String(llamada).includes('/movimientos/') && (datos as RequestInit).method === 'POST')
+    .map(([, datos]) => JSON.parse(String((datos as RequestInit).body)))
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', mockCaja())
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('la anulación usa el endpoint y marca Anulada desde el servidor', async () => {
+    const user = userEvent.setup()
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+    await user.click(await screen.findByRole('button', { name: /Anulación/ }))
+    expect(await screen.findByText(/anulado y revertido en caja/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Anulada' })).toBeDisabled()
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>
+    // Un solo POST al endpoint: la reversa la hace el servidor.
+    const anular = fetchMock.mock.calls.filter(([llamada, datos]) =>
+      String(llamada).includes('/anular/') && (datos as RequestInit).method === 'POST')
+    expect(anular).toHaveLength(1)
+    expect(cuerposMov(fetchMock)).toHaveLength(0)
+  })
+
+  it('bloquea la anulación si la caja está cerrada', async () => {
+    vi.stubGlobal('fetch', mockCaja({ turno: null }))
+    const user = userEvent.setup()
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+    await user.click(await screen.findByRole('button', { name: /Anulación/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/cerrada/i)
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>
+    expect(cuerposMov(fetchMock)).toHaveLength(0)
+  })
+
+  it('bloquea la emisión si la caja está cerrada (sin crear la operación)', async () => {
+    vi.stubGlobal('fetch', mockCaja({ turno: null }))
+    const user = userEvent.setup()
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+    await user.type(screen.getByPlaceholderText('Ej. 4589201'), '4589201')
+    await user.click(screen.getByRole('button', { name: 'Buscar' }))
+    await screen.findByText('✓ Cliente Seleccionado')
+    // Monto directo en USD (origen) para no depender de tasas.
+    await user.selectOptions(screen.getByLabelText('Tipo Operación'), 'sell')
+    await user.type(screen.getByLabelText(/Monto/), '10')
+    await user.click(screen.getByRole('button', { name: /Procesar, Emitir e Imprimir/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/cerrada/i)
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>
+    const creoOp = fetchMock.mock.calls.some(([llamada, datos]) =>
+      String(llamada).endsWith('/operaciones/') && (datos as RequestInit).method === 'POST')
+    expect(creoOp).toBe(false)
+  })
+
+  it('bloquea la emisión si la caja no tiene saldo en la divisa', async () => {
+    // Venta de USD 10: la caja debe entregar ~₲74.000; con ₲1.000 no alcanza.
+    vi.stubGlobal('fetch', mockCaja({ saldos: { PYG: '1000' } }))
+    const user = userEvent.setup()
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+    await user.type(screen.getByPlaceholderText('Ej. 4589201'), '4589201')
+    await user.click(screen.getByRole('button', { name: 'Buscar' }))
+    await screen.findByText('✓ Cliente Seleccionado')
+    await user.selectOptions(screen.getByLabelText('Tipo Operación'), 'sell')
+    await user.type(screen.getByLabelText(/Monto/), '10')
+    await user.click(screen.getByRole('button', { name: /Procesar, Emitir e Imprimir/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/saldo insuficiente/i)
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>
+    const creoOp = fetchMock.mock.calls.some(([llamada, datos]) =>
+      String(llamada).endsWith('/operaciones/') && (datos as RequestInit).method === 'POST')
+    expect(creoOp).toBe(false)
   })
 })

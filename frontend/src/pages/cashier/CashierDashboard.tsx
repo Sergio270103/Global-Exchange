@@ -11,6 +11,11 @@
  * PI-42: la emisión es real — crea y confirma la operación en efectivo
  * en nombre del cliente y emite el comprobante interno (único, guardado
  * y reimprimible). La factura electrónica/DNIT corresponde a otro PI.
++ * PI-75: cada operación confirmada imputa el efectivo en la primera caja
++ * activa — `INGRESO` por lo que el cliente entrega y `RETIRO` por la
++ * divisa que se le da. Si la caja está cerrada o sin saldo, la emisión se
++ * bloquea antes de crear la operación. La anulación registra el par
++ * inverso en caja (la operación sigue PAGADA: no hay NC en el backend).
  *
  * @module CashierDashboard
  */
@@ -27,11 +32,18 @@ import {
   crearOperacion,
 } from '@/services/operaciones'
 import {
+  anularComprobante,
   emitirComprobante,
   listarComprobantes,
   obtenerComprobante,
   type Comprobante,
 } from '@/services/comprobantes'
+import {
+  listarCajas,
+  obtenerSaldo,
+  obtenerTurno,
+  registrarMovimiento,
+} from '@/services/cajas'
 import { vigentes } from '@/services/cotizaciones'
 import ComprobanteVista from '@/components/ComprobanteVista'
 
@@ -67,7 +79,7 @@ function tasaEnPyg(codigo: DivisaCodigo): number {
   return tasasPyg[codigo] ?? 1
 }
 
-export default function CashierDashboard({ auth, currentClient }: Props) {
+export default function CashierDashboard({ auth, currentClient, navigate }: Props) {
   const [searchDoc, setSearchDoc] = useState('')
   const [selectedClient, setSelectedClient] = useState<Client | null>(null)
   const [searching, setSearching] = useState(false)
@@ -122,6 +134,7 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
   const [emitError, setEmitError] = useState('')
   const [emitInfo, setEmitInfo] = useState('')
   const [comprobanteActual, setComprobanteActual] = useState<Comprobante | null>(null)
+  const [anulandoId, setAnulandoId] = useState<number | null>(null)
 
   useEffect(() => {
     listarComprobantes().then(setComprobantes).catch(() => {})
@@ -153,6 +166,17 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
     setEmitError('')
     setEmitInfo('')
     try {
+      // PI-75: la caja es siempre la primera activa. Se valida turno y
+      // saldo ANTES de crear la operación para no dejar una PAGADA sin
+      // su movimiento de caja.
+      const cajas = await listarCajas()
+      const caja = cajas[0]
+      if (!caja) throw new Error('No hay cajas activas para imputar la operación.')
+      const [saldoCaja, turno] = await Promise.all([
+        obtenerSaldo(caja.id),
+        obtenerTurno(caja.id),
+      ])
+      if (!turno) throw new Error(`La caja ${caja.nombre} está cerrada: no se puede operar.`)
       // El monto se tipea en origen; el backend opera en la divisa.
       const extranjera = operationType === 'buy' ? destinationCurrency : originCurrency
       let montoDivisa: number
@@ -164,6 +188,30 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
         const venta = tasa ? tasa.venta : 0
         if (!(venta > 0)) throw new Error('No hay tasa vigente para la divisa.')
         montoDivisa = Number(amount) / venta
+      }
+      // Pre-chequeo de saldo con el estimado (evita crear la operación si
+      // no hay con qué pagar la pata del RETIRO). El control exacto con
+      // los montos confirmados va después de confirmar.
+      {
+        const codigoRetiroEst = operationType === 'buy' ? extranjera : destinationCurrency
+        let montoRetiroEst: number | null = null
+        if (operationType === 'buy') {
+          montoRetiroEst = montoDivisa
+        } else {
+          const tasasPre = await vigentes()
+          const tasaPre = tasasPre.find(t => t.moneda === extranjera)
+          if (tasaPre && tasaPre.compra > 0) montoRetiroEst = montoDivisa * tasaPre.compra
+        }
+        if (montoRetiroEst != null) {
+          const ids = new Map(saldoCaja.map(s => [s.codigo, s.moneda]))
+          if (ids.get(codigoRetiroEst) == null) {
+            throw new Error('La caja no maneja una de las monedas de la operación.')
+          }
+          const hay = new Map(saldoCaja.map(s => [s.codigo, s.total])).get(codigoRetiroEst) ?? 0
+          if (hay < montoRetiroEst) {
+            throw new Error(`Saldo insuficiente en caja: ${codigoRetiroEst}.`)
+          }
+        }
       }
       const operacion = await crearOperacion({
         clienteId: selectedClient.id,
@@ -181,6 +229,41 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
       }
       if (confirmada.resultado !== 'CONFIRMADA') {
         throw new Error(confirmada.detail || 'No se pudo confirmar la operación.')
+      }
+      // PI-75: imputa el efectivo en caja — INGRESO por lo que el cliente
+      // entrega y RETIRO por la divisa que se le da. Si el RETIRO falla
+      // tras el INGRESO, se compensa para no descuadrar la caja.
+      {
+        const op = confirmada.operacion
+        const idPorCodigo = new Map(saldoCaja.map(s => [s.codigo, s.moneda]))
+        const saldoPorCodigo = new Map(saldoCaja.map(s => [s.codigo, s.total]))
+        const idIngreso = idPorCodigo.get(op.moneda_origen_codigo)
+        const idRetiro = idPorCodigo.get(op.moneda_destino_codigo)
+        if (idIngreso == null || idRetiro == null) {
+          throw new Error('La caja no maneja una de las monedas de la operación.')
+        }
+        if ((saldoPorCodigo.get(op.moneda_destino_codigo) ?? 0) < op.monto_recibido) {
+          throw new Error(`Saldo insuficiente en caja: ${op.moneda_destino_codigo}.`)
+        }
+        const obs = `OP-${op.id} ${op.tipo_operacion} ${op.moneda_origen_codigo}→${op.moneda_destino_codigo}`
+        let ingresoOk = false
+        try {
+          await registrarMovimiento(caja.id, {
+            tipo: 'INGRESO', moneda: idIngreso, monto: op.monto_enviado, observacion: obs,
+          })
+          ingresoOk = true
+          await registrarMovimiento(caja.id, {
+            tipo: 'RETIRO', moneda: idRetiro, monto: op.monto_recibido, observacion: obs,
+          })
+        } catch (errMov) {
+          if (ingresoOk) {
+            await registrarMovimiento(caja.id, {
+              tipo: 'RETIRO', moneda: idIngreso, monto: op.monto_enviado,
+              observacion: `Reversa ${obs}`,
+            }).catch(() => {})
+          }
+          throw new Error(errMov instanceof Error ? errMov.message : 'No se pudo imputar el movimiento de caja.')
+        }
       }
       const comprobante = await emitirComprobante(confirmada.operacion.id)
       setComprobanteActual(comprobante)
@@ -200,8 +283,24 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
     }
   }
 
-  const handleAnular = () => {
-    setEmitInfo('La Nota de Crédito y la anulación fiscal corresponden al PI de facturación electrónica.')
+  /** Anula el comprobante: el servidor revierte la caja con el par
+   * inverso y lo marca como anulado (todo o nada). La operación sigue
+   * PAGADA: no hay nota de crédito.
+   */
+  const handleAnular = async (comp: Comprobante) => {
+    if (anulandoId != null || comp.estado === 'anulado') return
+    setAnulandoId(comp.id)
+    setEmitError('')
+    setEmitInfo('')
+    try {
+      const anulado = await anularComprobante(comp.id)
+      setComprobantes(prev => prev.map(c => (c.id === anulado.id ? anulado : c)))
+      setEmitInfo(`Comprobante ${anulado.numero} anulado y revertido en caja.`)
+    } catch (err) {
+      setEmitError(err instanceof Error ? err.message : 'No se pudo anular el comprobante.')
+    } finally {
+      setAnulandoId(null)
+    }
   }
 
   /** PI-45: busca por documento y confirma la identidad antes de operar. */
@@ -435,9 +534,18 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
         </div>
       </div>
 
-      {/* Historial real de comprobantes internos (PI-42) */}
+      {/* Historial real de comprobantes internos (PI-42): últimos 10 en el
+          panel; el listado completo vive en Transacciones. */}
       <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5 space-y-4">
-        <h3 className="font-semibold text-slate-900 border-b pb-2">📋 Historial de Comprobantes Internos</h3>
+        <h3 className="font-semibold text-slate-900 border-b pb-2 flex items-center justify-between">
+          <span>📋 Historial de Comprobantes Internos</span>
+          <button
+            onClick={() => navigate('transactions')}
+            className="text-[12px] text-emerald-600 font-semibold hover:text-emerald-700"
+          >
+            Ver todo →
+          </button>
+        </h3>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs border-collapse">
@@ -455,9 +563,16 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
               {comprobantes.length === 0 && (
                 <tr><td colSpan={6} className="p-4 text-center text-slate-400">Sin comprobantes emitidos.</td></tr>
               )}
-              {comprobantes.map((comp) => (
+              {comprobantes.slice(0, 10).map((comp) => (
                 <tr key={comp.id} className="border-b hover:bg-slate-50">
-                  <td className="p-3 font-bold">{comp.numero}</td>
+                  <td className="p-3 font-bold">
+                    {comp.numero}
+                    {comp.estado === 'anulado' && (
+                      <span className="ml-2 text-[10px] font-semibold px-2 py-0.5 rounded-full border bg-slate-100 text-slate-600 border-slate-200">
+                        Anulada
+                      </span>
+                    )}
+                  </td>
                   <td className="p-3">{comp.cliente_nombre} ({comp.cliente_documento})</td>
                   <td className="p-3"><span className="px-2 py-1 rounded bg-slate-100 font-semibold">{comp.tipo_operacion}</span></td>
                   <td className="p-3 font-semibold">
@@ -469,8 +584,16 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
                       <button onClick={() => handleReimprimir(comp.id)} className="px-2 py-1 bg-slate-900 text-white rounded font-semibold text-[11px]">
                         🖨️ Reimprimir
                       </button>
-                      <button onClick={handleAnular} className="px-2 py-1 bg-rose-50 border border-rose-200 text-rose-600 rounded font-semibold text-[11px]">
-                        Solicitar NC / Anulación
+                      <button
+                        onClick={() => handleAnular(comp)}
+                        disabled={anulandoId === comp.id || comp.estado === 'anulado'}
+                        className="px-2 py-1 bg-rose-50 border border-rose-200 text-rose-600 rounded font-semibold text-[11px] disabled:opacity-60"
+                      >
+                        {anulandoId === comp.id
+                          ? 'Anulando…'
+                          : comp.estado === 'anulado'
+                            ? 'Anulada'
+                            : 'Solicitar NC / Anulación'}
                       </button>
                     </div>
                   </td>
@@ -479,6 +602,14 @@ export default function CashierDashboard({ auth, currentClient }: Props) {
             </tbody>
           </table>
         </div>
+        {comprobantes.length > 10 && (
+          <p className="text-[12px] text-slate-400 text-right">
+            Mostrando los últimos 10 de {comprobantes.length}.{' '}
+            <button onClick={() => navigate('transactions')} className="text-emerald-600 font-semibold hover:text-emerald-700">
+              Ver todo →
+            </button>
+          </p>
+        )}
       </div>
 
       {/* Vista imprimible del comprobante recién emitido o reimpreso */}
