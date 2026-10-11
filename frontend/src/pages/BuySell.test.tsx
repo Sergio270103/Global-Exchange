@@ -46,7 +46,11 @@ function mockFetch() {
     if (u.includes('/cotizaciones/vigentes/')) return respuesta(vigentes)
     if (u.includes('/monedas/')) return respuesta(catalogo)
     if (u.includes('/metodos-pago/')) {
-      return respuesta([{ id: 1, codigo: 'transfer', nombre: 'Transferencia', activo: true }])
+      return respuesta([
+        { id: 1, codigo: 'transfer', nombre: 'Transferencia', activo: true },
+        { id: 2, codigo: 'card', nombre: 'Tarjeta', activo: true },
+        { id: 3, codigo: 'qr', nombre: 'QR', activo: true },
+      ])
     }
     if (u.includes('/asociaciones/')) {
       return respuesta([{ id: 1, cliente: 1, cliente_nombre: 'Carlos Martínez' }])
@@ -134,23 +138,25 @@ describe('BuySell PI-71 (selects según monedas activas)', () => {
 })
 
 /**
- * Cobro por Stripe Checkout: confirmar con transferencia redirige a la
- * sesión de pago; la venta ofrece billetera o tarjeta.
+ * Cobro: transferencia confirma directo, tarjeta redirige a Checkout y
+ * QR está bloqueado.
  */
-describe('BuySell Stripe (redirect a Checkout)', () => {
+describe('BuySell pago (directo, Stripe y QR bloqueado)', () => {
   const ahora = new Date().toISOString()
-  const pendiente = {
-    id: 1, cliente: 1, cliente_nombre: 'Carlos Martínez', usuario_keycloak_id: 'sub',
-    usuario_nombre: 'Carlos', tipo_operacion: 'COMPRA', moneda_origen: 1,
-    moneda_origen_codigo: 'PYG', moneda_destino: 2, moneda_destino_codigo: 'USD',
-    monto_enviado: '765000.00', monto_recibido: '100.00', cotizacion_aplicada: '7650.000000',
-    tasa_origen: null, tasa_destino: '7650.00', metodo_pago: 'transfer',
-    billetera_destino: 2, billetera_destino_detalle: '', cuenta_origen: 5,
-    cuenta_origen_detalle: '', billetera_origen: null, billetera_origen_detalle: '',
-    fecha_creacion: ahora, estado: 'PENDIENTE', fecha_cotizacion: ahora,
-    fecha_confirmacion: null, fecha_cancelacion: null, cancelada_por: '',
-    cancelada_por_nombre: '', motivo_cancelacion: '', tolerancia_segundos: 30,
-    segundos_restantes: 30,
+  function pendienteCon(metodo: string) {
+    return {
+      id: 1, cliente: 1, cliente_nombre: 'Carlos Martínez', usuario_keycloak_id: 'sub',
+      usuario_nombre: 'Carlos', tipo_operacion: 'COMPRA', moneda_origen: 1,
+      moneda_origen_codigo: 'PYG', moneda_destino: 2, moneda_destino_codigo: 'USD',
+      monto_enviado: '765000.00', monto_recibido: '100.00', cotizacion_aplicada: '7650.000000',
+      tasa_origen: null, tasa_destino: '7650.00', metodo_pago: metodo,
+      billetera_destino: 2, billetera_destino_detalle: '', cuenta_origen: 5,
+      cuenta_origen_detalle: '', billetera_origen: null, billetera_origen_detalle: '',
+      fecha_creacion: ahora, estado: 'PENDIENTE', fecha_cotizacion: ahora,
+      fecha_confirmacion: null, fecha_cancelacion: null, cancelada_por: '',
+      cancelada_por_nombre: '', motivo_cancelacion: '', tolerancia_segundos: 30,
+      segundos_restantes: 30,
+    }
   }
 
   let llamadas: string[]
@@ -164,11 +170,15 @@ describe('BuySell Stripe (redirect a Checkout)', () => {
       if (u.includes('/iniciar-pago/')) {
         return respuesta({ url: 'https://checkout.stripe.com/pay/cs_x', session_id: 'cs_x' })
       }
+      if (u.includes('/confirmar/')) {
+        return respuesta({ resultado: 'CONFIRMADA', operacion: pendienteCon('transfer') })
+      }
       if (u.includes('/simulador/')) {
         return respuesta({ tasa_aplicada: 7650, monto_total: 765000, total_tipo: 'pagar' })
       }
       if (u.includes('/operaciones/') && (init.method ?? 'GET').toUpperCase() === 'POST') {
-        return respuesta(pendiente, 201)
+        const cuerpo = JSON.parse(String(init.body ?? '{}'))
+        return respuesta(pendienteCon(cuerpo.metodo_pago ?? 'transfer'), 201)
       }
       return base(url)
     }))
@@ -177,8 +187,7 @@ describe('BuySell Stripe (redirect a Checkout)', () => {
     vi.unstubAllGlobals()
   })
 
-  it('confirmar compra por transferencia pide la sesión de pago', async () => {
-    const user = userEvent.setup()
+  async function llegarAConfirmar(user: ReturnType<typeof userEvent.setup>) {
     render(<BuySell auth={auth} currentClient={{ id: 1, nombre: 'Carlos Martínez' }} />)
     await screen.findByRole('heading', { name: 'Comprar divisas' })
     await user.type(screen.getByPlaceholderText('0.00'), '100')
@@ -187,8 +196,33 @@ describe('BuySell Stripe (redirect a Checkout)', () => {
     await user.selectOptions(cuenta, 'C:5')
     await user.click(screen.getByRole('button', { name: /Continuar/ }))
     await screen.findByRole('heading', { name: 'Confirmar operación' })
+  }
+
+  it('transferencia confirma directo sin pasarela', async () => {
+    const user = userEvent.setup()
+    await llegarAConfirmar(user)
+    await user.click(screen.getByRole('button', { name: 'Confirmar compra' }))
+    expect(await screen.findByText('Transacción Exitosa')).toBeInTheDocument()
+    expect(llamadas.some(l => l.includes('/iniciar-pago/'))).toBe(false)
+  })
+
+  it('tarjeta redirige a la sesión de Checkout', async () => {
+    const user = userEvent.setup()
+    render(<BuySell auth={auth} currentClient={{ id: 1, nombre: 'Carlos Martínez' }} />)
+    await screen.findByRole('heading', { name: 'Comprar divisas' })
+    await user.click(screen.getByRole('button', { name: /Tarjeta/ }))
+    await user.type(screen.getByPlaceholderText('0.00'), '100')
+    await screen.findByText('Resumen de la operación')
+    await user.click(screen.getByRole('button', { name: /Continuar/ }))
+    await screen.findByRole('heading', { name: 'Confirmar operación' })
     await user.click(screen.getByRole('button', { name: /Pagar compra con Stripe/ }))
     expect(llamadas.some(l => l.includes('/operaciones/1/iniciar-pago/'))).toBe(true)
+  })
+
+  it('QR aparece bloqueado y no se puede elegir', async () => {
+    render(<BuySell auth={auth} currentClient={{ id: 1, nombre: 'Carlos Martínez' }} />)
+    await screen.findByRole('heading', { name: 'Comprar divisas' })
+    expect(screen.getByRole('button', { name: /QR/ })).toBeDisabled()
   })
 
   it('la venta ofrece billetera o tarjeta Stripe', async () => {

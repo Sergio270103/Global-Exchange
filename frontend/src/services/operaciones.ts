@@ -18,6 +18,17 @@ import { listarClientes, misClientes, type Cliente } from '@/services/clientes'
 export const ERROR_CLIENTE_INACTIVO =
   'La operación no puede ser realizada: el cliente está inactivo o el usuario no está asociado a este cliente.'
 
+/**
+ * Métodos que se cobran por pasarela (Stripe Checkout con redirect).
+ * `transfer` es confirmación directa y `wallet` es saldo interno.
+ */
+export const METODOS_STRIPE = ['card']
+
+/** Indica si el método se cobra por pasarela. */
+export function esMetodoStripe(metodo: string): boolean {
+  return METODOS_STRIPE.includes(metodo)
+}
+
 /** Operación tal como la devuelve el backend. */
 export interface Operacion {
   id: number

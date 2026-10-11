@@ -4,10 +4,14 @@
   ``monto_enviado`` en ``moneda_origen`` (lo que el cliente entrega; en
   COMPRA ya incluye la comisión) y devuelve la sesión con su ``url``.
   Las monedas sin centavos (PYG, CLP, …) se envían en unidades enteras.
-- Los métodos ``transfer``/``card``/``qr`` (``settings.STRIPE_METODOS``)
-  se cobran por acá; ``wallet`` es saldo interno y no pasa por Stripe.
+  La sesión expira a los 30 minutos (mínimo de Stripe).
+- ``sesion_abierta()``: devuelve la URL de una sesión guardada si sigue
+  abierta, para retomar el pago sin crear otra.
+- Solo ``card`` pasa por acá (``settings.STRIPE_METODOS``);
+  ``transfer`` es confirmación directa y ``wallet`` es saldo interno.
 """
 
+import time
 from decimal import Decimal, ROUND_HALF_UP
 
 import stripe
@@ -52,6 +56,7 @@ def crear_sesion_checkout(operacion):
     try:
         return stripe.checkout.Session.create(
             mode='payment',
+            expires_at=int(time.time()) + 30 * 60,
             line_items=[{
                 'price_data': {
                     'currency': codigo.lower(),
@@ -74,3 +79,21 @@ def crear_sesion_checkout(operacion):
         raise ErrorPasarela(
             getattr(err, 'user_message', None) or str(err) or 'No se pudo crear la sesión de pago.',
         )
+
+
+def sesion_abierta(sesion_id: str | None) -> str | None:
+    """URL de la sesión guardada si sigue abierta, o None.
+
+    Permite retomar el pago (mismo monto y cotización congelada) sin
+    crear otra sesión. Nunca lanza: ante cualquier error se crea nueva.
+    """
+    if not sesion_id or not settings.STRIPE_SECRET_KEY:
+        return None
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    try:
+        sesion = stripe.checkout.Session.retrieve(sesion_id)
+        if sesion['status'] != 'open' or not sesion['url']:
+            return None
+        return sesion['url']
+    except (stripe.StripeError, KeyError):
+        return None

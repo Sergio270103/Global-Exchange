@@ -29,6 +29,7 @@ import {
   cancelarOperacion,
   verificarClienteOperable,
   iniciarPago,
+  esMetodoStripe,
   ERROR_CLIENTE_INACTIVO,
   type Operacion,
   type MotivoCancelacion,
@@ -309,16 +310,13 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
     }
   }
 
-  /** Confirma con billetera o redirige al pago seguro de Stripe. */
+  /** Confirma con billetera/transferencia o redirige al pago seguro de Stripe. */
   const confirmar = async () => {
     if (!pendiente || creando) return
     setCreando(true)
     setErrorPost('')
     try {
-      const pagaPorStripe = pendiente.metodo_pago === 'transfer'
-        || pendiente.metodo_pago === 'card'
-        || pendiente.metodo_pago === 'qr'
-      if (pagaPorStripe) {
+      if (esMetodoStripe(pendiente.metodo_pago)) {
         const sesion = await iniciarPago(pendiente.id)
         window.location.href = sesion.url
         return
@@ -503,7 +501,7 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
           : formatoMonto(anterior.monto_recibido, anterior.moneda_destino_codigo, decimales))
       : ''
     const ocupado = creando || cancelando
-    const pagaPorStripe = op.metodo_pago === 'transfer' || op.metodo_pago === 'card' || op.metodo_pago === 'qr'
+    const pagaPorStripe = esMetodoStripe(op.metodo_pago)
 
     return (
       <div className="max-w-lg mx-auto animate-fadein">
@@ -720,16 +718,22 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
                       { id: 'card', icon: '💳', label: 'Tarjeta' },
                       { id: 'qr', icon: '⊞', label: 'QR' },
                     ]
-                ).map(m => (
-                  <button
-                    key={m.id}
-                    onClick={() => setPaymentMethod(m.id)}
-                    className={`flex flex-col items-center gap-1.5 py-3 rounded-xl border text-center transition-all ${paymentMethod === m.id ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 hover:border-slate-300'}`}
-                  >
-                    <span className="text-xl">{m.icon}</span>
-                    <span className={`text-[11px] font-semibold ${paymentMethod === m.id ? 'text-emerald-600' : 'text-slate-500'}`}>{m.label}</span>
-                  </button>
-                ))}
+                ).map(m => {
+                  // QR deshabilitado por ahora (sin pasarela asignada).
+                  const bloqueadoQR = m.id === 'qr'
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() => setPaymentMethod(m.id)}
+                      disabled={bloqueadoQR}
+                      title={bloqueadoQR ? 'Próximamente' : undefined}
+                      className={`flex flex-col items-center gap-1.5 py-3 rounded-xl border text-center transition-all ${paymentMethod === m.id ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 hover:border-slate-300'} ${bloqueadoQR ? 'opacity-40 cursor-not-allowed' : ''}`}
+                    >
+                      <span className="text-xl">{m.icon}</span>
+                      <span className={`text-[11px] font-semibold ${paymentMethod === m.id ? 'text-emerald-600' : 'text-slate-500'}`}>{m.label}</span>
+                    </button>
+                  )
+                })}
               </div>
             </div>
           )}

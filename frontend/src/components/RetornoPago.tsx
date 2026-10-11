@@ -9,7 +9,7 @@
  * @module components/RetornoPago
  */
 import { useEffect, useState } from 'react'
-import { obtenerOperacion, type Operacion } from '@/services/operaciones'
+import { iniciarPago, obtenerOperacion, type Operacion } from '@/services/operaciones'
 
 export interface RetornoPagoProps {
   opId: number
@@ -27,6 +27,7 @@ export default function RetornoPago({ opId, resultado, onVerHistorial, onReinten
   const [op, setOp] = useState<Operacion | null>(null)
   const [terminado, setTerminado] = useState(false)
   const [error, setError] = useState('')
+  const [retomando, setRetomando] = useState(false)
 
   useEffect(() => {
     let vivo = true
@@ -64,6 +65,21 @@ export default function RetornoPago({ opId, resultado, onVerHistorial, onReinten
 
   const pagada = op?.estado === 'PAGADA'
   const cancelada = op != null && op.estado !== 'PENDIENTE' && op.estado !== 'PAGADA'
+  const pendiente = op?.estado === 'PENDIENTE'
+
+  /** Retoma la sesión de Checkout abierta (mismo monto y cotización). */
+  const volverAlPago = async () => {
+    if (retomando) return
+    setRetomando(true)
+    try {
+      const sesion = await iniciarPago(opId)
+      window.location.href = sesion.url
+    } catch {
+      setRetomando(false)
+      setError('No se pudo retomar el pago.')
+      setTerminado(true)
+    }
+  }
 
   return (
     <div className="max-w-lg mx-auto animate-fadein">
@@ -116,10 +132,20 @@ export default function RetornoPago({ opId, resultado, onVerHistorial, onReinten
               <button onClick={onVerHistorial} className="flex-1 py-3 rounded-xl border border-slate-200 text-[14px] font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
                 Ver historial
               </button>
-              <button onClick={onReintentar} className="flex-1 py-3 rounded-xl text-white text-[14px] font-semibold" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
+              <button onClick={onReintentar} className="flex-1 py-3 rounded-xl border border-slate-200 text-[14px] font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
                 Reintentar
               </button>
             </div>
+            {pendiente && (
+              <button
+                onClick={volverAlPago}
+                disabled={retomando}
+                className="w-full mt-3 py-3 rounded-xl text-white text-[14px] font-semibold disabled:opacity-60"
+                style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}
+              >
+                {retomando ? 'Abriendo el pago…' : 'Volver al pago'}
+              </button>
+            )}
           </>
         )}
       </div>

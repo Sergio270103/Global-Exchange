@@ -72,7 +72,7 @@ vi.mock('@/services/monedas', async importOriginal => {
   }
 })
 
-import Dashboard from '@/pages/Dashboard'
+import Dashboard, { puntosPorOperacion } from '@/pages/Dashboard'
 
 const auth = { name: 'Ana López', email: 'ana@email.com', role: 'user' as const, avatar: '' }
 
@@ -95,6 +95,7 @@ describe('Dashboard (usuario, datos reales)', () => {
     expect((await screen.findAllByText('Venta EUR')).length).toBe(2)
     expect((await screen.findAllByText('Compra USD')).length).toBe(2)
     expect(screen.getByText('Evolución de operaciones')).toBeInTheDocument()
+    expect(screen.getByText('Monto en PYG por operación')).toBeInTheDocument()
     expect(screen.getByText('Billeteras')).toBeInTheDocument()
     expect(screen.getByText('Operaciones recientes')).toBeInTheDocument()
     expect(screen.getByText('Tasas destacadas')).toBeInTheDocument()
@@ -114,5 +115,52 @@ describe('Dashboard (usuario, datos reales)', () => {
     expect(navigate).toHaveBeenCalledWith('wallets')
     await user.click(screen.getAllByText('Ver todo →')[1])
     expect(navigate).toHaveBeenCalledWith('transactions')
+  })
+})
+
+describe('puntosPorOperacion', () => {
+  function op(extra: Record<string, unknown>) {
+    return {
+      id: 1, cliente: 1, cliente_nombre: 'Carlos', usuario_keycloak_id: 'sub',
+      usuario_nombre: 'Carlos', tipo_operacion: 'COMPRA', moneda_origen: 1,
+      moneda_origen_codigo: 'PYG', moneda_destino: 2, moneda_destino_codigo: 'USD',
+      monto_enviado: 0, monto_recibido: 0, cotizacion_aplicada: 0,
+      tasa_origen: null, tasa_destino: null, metodo_pago: '', billetera_destino: null,
+      billetera_destino_detalle: '', cuenta_origen: null, cuenta_origen_detalle: '',
+      billetera_origen: null, billetera_origen_detalle: '', fecha_creacion: '',
+      estado: 'PAGADA', fecha_cotizacion: '', fecha_confirmacion: null,
+      fecha_cancelacion: null, cancelada_por: '', cancelada_por_nombre: '',
+      motivo_cancelacion: '', tolerancia_segundos: 30, segundos_restantes: 0,
+      ...extra,
+    } as unknown as import('@/services/operaciones').Operacion
+  }
+
+  const compraUSD = op({
+    id: 1, tipo_operacion: 'COMPRA', moneda_destino_codigo: 'USD',
+    monto_recibido: 2450, tasa_destino: 7650, fecha_creacion: '2026-01-10T10:00:00',
+  })
+  const ventaPYG = op({
+    id: 2, tipo_operacion: 'VENTA', moneda_destino_codigo: 'PYG',
+    monto_recibido: 15000000, fecha_creacion: '2026-03-05T10:00:00',
+  })
+
+  it('numera cronológicamente y convierte cada monto a PYG', () => {
+    const puntos = puntosPorOperacion([ventaPYG, compraUSD], new Date('2025-01-01'), new Map())
+    expect(puntos.map(p => p.seq)).toEqual([1, 2])
+    expect(puntos[0].pyg).toBe(2450 * 7650)
+    expect(puntos[1].pyg).toBe(15000000)
+    expect(puntos.map(p => p.tipo)).toEqual(['COMPRA', 'VENTA'])
+  })
+
+  it('filtra fuera de rango y omite sin tasa disponible', () => {
+    const sinTasa = op({
+      id: 3, tipo_operacion: 'COMPRA', moneda_destino_codigo: 'GBP',
+      monto_recibido: 100, fecha_creacion: '2026-03-06T10:00:00',
+    })
+    const puntos = puntosPorOperacion(
+      [compraUSD, ventaPYG, sinTasa], new Date('2026-02-01'), new Map(),
+    )
+    expect(puntos.map(p => p.seq)).toEqual([1])
+    expect(puntos[0].tipo).toBe('VENTA')
   })
 })
