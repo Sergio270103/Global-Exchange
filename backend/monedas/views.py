@@ -17,17 +17,17 @@ from .serializers import EstadoMonedaSerializer, MonedaSerializer
 
 
 class MonedaViewSet(viewsets.ModelViewSet):
-    """CRUD de monedas.
+    """CRUD de monedas y filtrado por activo.
 
     Rutas generadas por el router:
 
     * ``GET    /api/monedas/``            lista (filtros ``?activo=`` y ``?buscar=``)
-    * ``POST   /api/monedas/``            alta
+    * ``POST   /api/monedas/``            alta (admin solo)
     * ``GET    /api/monedas/{id}/``       detalle
     * ``PUT    /api/monedas/{id}/``       reemplazo completo
     * ``PATCH  /api/monedas/{id}/``       edición parcial
-    * ``DELETE /api/monedas/{id}/``       baja lógica
-    * ``PATCH  /api/monedas/{id}/estado/`` activar o desactivar
+    * ``DELETE /api/monedas/{id}/``       baja lógica (admin solo)
+    * ``PATCH  /api/monedas/{id}/estado/`` activar o desactivar (admin solo)
     """
 
     queryset = Moneda.objects.all()
@@ -35,6 +35,7 @@ class MonedaViewSet(viewsets.ModelViewSet):
     permission_classes = [SoloAdminEscribe]
 
     def get_queryset(self):
+        """Filtrar catálogo: usuarios ven solo monedas activas; admin ve todo."""
         qs = super().get_queryset()
 
         # Quien no es administrador solo ve el catálogo vigente.
@@ -55,7 +56,7 @@ class MonedaViewSet(viewsets.ModelViewSet):
         """Da de baja la moneda de forma lógica.
 
         No se borra el registro para no romper el histórico de tasas y
-        transacciones que la referencian.
+        transacciones que la referencian. Solo admin.
         """
         moneda = self.get_object()
         if not moneda.activo:
@@ -69,7 +70,10 @@ class MonedaViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['patch'], url_path='estado')
     def estado(self, request, pk=None):
-        """Activa o desactiva la moneda. Cuerpo: ``{"activo": true|false}``."""
+        """Activa o desactiva la moneda.
+
+        Cuerpo: ``{"activo": true|false}``. Solo administrador.
+        """
         moneda = self.get_object()
         entrada = EstadoMonedaSerializer(data=request.data)
         entrada.is_valid(raise_exception=True)
