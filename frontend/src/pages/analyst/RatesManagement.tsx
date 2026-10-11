@@ -15,14 +15,24 @@ import {
   type Cotizacion,
 } from '@/services/cotizaciones'
 import { listarMonedas } from '@/services/monedas'
+import {
+  DECIMALES_TASA,
+  aTextoTasa,
+  esNumeroTasa,
+  formatearTasa,
+  normalizarTasa,
+  redondearTasa,
+} from '@/utils/tasas'
 
 interface Rate {
   currency: string
   name: string
   flag: string
   monedaId: number
-  buy: number
-  sell: number
+  /** Tasa de compra; `null` cuando el campo quedó vacío (PI-82). */
+  buy: number | null
+  /** Tasa de venta; `null` cuando el campo quedó vacío (PI-82). */
+  sell: number | null
   updatedAt: string
   updatedBy: string
   isDirty?: boolean
@@ -66,27 +76,45 @@ export default function RatesManagement() {
       })
   }, [])
 
+  /**
+   * PI-82: guarda el valor escrito aceptando punto o coma.
+   *
+   * Un campo vacío queda en `null` (no en 0) para que `Guardar` avise en
+   * lugar de mandar una tasa de cero.
+   */
   const setRate = (currency: string, field: 'buy' | 'sell', value: string) => {
-    setRates(prev => prev.map(r => r.currency === currency ? { ...r, [field]: parseFloat(value) || 0, isDirty: true } : r))
+    setRates(prev => prev.map(r => r.currency === currency ? { ...r, [field]: normalizarTasa(value), isDirty: true } : r))
     setSaved(false)
   }
 
   const saveRates = async () => {
     const sucias = rates.filter(r => r.isDirty)
     if (sucias.length === 0) return
+    // PI-82: un campo en blanco no es un cero. Se avisa antes de guardar.
+    const vacias = sucias.filter(r => !esNumeroTasa(r.buy) || !esNumeroTasa(r.sell))
+    if (vacias.length > 0) {
+      setError(`Cargá compra y venta de ${vacias.map(r => r.currency).join(', ')}.`)
+      return
+    }
     setSaving(true)
     setError('')
     try {
       const creadas: Cotizacion[] = []
       for (const r of sucias) {
         if (!r.monedaId) throw new Error(`Sin id para ${r.currency}.`)
-        if (r.sell < r.buy) throw new Error(`Venta menor que compra en ${r.currency}.`)
-        creadas.push(await crearCotizacion(r.monedaId, r.buy, r.sell))
+        const compra = redondearTasa(r.buy as number)
+        const venta = redondearTasa(r.sell as number)
+        if (venta < compra) throw new Error(`Venta menor que compra en ${r.currency}.`)
+        creadas.push(await crearCotizacion(r.monedaId, compra, venta))
       }
       setRates(prev => prev.map(r => {
         const c = creadas.find(x => x.moneda === r.currency)
+        // Vuelve el valor que confirmó el backend, no lo tipeado: así el
+        // input muestra exactamente lo que quedó guardado (PI-82).
         return c ? {
           ...r,
+          buy: c.compra,
+          sell: c.venta,
           isDirty: false,
           updatedAt: new Date(c.vigente_desde).toLocaleString(),
           updatedBy: c.creado_por || '—',
@@ -102,7 +130,7 @@ export default function RatesManagement() {
             entradas.push({
               time: new Date(ultima.vigente_desde).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' }),
               user: ultima.creado_por || '—',
-              action: `Actualizó ${r.currency}: Compra ₲${ultima.compra.toLocaleString()} → Venta ₲${ultima.venta.toLocaleString()}`,
+              action: `Actualizó ${r.currency}: Compra ₲${formatearTasa(ultima.compra)} → Venta ₲${formatearTasa(ultima.venta)}`,
             })
           }
         } catch {
@@ -162,7 +190,7 @@ export default function RatesManagement() {
       </div>
 
       {error && (
-        <div className="px-5 py-3 rounded-xl border border-red-100 bg-red-50 text-red-700 text-[13px] font-semibold">
+        <div role="alert" className="px-5 py-3 rounded-xl border border-red-100 bg-red-50 text-red-700 text-[13px] font-semibold">
           {error}
         </div>
       )}
@@ -198,7 +226,12 @@ export default function RatesManagement() {
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[12px] font-semibold">₲</span>
                       <input
                         type="number"
-                        value={rate.buy}
+                        inputMode="decimal"
+                        step="any"
+                        min={0}
+                        value={aTextoTasa(rate.buy)}
+                        placeholder="0.00"
+                        aria-label={`Tasa de compra de ${rate.currency}`}
                         onChange={e => setRate(rate.currency, 'buy', e.target.value)}
                         className={`w-full pl-7 pr-3 py-2.5 rounded-lg border font-mono text-[14px] font-semibold text-slate-800 focus:outline-none focus:ring-2 transition-all ${rate.isDirty ? 'border-amber-300 bg-amber-50 focus:ring-amber-200' : 'border-slate-200 bg-white focus:ring-emerald-300'}`}
                       />
@@ -209,14 +242,19 @@ export default function RatesManagement() {
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[12px] font-semibold">₲</span>
                       <input
                         type="number"
-                        value={rate.sell}
+                        inputMode="decimal"
+                        step="any"
+                        min={0}
+                        value={aTextoTasa(rate.sell)}
+                        placeholder="0.00"
+                        aria-label={`Tasa de venta de ${rate.currency}`}
                         onChange={e => setRate(rate.currency, 'sell', e.target.value)}
                         className={`w-full pl-7 pr-3 py-2.5 rounded-lg border font-mono text-[14px] font-semibold text-slate-800 focus:outline-none focus:ring-2 transition-all ${rate.isDirty ? 'border-amber-300 bg-amber-50 focus:ring-amber-200' : 'border-slate-200 bg-white focus:ring-emerald-300'}`}
                       />
                     </div>
                   </td>
                   <td className="px-5 py-4">
-                    <div className="text-[13px] font-mono font-semibold text-slate-700">₲ {spread.toLocaleString()}</div>
+                    <div className="text-[13px] font-mono font-semibold text-slate-700">₲ {formatearTasa(spread)}</div>
                     <div className="text-[11px] text-slate-400">{spreadPct}%</div>
                   </td>
                   <td className="px-5 py-4 text-[12px] text-slate-500">{rate.updatedAt}</td>
