@@ -10,6 +10,7 @@ import userEvent from '@testing-library/user-event'
 import CashDeliveries from '@/pages/admin/CashDeliveries'
 import type { CatalogoMoneda, Entrega } from '@/services/cajas'
 import * as cajas from '@/services/cajas'
+import * as monedasServicio from '@/services/monedas'
 
 vi.mock('@/services/cajas', async importOriginal => {
   const real = await importOriginal<typeof import('@/services/cajas')>()
@@ -24,6 +25,11 @@ vi.mock('@/services/cajas', async importOriginal => {
 })
 
 const mocks = vi.mocked(cajas)
+
+vi.mock('@/services/monedas', async importOriginal => {
+  const real = await importOriginal<typeof import('@/services/monedas')>()
+  return { ...real, listarMonedas: vi.fn() }
+})
 
 const monedas: CatalogoMoneda[] = [
   {
@@ -58,6 +64,10 @@ beforeEach(() => {
     { id: 2, nombre: 'Caja 2', sucursal: 'Casa Central', activa: true, abierta: false, turnoActual: null },
   ])
   mocks.listarDenominaciones.mockResolvedValue(monedas)
+  vi.mocked(monedasServicio.listarMonedas).mockResolvedValue([
+    { id: 1, code: 'PYG', name: 'Guaraní', symbol: '₲', flag: '🇵🇾', decimals: 0, active: true },
+    { id: 2, code: 'USD', name: 'Dólar', symbol: '$', flag: '🇺🇸', decimals: 2, active: true },
+  ])
   mocks.listarEntregas.mockResolvedValue([
     entrega(),
     entrega({
@@ -100,6 +110,27 @@ describe('CashDeliveries (PI-43)', () => {
     await user.click(screen.getAllByRole('button', { name: 'Ver detalle' })[0])
     expect(screen.getByText(/10 × 100 = 1\.000/)).toBeInTheDocument()
     expect(screen.getByText('Total USD (10 billetes)')).toBeInTheDocument()
+  })
+
+  it('avisa que hay una moneda activa sin billetes registrados', async () => {
+    // El selector de divisa arma la lista desde `listarDenominaciones`, así
+    // que una moneda activa sin billetes desaparece en silencio. DKK es el
+    // caso real: se dio de alta pero nunca se le cargaron billetes.
+    vi.mocked(monedasServicio.listarMonedas).mockResolvedValue([
+      { id: 1, code: 'PYG', name: 'Guaraní', symbol: '₲', flag: '🇵🇾', decimals: 0, active: true },
+      { id: 2, code: 'USD', name: 'Dólar', symbol: '$', flag: '🇺🇸', decimals: 2, active: true },
+      { id: 3, code: 'DKK', name: 'Corona Danesa', symbol: 'kr', flag: '🇩🇰', decimals: 2, active: true },
+    ])
+    const user = userEvent.setup()
+    render(<CashDeliveries />)
+    await screen.findByText('#12')
+    await user.click(screen.getByRole('button', { name: '+ Nueva entrega' }))
+    const dialogo = screen.getByRole('dialog', { name: 'Nueva entrega de billetes' })
+    // No se la ofrece para elegir, pero sí se explica por qué falta.
+    expect(within(dialogo).queryByRole('button', { name: 'DKK' })).not.toBeInTheDocument()
+    const aviso = within(dialogo).getByText(/no tiene billetes registrados/)
+    expect(aviso).toHaveTextContent('DKK')
+    expect(aviso).toHaveTextContent(/Configuración → Monedas → Billetes/)
   })
 
   it('registra una entrega en varias divisas con el total de cada una', async () => {

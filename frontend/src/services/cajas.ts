@@ -68,6 +68,15 @@ export interface CatalogoMoneda extends MonedaCaja {
   denominaciones: { denominacion: number; valor: number }[]
 }
 
+/** Un billete del catálogo, tal como lo usa la pantalla de administración. */
+export interface Denominacion {
+  id: number
+  moneda: number
+  codigo: string
+  valor: number
+  activa: boolean
+}
+
 /** Movimiento de efectivo ya registrado. */
 export interface MovimientoCaja {
   id: number
@@ -181,6 +190,7 @@ interface DenominacionApi {
   simbolo: string
   decimales: number
   valor: string
+  activa?: boolean
 }
 
 interface MovimientoApi {
@@ -454,6 +464,17 @@ export async function registrarArqueo(
   return mapearArqueo(datos)
 }
 
+function mapearDenominacion(d: DenominacionApi): Denominacion {
+  return {
+    id: d.id,
+    moneda: d.moneda,
+    codigo: d.moneda_codigo,
+    valor: Number(d.valor),
+    // El backend siempre lo manda; el `?? true` cubre respuestas viejas.
+    activa: d.activa ?? true,
+  }
+}
+
 /**
  * Catálogo de billetes habilitados, agrupado por moneda y ordenado de la
  * denominación mayor a la menor. Lo usa el formulario de entregas.
@@ -480,6 +501,59 @@ export async function listarDenominaciones(): Promise<CatalogoMoneda[]> {
   return [...grupos.values()]
     .map(g => ({ ...g, denominaciones: [...g.denominaciones].sort((a, b) => b.valor - a.valor) }))
     .sort((a, b) => a.codigo.localeCompare(b.codigo))
+}
+
+/**
+ * Lista **todas** las denominaciones de una moneda, activas e inactivas.
+ *
+ * A diferencia de {@link listarDenominaciones}, no agrupa ni filtra: es lo
+ * que necesita el administrador para revisar y dar de alta los billetes de
+ * una moneda recién creada.
+ *
+ * @param monedaId - Id de la moneda (no el código).
+ * @returns Las denominaciones de mayor a menor.
+ */
+export async function listarDenominacionesDe(monedaId: number): Promise<Denominacion[]> {
+  const datos = await apiFetch<DenominacionApi[]>(`/denominaciones/?moneda=${monedaId}`)
+  return datos.map(mapearDenominacion).sort((a, b) => b.valor - a.valor)
+}
+
+/**
+ * Registra un billete en el catálogo de una moneda (solo admin).
+ *
+ * Sin esto, una moneda dada de alta desde `/monedas/` no aparece en el
+ * formulario de entregas: ese formulario lista las monedas que tienen
+ * billetes cargados, no el catálogo completo.
+ *
+ * @param monedaId - Id de la moneda a la que pertenece el billete.
+ * @param valor - Valor del billete, con hasta dos decimales.
+ * @returns La denominación creada.
+ */
+export async function crearDenominacion(monedaId: number, valor: string): Promise<Denominacion> {
+  const creada = await apiFetch<DenominacionApi>('/denominaciones/', {
+    method: 'POST',
+    body: JSON.stringify({ moneda: monedaId, valor, activa: true }),
+  })
+  return mapearDenominacion(creada)
+}
+
+/**
+ * Activa o desactiva un billete del catálogo (solo admin).
+ *
+ * No se borra porque las entregas ya registradas apuntan a esta fila con
+ * `on_delete=PROTECT`: desactivar la saca de los formularios sin tocar el
+ * historial.
+ *
+ * @param id - Id de la denominación.
+ * @param activa - `true` para volver a habilitarla.
+ * @returns La denominación actualizada.
+ */
+export async function cambiarEstadoDenominacion(id: number, activa: boolean): Promise<Denominacion> {
+  const actualizada = await apiFetch<DenominacionApi>(`/denominaciones/${id}/`, {
+    method: 'PATCH',
+    body: JSON.stringify({ activa }),
+  })
+  return mapearDenominacion(actualizada)
 }
 
 /** Lista entregas de billetes, de la más reciente a la más antigua. */

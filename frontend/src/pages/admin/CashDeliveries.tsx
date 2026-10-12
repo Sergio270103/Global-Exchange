@@ -36,6 +36,7 @@ import {
   textoBillete,
 } from '@/pages/cashier/ComponentesCaja'
 import { INTERVALO_REFRESCO_MS } from '@/pages/cashier/CashCountView'
+import { listarMonedas } from '@/services/monedas'
 
 const ESTILO_ESTADO: Record<EstadoEntrega, string> = {
   PENDIENTE: 'bg-amber-50 text-amber-700 border-amber-200',
@@ -263,6 +264,7 @@ function ModalNuevaEntrega({ cajas, cajaInicial, onCerrar, onRegistrada }: {
 }) {
   const [cajaId, setCajaId] = useState<number>(cajaInicial ?? cajas[0].id)
   const [monedas, setMonedas] = useState<CatalogoMoneda[]>([])
+  const [activas, setActivas] = useState<string[]>([])
   const [codigo, setCodigo] = useState('')
   const [cantidades, setCantidades] = useState<Record<number, number>>({})
   const [observacion, setObservacion] = useState('')
@@ -279,6 +281,19 @@ function ModalNuevaEntrega({ cajas, cajaInicial, onCerrar, onRegistrada }: {
       })
       .catch((e: Error) => setError(e.message))
   }, [])
+
+  // El selector de arriba solo muestra monedas con billetes. Para poder
+  // avisar de las que faltan, hay que cruzarlo con el catálogo completo.
+  useEffect(() => {
+    listarMonedas(true)
+      .then(lista => setActivas(lista.map(m => m.code)))
+      .catch(() => setActivas([]))
+  }, [])
+
+  /** Monedas activas del catálogo que todavía no tienen billetes cargados. */
+  const sinBilletes = activas.filter(
+    cod => !monedas.some(m => m.codigo === cod),
+  )
 
   const moneda = monedas.find(m => m.codigo === codigo)
   const cajaElegida = cajas.find(c => c.id === cajaId)
@@ -345,6 +360,17 @@ function ModalNuevaEntrega({ cajas, cajaInicial, onCerrar, onRegistrada }: {
           {cajaElegida.abierta
             ? `La caja está abierta por ${cajaElegida.turnoActual?.cajeroNombre ?? 'un cajero'}: esta entrega es una reposición.`
             : 'La caja está cerrada: esta entrega será la apertura cuando el cajero la confirme.'}
+        </p>
+      )}
+
+      {/* Este selector no lista el catálogo de monedas sino las que TIENEN
+          billetes registrados. Una moneda activa sin billetes se pierde en
+          silencio, así que se avisa explícitamente. */}
+      {sinBilletes.length > 0 && (
+        <p className="rounded-lg px-3 py-2 bg-amber-50 text-amber-800 text-[13px]">
+          <strong className="font-semibold">{sinBilletes.join(', ')}</strong> está activa pero no
+          tiene billetes registrados, por eso no se puede entregar efectivo en esa moneda.
+          Cargalos en <strong>Configuración → Monedas → Billetes</strong>.
         </p>
       )}
 

@@ -18,6 +18,9 @@ import {
   listarArqueos,
   listarCajas,
   listarDenominaciones,
+  listarDenominacionesDe,
+  crearDenominacion,
+  cambiarEstadoDenominacion,
   listarMovimientos,
   obtenerSaldo,
   registrarArqueo,
@@ -147,7 +150,23 @@ describe('cajas (servicio API)', () => {
         return respuesta({ movimiento: movimientoApi, monedas: saldoApi.monedas }, 201)
       }
       if (u.includes('/movimientos/')) return respuesta([movimientoApi])
-      if (u.includes('/denominaciones/')) return respuesta(denominacionesApi)
+      if (u.includes('/denominaciones/') && method === 'POST') {
+        return respuesta({ ...denominacionesApi[0], ...JSON.parse(String(init.body)) }, 201)
+      }
+      if (u.includes('/denominaciones/') && method === 'PATCH') {
+        const id = Number(u.match(/denominaciones\/(\d+)/)?.[1])
+        const base = denominacionesApi.find(d => d.id === id)
+        return respuesta({ ...base, ...JSON.parse(String(init.body)) })
+      }
+      if (u.includes('/denominaciones/')) {
+        // El backend filtra por `?moneda=`.
+        const filtro = new URL(u, 'http://x').searchParams.get('moneda')
+        return respuesta(
+          filtro
+            ? denominacionesApi.filter(d => String(d.moneda) === filtro)
+            : denominacionesApi,
+        )
+      }
       if (u.includes('/arqueos/') && method === 'POST') {
         return respuesta({
           id: 5, usuario_nombre: 'Ana', observacion: 'x', con_diferencias: true, es_cierre: false, creado_en: '2026-10-08T18:00:00-03:00',
@@ -213,6 +232,31 @@ describe('cajas (servicio API)', () => {
       { denominacion: 21, valor: 20 },
     ])
     expect(catalogo[1].flag).toBe('🇺🇸')
+  })
+
+  it('alta y baja de billetes de una moneda', async () => {
+    // Listar por moneda, con el filtro que aplica el backend.
+    const lista = await listarDenominacionesDe(2)
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/denominaciones/?moneda=2')
+    expect(lista.map(d => d.valor)).toEqual([100, 20])
+    expect(lista[0]).toMatchObject({ id: 20, moneda: 2, codigo: 'USD', activa: true })
+
+    // Crear. El servicio es un pass-through del valor: el formateo a dos
+    // decimales lo hace quien lo llama (el modal del admin), y DRF acepta
+    // las dos formas.
+    await crearDenominacion(3, '1000.00')
+    const post = fetchMock.mock.calls.find(([u, i]) =>
+      String(u).endsWith('/denominaciones/') && (i as RequestInit).method === 'POST')!
+    expect(JSON.parse(String(post[1].body))).toEqual({ moneda: 3, valor: '1000.00', activa: true })
+
+    // Desactivar: se usa PATCH y no DELETE porque las entregas ya
+    // registradas apuntan a la fila (`on_delete=PROTECT`).
+    await cambiarEstadoDenominacion(20, false)
+    const patch = fetchMock.mock.calls.find(([u, i]) =>
+      String(u).includes('/denominaciones/20/') && (i as RequestInit).method === 'PATCH')!
+    expect(JSON.parse(String(patch[1].body))).toEqual({ activa: false })
+    expect(fetchMock.mock.calls.every(([u, i]) =>
+      (i as RequestInit).method !== 'DELETE')).toBe(true)
   })
 
   it('consulta el turno, el historial y cierra la caja (PI-79)', async () => {
