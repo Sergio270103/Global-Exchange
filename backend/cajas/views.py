@@ -199,8 +199,9 @@ class CajaViewSet(viewsets.ModelViewSet):
                 cliente=datos['cliente'],
                 tipo_operacion=datos['tipo_operacion'],
                 moneda=datos['moneda'],
-                monto_divisa=datos['monto_divisa'],
+                monto=datos['monto'],
                 moneda_contraparte=datos.get('moneda_contraparte') or 'PYG',
+                moneda_del_monto=datos.get('moneda_del_monto'),
             )
         except DjangoValidationError as exc:
             return Response({'detail': _mensaje(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -237,9 +238,10 @@ class CajaViewSet(viewsets.ModelViewSet):
                 cliente=datos['cliente'],
                 tipo_operacion=datos['tipo_operacion'],
                 moneda=datos['moneda'],
-                monto_divisa=datos['monto_divisa'],
+                monto=datos['monto'],
                 moneda_contraparte=datos.get('moneda_contraparte') or 'PYG',
                 medio_pago=datos['medio_pago'],
+                moneda_del_monto=datos.get('moneda_del_monto'),
                 usuario_id=sub,
                 usuario_nombre=nombre,
                 observacion=datos.get('observacion') or '',

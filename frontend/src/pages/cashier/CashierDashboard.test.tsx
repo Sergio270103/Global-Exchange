@@ -11,7 +11,7 @@
  * @module CashierDashboard.test
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import CashierDashboard from '@/pages/cashier/CashierDashboard'
 
@@ -45,13 +45,46 @@ const cajaAbierta = [{
   abierta: true, turno_actual: null,
 }]
 
+/**
+ * Catálogo de monedas activo devuelto por la API.
+ *
+ * `DKK` está acá a propósito: reproduce la moneda que el administrador
+ * da de alta y que el panel tiene que ofrecer sin tocar el código
+ * (bug: el desplegable leía la lista fija de `mockData`).
+ */
+const catalogoMonedas = [
+  { id: 1, codigo: 'PYG', nombre: 'Guaraní Paraguayo', simbolo: '₲', decimales: 0, pais_iso: 'PY', activo: true },
+  { id: 2, codigo: 'USD', nombre: 'Dólar Americano', simbolo: '$', decimales: 2, pais_iso: 'US', activo: true },
+  { id: 3, codigo: 'EUR', nombre: 'Euro', simbolo: '€', decimales: 2, pais_iso: 'EU', activo: true },
+  { id: 4, codigo: 'ARS', nombre: 'Peso Argentino', simbolo: '$', decimales: 2, pais_iso: 'AR', activo: true },
+  { id: 5, codigo: 'GBP', nombre: 'Libra Esterlina', simbolo: '£', decimales: 2, pais_iso: 'GB', activo: true },
+  { id: 6, codigo: 'DKK', nombre: 'Corona Danesa', simbolo: 'kr', decimales: 2, pais_iso: 'DK', activo: true },
+]
+
 const desgloseOk = {
   tipo_operacion: 'COMPRA',
   moneda_origen_codigo: 'PYG', moneda_origen_decimales: 0,
   moneda_destino_codigo: 'USD', moneda_destino_decimales: 2,
   monto_enviado: '757500', monto_recibido: '100',
+  monto_bruto: '100.00', monto_comision: '0.50',
+  porcentaje_ajuste: '1', comision_descuenta_destino: false,
   tasa_aplicada: '7575.000000',
+  tasa_origen: null, tasa_destino: '7500.00',
   cliente_paga: '757500 PYG', cliente_recibe: '100 USD',
+  caja_abierta: true, saldo_disponible: '5000', saldo_suficiente: true,
+}
+
+/** Desglose de una VENTA: el ajuste se descuenta de lo que recibe (PI-75). */
+const desgloseVenta = {
+  tipo_operacion: 'VENTA',
+  moneda_origen_codigo: 'PYG', moneda_origen_decimales: 0,
+  moneda_destino_codigo: 'ARS', moneda_destino_decimales: 2,
+  monto_enviado: '20000', monto_recibido: '5076.92',
+  monto_bruto: '5128.20', monto_comision: '51.28',
+  porcentaje_ajuste: '1', comision_descuenta_destino: true,
+  tasa_aplicada: '0.256410',
+  tasa_origen: null, tasa_destino: '3.90',
+  cliente_paga: '20000 PYG', cliente_recibe: '5076.92 ARS',
   caja_abierta: true, saldo_disponible: '5000', saldo_suficiente: true,
 }
 
@@ -90,10 +123,12 @@ function mockUnificado(opciones: {
   ejecutar?: unknown
   ejecutarEstado?: number
   comprobantes?: unknown[]
+  monedas?: unknown[]
 } = {}) {
   return vi.fn(async (url: string, init: RequestInit = {}) => {
     const u = String(url)
     const metodo = (init.method ?? 'GET').toUpperCase()
+    if (u.includes('/monedas/')) return respuesta(opciones.monedas ?? catalogoMonedas)
     if (u.includes('/buscar-documento/')) {
       const doc = new URL(u, 'http://x').searchParams.get('documento') ?? ''
       if (doc === '4589201') return respuesta({ encontrado: true, cliente: ana })
@@ -127,6 +162,7 @@ function mockApi() {
     const u = String(url)
     const metodo = (init.method ?? 'GET').toUpperCase()
 
+    if (u.includes('/monedas/')) return respuesta(catalogoMonedas)
     if (u.includes('/buscar-documento/')) {
       const doc = new URL(u, 'http://x').searchParams.get('documento') ?? ''
       if (doc === '4589201') {
@@ -260,6 +296,20 @@ describe('CashierDashboard PI-75 (operación unificada)', () => {
     vi.unstubAllGlobals()
   })
 
+  /**
+   * Espera a que el catálogo de divisas termine de cargar.
+   *
+   * Los desplegables se llenan con `GET /monedas/`, así que recién
+   * después del render tienen opciones: sin esta espera `selectOptions`
+   * falla con "Value X not found in options".
+   */
+  async function esperarCatalogo() {
+    await waitFor(() =>
+      expect((screen.getByLabelText('Divisa origen') as HTMLSelectElement).options.length)
+        .toBeGreaterThan(1)
+    )
+  }
+
   async function seleccionarAna(user: ReturnType<typeof userEvent.setup>) {
     render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
     await user.type(screen.getByPlaceholderText('Ej. 4589201'), '4589201')
@@ -286,6 +336,110 @@ describe('CashierDashboard PI-75 (operación unificada)', () => {
     expect(JSON.parse(String((ejecuciones[0] as [string, RequestInit])[1].body))).toMatchObject({
       cliente: 7, tipo_operacion: 'COMPRA', moneda: 'USD', medio_pago: 'efectivo',
     })
+  })
+
+  it('muestra bruto, ajuste y neto en el desglose previo', async () => {
+    vi.stubGlobal('fetch', mockUnificado({ desglose: desgloseVenta }))
+    const user = userEvent.setup()
+    await seleccionarAna(user)
+    await user.type(screen.getByLabelText(/Monto/), '20000')
+    expect(await screen.findByText('Desglose de la operación')).toBeInTheDocument()
+    // Bruto 5128.20 - ajuste 51.28 = neto 5076.92, igual al comprobante.
+    expect(screen.getByText('5128.20')).toBeInTheDocument()
+    expect(screen.getByText(/51\.28 ARS/)).toBeInTheDocument()
+    expect(screen.getByText('5076.92 ARS')).toBeInTheDocument()
+    expect(screen.getByText(/1%/)).toBeInTheDocument()
+  })
+
+  it('muestra la tasa directa y no el factor interno invertido', async () => {
+    vi.stubGlobal('fetch', mockUnificado({ desglose: desgloseVenta }))
+    const user = userEvent.setup()
+    await seleccionarAna(user)
+    await user.type(screen.getByLabelText(/Monto/), '20000')
+    await screen.findByText('Desglose de la operación')
+    // El comprobante imprime 3.90; la vista previa debe coincidir.
+    expect(screen.getByText('- / 3.90')).toBeInTheDocument()
+    // 0,256410 es el factor interno (1/3,9) y no debe verse.
+    expect(screen.queryByText(/0\.256410/)).not.toBeInTheDocument()
+  })
+
+  it('deduce el tipo de operación desde las divisas, sin selector', async () => {
+    const user = userEvent.setup()
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+    // PYG -> USD: el cliente compra dólares.
+    expect(await screen.findByText(/Compra de divisas · El cliente compra USD/)).toBeInTheDocument()
+    // El campo es de solo lectura: no es un desplegable.
+    expect(screen.queryByLabelText('Tipo Operación')).not.toBeInTheDocument()
+    expect(document.getElementById('tipo-operacion')?.tagName).not.toBe('SELECT')
+
+    // Cambiar a GBP -> PYG: el cliente vende libras.
+    await esperarCatalogo()
+    await user.selectOptions(screen.getByLabelText('Divisa origen'), 'GBP')
+    await user.selectOptions(screen.getByLabelText('Divisa destino'), 'PYG')
+    expect(await screen.findByText(/Venta de divisas · El cliente vende GBP/)).toBeInTheDocument()
+  })
+
+  it('marca arbitraje cuando las dos divisas son extranjeras', async () => {
+    const user = userEvent.setup()
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+    await esperarCatalogo()
+    await user.selectOptions(screen.getByLabelText('Divisa origen'), 'EUR')
+    await user.selectOptions(screen.getByLabelText('Divisa destino'), 'ARS')
+    expect(await screen.findByText(/Arbitraje · Cruce de EUR a ARS/)).toBeInTheDocument()
+  })
+
+  it('ofrece las monedas que el administrador dio de alta (DKK)', async () => {
+    const user = userEvent.setup()
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+    await esperarCatalogo()
+    // La moneda nueva llega desde la API y tiene que estar entre las
+    // opciones de los dos desplegables, sin tocar el código.
+    const origenes = (screen.getByLabelText('Divisa origen') as HTMLSelectElement)
+    const destinos = (screen.getByLabelText('Divisa destino') as HTMLSelectElement)
+    expect([...origenes.options].map(o => o.value)).toContain('DKK')
+    expect([...destinos.options].map(o => o.value)).toContain('DKK')
+    expect([...destinos.options].map(o => o.textContent)).toContain('DKK - Corona Danesa')
+    // Y se puede operar con ella: USD -> DKK es un cruce. El destino se
+    // cambia primero porque el origen no ofrece la moneda del destino.
+    await user.selectOptions(screen.getByLabelText('Divisa destino'), 'DKK')
+    await user.selectOptions(screen.getByLabelText('Divisa origen'), 'USD')
+    expect(await screen.findByText(/Arbitraje · Cruce de USD a DKK/)).toBeInTheDocument()
+  })
+  it('omite las monedas deshabilitadas por el administrador', async () => {
+    const user = userEvent.setup()
+    vi.stubGlobal('fetch', mockUnificado({
+      monedas: catalogoMonedas.map(m => (m.codigo === 'GBP' ? { ...m, activo: false } : m)),
+    }))
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+    await esperarCatalogo()
+    const opciones = (screen.getByLabelText('Divisa destino') as HTMLSelectElement)
+    expect([...opciones.options].map(o => o.value)).toContain('DKK')
+    expect([...opciones.options].map(o => o.value)).not.toContain('GBP')
+  })
+
+  it('cae al catálogo de respaldo si la API no responde', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw new Error('sin backend')
+    }))
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+    // El panel sigue siendo utilizable en desarrollo.
+    expect(await screen.findByText(/Compra de divisas · El cliente compra USD/)).toBeInTheDocument()
+  })
+
+  it('no vuelve a pedir el desglose en loop (no parpadea)', async () => {
+    const user = userEvent.setup()
+    await seleccionarAna(user)
+    await user.type(screen.getByLabelText(/Monto/), '2000000')
+    await screen.findByText('Desglose de la operación')
+    // Deja pasar varias veces el debounce: si el efecto se re-dispara en
+    // loop (porque una dependencia es un objeto nuevo), el desglose
+    // parpadea y el contador de peticiones crece sin parar.
+    await new Promise(r => setTimeout(r, 1200))
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>
+    const cotizaciones = fetchMock.mock.calls.filter(([llamada]) =>
+      String(llamada).includes('/cotizar/'))
+    expect(cotizaciones.length).toBeLessThanOrEqual(2)
+    expect(screen.getByText('Desglose de la operación')).toBeInTheDocument()
   })
 
   it('exige cliente seleccionado antes de emitir', async () => {

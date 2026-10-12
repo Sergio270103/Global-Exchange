@@ -37,8 +37,15 @@ export interface SaldoMoneda {
 export interface DatosOperacionPresencial {
   cliente: number
   tipo_operacion: 'COMPRA' | 'VENTA'
+  /** Divisa que el cliente compra o vende (la que opera el backend). */
   moneda: string
-  monto_divisa: string
+  /** Monto que escribió el cajero, en `moneda_del_monto`. */
+  monto: string
+  /**
+   * Moneda del campo de monto. El panel rotula "Monto (PYG)" y el cajero
+   * escribe en esa moneda; el backend convierte a la divisa operada.
+   */
+  moneda_del_monto?: string
   moneda_contraparte?: string
   medio_pago: MedioPago
   observacion?: string
@@ -58,7 +65,24 @@ export interface CotizacionVentanilla {
   moneda_destino_decimales: number
   monto_enviado: string
   monto_recibido: string
+  /** Bruto en destino antes del ajuste (5128.20). */
+  monto_bruto: string
+  /** Ajuste aplicado, en moneda destino (51.28). */
+  monto_comision: string
+  /** Porcentaje del ajuste por categoría (1 = 1%). */
+  porcentaje_ajuste: string
+  /**
+   * `true` en VENTA: el ajuste se descuenta de lo que recibe el cliente.
+   * `false` en COMPRA: ya está incluido en lo que paga, no se resta.
+   */
+  comision_descuenta_destino: boolean
+  /**
+   * Factor interno, va invertido (0,256 = 1/3,9). No se muestra: para eso
+   * están `tasa_origen` y `tasa_destino`, que son las del comprobante.
+   */
   tasa_aplicada: string
+  tasa_origen: string | null
+  tasa_destino: string | null
   cliente_paga: string
   cliente_recibe: string
   caja_abierta: boolean

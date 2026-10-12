@@ -72,7 +72,7 @@ class OperacionPresencialTest(TestCase):
 
     def _cotizar(self, datos=None, usuario=None):
         cuerpo = {'cliente': self.cliente.pk, 'tipo_operacion': 'COMPRA',
-                  'moneda': 'USD', 'monto_divisa': '100'}
+                  'moneda': 'USD', 'monto': '100'}
         cuerpo.update(datos or {})
         req = self.factory.post(f'/api/cajas/{self.caja.pk}/cotizar/', cuerpo, format='json')
         force_authenticate(req, user=usuario or UsuarioCajero())
@@ -80,13 +80,53 @@ class OperacionPresencialTest(TestCase):
 
     def _operar(self, datos=None, usuario=None):
         cuerpo = {'cliente': self.cliente.pk, 'tipo_operacion': 'COMPRA',
-                  'moneda': 'USD', 'monto_divisa': '100', 'medio_pago': 'efectivo'}
+                  'moneda': 'USD', 'monto': '100', 'medio_pago': 'efectivo'}
         cuerpo.update(datos or {})
         req = self.factory.post(f'/api/cajas/{self.caja.pk}/operacion/', cuerpo, format='json')
         force_authenticate(req, user=usuario or UsuarioCajero())
         return CajaViewSet.as_view({'post': 'operacion_presencial'})(req, pk=self.caja.pk)
 
     # --- desglose previo ------------------------------------------------
+    def test_el_monto_ingresado_esta_en_la_moneda_del_campo(self):
+        """PI-75: escribir 2.000.000 en "Monto (PYG)" son 2M de guaraníes.
+
+        Regresión: el monto se mandaba como si fuera la divisa operada, así
+        que 2.000.000 PYG se interpretaban como 2.000.000 USD (15.150
+        millones de PYG). El backend tiene que convertirlo.
+        """
+        self._abrir_turno()
+        res = self._cotizar({
+            'moneda': 'USD', 'monto': '2000000', 'moneda_del_monto': 'PYG',
+            'moneda_contraparte': 'PYG', 'tipo_operacion': 'COMPRA',
+        })
+        self.assertEqual(res.status_code, 200, res.data)
+        # El cliente entrega exactamente lo que escribió.
+        self.assertEqual(res.data['cliente_paga'], '2000000 PYG')
+        # Y recibe ~266 USD (2.000.000 / 7.500), no 2 millones de dólares.
+        recibido = Decimal(res.data['monto_recibido'])
+        self.assertGreater(recibido, Decimal('260'))
+        self.assertLess(recibido, Decimal('270'))
+
+    def test_el_desglose_cierra_bruto_menos_ajuste_es_neto(self):
+        self._abrir_turno()
+        res = self._cotizar({
+            'moneda': 'USD', 'monto': '2000000', 'moneda_del_monto': 'PYG',
+        })
+        bruto = Decimal(res.data['monto_bruto'])
+        comision = Decimal(res.data['monto_comision'])
+        neto = Decimal(res.data['monto_recibido'])
+        self.assertEqual(bruto - comision, neto)
+
+    def test_rechaza_venta_de_guaranies(self):
+        """El PYG es la moneda base: no se opera como divisa."""
+        self._abrir_turno()
+        res = self._cotizar({
+            'tipo_operacion': 'VENTA', 'moneda': 'PYG', 'monto': '20000',
+            'moneda_del_monto': 'PYG', 'moneda_contraparte': 'USD',
+        })
+        self.assertEqual(res.status_code, 400)
+        self.assertIn('guaran', res.data['detail'].lower())
+
     def test_cotizar_devuelve_desglose_sin_efectos(self):
         self._abrir_turno()
         res = self._cotizar()
@@ -109,7 +149,7 @@ class OperacionPresencialTest(TestCase):
 
     def test_cotizar_admite_venta(self):
         self._abrir_turno()
-        res = self._cotizar({'tipo_operacion': 'VENTA', 'monto_divisa': '100'})
+        res = self._cotizar({'tipo_operacion': 'VENTA', 'monto': '100'})
         self.assertEqual(res.status_code, 200, res.data)
         self.assertEqual(res.data['cliente_paga'], '100 USD')
         self.assertEqual(res.data['cliente_recibe'], '700000 PYG')
@@ -160,7 +200,7 @@ class OperacionPresencialTest(TestCase):
         self._abrir_turno()
         self._saldo(self.pyg, '1000000')
         res = self._operar({'tipo_operacion': 'VENTA', 'moneda': 'USD',
-                            'monto_divisa': '100', 'medio_pago': 'efectivo'})
+                            'monto': '100', 'medio_pago': 'efectivo'})
         self.assertEqual(res.status_code, 201, res.data)
         # El cliente da USD y recibe PYG: la caja entra USD y sale PYG.
         tipos = dict(
@@ -228,7 +268,7 @@ class OperacionPresencialTest(TestCase):
 
     def test_rechaza_monto_no_positivo(self):
         self._abrir_turno()
-        res = self._cotizar({'monto_divisa': '0'})
+        res = self._cotizar({'monto': '0'})
         self.assertEqual(res.status_code, 400)
 
     def test_usuario_comun_no_puede_operar(self):

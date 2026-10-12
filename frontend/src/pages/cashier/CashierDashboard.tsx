@@ -22,7 +22,9 @@
  */
 import React, { useEffect, useState } from 'react'
 import { type AuthUser, type Page, type ClienteActivo } from '../../types'
-import { currencies } from '@/data/mockData'
+import { currencies as monedasRespaldo } from '@/data/mockData'
+import { listarMonedas } from '@/services/monedas'
+import type { Currency } from '@/types'
 import {
   buscarClientePorDocumento,
   registrarClientePresencial,
@@ -42,6 +44,7 @@ import {
   type MedioPago,
 } from '@/services/cajasOperacion'
 import { listarCajas, type Caja } from '@/services/cajas'
+import { formatearTasa } from '@/utils/tasas'
 import ComprobanteVista from '@/components/ComprobanteVista'
 
 export interface Props {
@@ -60,7 +63,55 @@ interface Client {
   tipo: string
 }
 
-type DivisaCodigo = (typeof currencies)[number]['code']
+/**
+ * Código de divisa. Es texto libre y no un enum: el catálogo viene de la API
+ * y el administrador puede dar de alta monedas nuevas (PI-82), así que el
+ * panel no puede restringir los códigos a una lista fija.
+ */
+type DivisaCodigo = string
+
+/**
+ * Deduce la operación a partir de las divisas, sin selector manual.
+ *
+ * El tipo de operación no es un dato que el cajero elija: sale de qué
+ * moneda entra y cuál sale. Pedirlo además de las divisas abre la puerta a
+ * combinaciones incoherentes (elegir "venta" entregando dólares), que es
+ * justo lo que pasó con los 2.000.000 PYG.
+ *
+ * La perspectiva es la del **cliente**, igual que el backend
+ * (`operaciones.views._cotizar`) y el comprobante impreso: el cliente
+ * COMPRA cuando entrega guaraníes y recibe la moneda extranjera.
+ *
+ * @returns `null` si el par no representa una operación (misma moneda).
+ */
+function derivarOperacion(origen: string, destino: string) {
+  if (!origen || !destino || origen === destino) return null
+  if (origen === 'PYG') {
+    return {
+      tipo: 'COMPRA' as const,
+      etiqueta: 'Compra de divisas',
+      detalle: `El cliente compra ${destino}`,
+      operada: destino,
+      contraparte: origen,
+    }
+  }
+  if (destino === 'PYG') {
+    return {
+      tipo: 'VENTA' as const,
+      etiqueta: 'Venta de divisas',
+      detalle: `El cliente vende ${origen}`,
+      operada: origen,
+      contraparte: destino,
+    }
+  }
+  return {
+    tipo: 'VENTA' as const,
+    etiqueta: 'Arbitraje',
+    detalle: `Cruce de ${origen} a ${destino}`,
+    operada: origen,
+    contraparte: destino,
+  }
+}
 
 export default function CashierDashboard({ auth, currentClient, navigate }: Props) {
   const [searchDoc, setSearchDoc] = useState('')
@@ -92,11 +143,49 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
     }
   }
 
-  const [operationType, setOperationType] = useState<'buy' | 'sell'>('buy')
   const [originCurrency, setOriginCurrency] = useState<DivisaCodigo>('PYG')
   const [destinationCurrency, setDestinationCurrency] = useState<DivisaCodigo>('USD')
   const [amount, setAmount] = useState<number | ''>('')
   const [docType, setDocType] = useState<'Comprobante'>('Comprobante')
+
+  /**
+   * Catálogo de divisas operables, tomado de la API.
+   *
+   * El panel NO puede usar la lista fija de `mockData`: si la tomaba de ahí,
+   * una moneda dada de alta por el administrador (DKK, por ejemplo) nunca
+   * aparecería en los desplegables. Si la API no responde se usa el respaldo
+   * para que el panel siga siendo utilizable en desarrollo.
+   */
+  const [monedas, setMonedas] = useState<Currency[]>([])
+  useEffect(() => {
+    let vivo = true
+    listarMonedas(true)
+      .then((lista) => {
+        if (!vivo) return
+        const operables = lista.filter((m) => m.active)
+        setMonedas(operables.length > 0 ? operables : monedasRespaldo)
+      })
+      .catch(() => {
+        if (vivo) setMonedas(monedasRespaldo)
+      })
+    return () => {
+      vivo = false
+    }
+  }, [])
+
+  // Si la moneda elegida no está en el catálogo operativo, se corrige sola
+  // para no dejar un desplegable apuntando a una divisa que no existe.
+  useEffect(() => {
+    const codigos = new Set(monedas.map((m) => m.code))
+    if (codigos.size === 0) return
+    if (!codigos.has(originCurrency)) {
+      setOriginCurrency(codigos.has('PYG') ? 'PYG' : (monedas[0]?.code ?? originCurrency))
+    }
+    if (!codigos.has(destinationCurrency) || destinationCurrency === originCurrency) {
+      const alternativa = monedas.find((m) => m.code !== originCurrency)
+      if (alternativa) setDestinationCurrency(alternativa.code)
+    }
+  }, [monedas, originCurrency, destinationCurrency])
 
   // PI-75: la caja en la que se opera y el medio de pago en ventanilla.
   const [cajas, setCajas] = useState<Caja[]>([])
@@ -119,34 +208,34 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
       .catch(() => setEmitError('No se pudieron cargar las cajas.'))
   }, [])
 
-  const handleOperationTypeChange = (value: 'buy' | 'sell') => {
-    setOperationType(value)
-    if (value === 'buy') {
-      setOriginCurrency('PYG')
-      setDestinationCurrency((previous) => (previous === 'PYG' ? 'USD' : previous))
-    } else {
-      setOriginCurrency((previous) => (previous === 'PYG' ? 'USD' : previous))
-      setDestinationCurrency('PYG')
-    }
-  }
-
+  /** Operación deducida de las divisas, o `null` si el par no es válido. */
+  const operacion = derivarOperacion(originCurrency, destinationCurrency)
   /** Divisa que el cliente compra o vende (la que opera el backend). */
-  const divisaOperada = operationType === 'buy' ? destinationCurrency : originCurrency
-  const contraparte = operationType === 'buy' ? originCurrency : destinationCurrency
+  const divisaOperada = operacion?.operada ?? ''
+  const contraparte = operacion?.contraparte ?? ''
+  /** El PYG es la moneda base: no tiene sentido un PYG → PYG. */
+  const parInvalido = operacion === null
 
   /** PI-75: pide el desglose al backend; no crea nada. */
   const refetchCotizacion = async () => {
+    if (parInvalido) {
+      setCotizacion(null)
+      setEmitError('Elegí dos divisas distintas: no se puede operar la misma moneda.')
+      return
+    }
     if (!cajaId || !selectedClient || !amount || amount <= 0) {
       setCotizacion(null)
       return
     }
     setCotizando(true)
+    setEmitError('')
     try {
       setCotizacion(await cotizarOperacion(cajaId, {
         cliente: selectedClient.id,
-        tipo_operacion: operationType === 'buy' ? 'COMPRA' : 'VENTA',
+        tipo_operacion: operacion!.tipo,
         moneda: divisaOperada,
-        monto_divisa: String(amount),
+        monto: String(amount),
+        moneda_del_monto: originCurrency,
         moneda_contraparte: contraparte,
         medio_pago: medioPago,
       }))
@@ -161,7 +250,10 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
   useEffect(() => {
     const timer = setTimeout(() => { void refetchCotizacion() }, 350)
     return () => clearTimeout(timer)
-  }, [cajaId, selectedClient, operationType, divisaOperada, contraparte, amount])
+  // Solo primitivos en las dependencias. `operacion` es un objeto nuevo en
+  // cada render: ponerlo acá hace que el efecto se dispare siempre y el
+  // recuadro del desglose parpadee (se abre y se cierra solo).
+  }, [cajaId, selectedClient, divisaOperada, contraparte, amount, parInvalido])
 
   // PI-42: historial real de comprobantes emitidos (reimprimibles).
   const [comprobantes, setComprobantes] = useState<Comprobante[]>([])
@@ -201,15 +293,20 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
       setEmitError('Ingrese un monto válido.')
       return
     }
+    if (parInvalido) {
+      setEmitError('Elegí dos divisas distintas: no se puede operar la misma moneda.')
+      return
+    }
     setEmitiendo(true)
     setEmitError('')
     setEmitInfo('')
     try {
       const resultado = await ejecutarOperacion(cajaId, {
         cliente: selectedClient.id,
-        tipo_operacion: operationType === 'buy' ? 'COMPRA' : 'VENTA',
+        tipo_operacion: operacion!.tipo,
         moneda: divisaOperada,
-        monto_divisa: String(amount),
+        monto: String(amount),
+        moneda_del_monto: originCurrency,
         moneda_contraparte: contraparte,
         medio_pago: medioPago,
       })
@@ -391,7 +488,7 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
                 onChange={(e) => setOriginCurrency(e.target.value as DivisaCodigo)}
                 className="w-full mt-1 p-2 border rounded-lg text-sm"
               >
-                {currencies
+                {monedas
                   .filter((currency) => currency.active && currency.code !== destinationCurrency)
                   .map((currency) => (
                     <option key={currency.code} value={currency.code}>
@@ -409,7 +506,7 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
                 onChange={(e) => setDestinationCurrency(e.target.value as DivisaCodigo)}
                 className="w-full mt-1 p-2 border rounded-lg text-sm"
               >
-                {currencies
+                {monedas
                   .filter((currency) => currency.active && currency.code !== originCurrency)
                   .map((currency) => (
                     <option key={currency.code} value={currency.code}>
@@ -419,17 +516,23 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
               </select>
             </div>
 
+            {/* El tipo de operación se deduce de las divisas: el cajero no
+                puede elegir una combinación incoherente. */}
             <div>
-              <label htmlFor="tipo-operacion" className="text-xs font-semibold text-slate-500">Tipo Operación</label>
-              <select
+              <span className="text-xs font-semibold text-slate-500">Tipo de operación</span>
+              <div
                 id="tipo-operacion"
-                value={operationType}
-                onChange={(e) => handleOperationTypeChange(e.target.value as 'buy' | 'sell')}
-                className="w-full mt-1 p-2 border rounded-lg text-sm"
+                aria-live="polite"
+                className={`mt-1 p-2 rounded-lg border text-sm font-semibold ${
+                  parInvalido
+                    ? 'border-rose-200 bg-rose-50 text-rose-700'
+                    : 'border-slate-200 bg-slate-50 text-slate-700'
+                }`}
               >
-                <option value="buy">Compra de Divisas</option>
-                <option value="sell">Venta de Divisas</option>
-              </select>
+                {parInvalido
+                  ? 'Elegí dos divisas distintas'
+                  : `${operacion!.etiqueta} · ${operacion!.detalle}`}
+              </div>
             </div>
 
             <div>
@@ -507,22 +610,47 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
             <p className="text-slate-400 text-[13px]">Calculando precio final…</p>
           )}
           {cotizacion && !cotizando && (
-            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 space-y-1">
+            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 space-y-1.5">
               <div className="text-xs font-semibold text-slate-600">Desglose de la operación</div>
+
               <div className="flex justify-between text-[13px]">
-                <span className="text-slate-500">El cliente paga</span>
+                <span className="text-slate-500">El cliente entrega</span>
                 <span className="font-mono font-semibold text-slate-800">{cotizacion.cliente_paga}</span>
               </div>
+
+              {/* Desglose del ajuste: los mismos campos que imprime el
+                  comprobante, para que el cajero vea de dónde sale el neto. */}
               <div className="flex justify-between text-[13px]">
-                <span className="text-slate-500">El cliente recibe</span>
-                <span className="font-mono font-semibold text-emerald-700">{cotizacion.cliente_recibe}</span>
+                <span className="text-slate-500">
+                  Bruto a recibir ({cotizacion.moneda_destino_codigo})
+                </span>
+                <span className="font-mono text-slate-700">{cotizacion.monto_bruto}</span>
               </div>
+
+              <div className="flex justify-between text-[13px]">
+                <span className="text-slate-500">Ajuste aplicado</span>
+                <span className="font-mono text-rose-600">
+                  {cotizacion.comision_descuenta_destino ? '−' : ''}
+                  {cotizacion.monto_comision} {cotizacion.moneda_destino_codigo}
+                  <span className="text-slate-400">
+                    {' '}({formatearTasa(Number(cotizacion.porcentaje_ajuste))}%)
+                  </span>
+                </span>
+              </div>
+
+              <div className="flex justify-between text-[13px] border-t border-emerald-200 pt-1.5">
+                <span className="font-semibold text-slate-700">El cliente recibe</span>
+                <span className="font-mono font-bold text-emerald-700">{cotizacion.cliente_recibe}</span>
+              </div>
+
+              {/* Tasa directa, igual a la del comprobante impreso. */}
               <div className="flex justify-between text-[13px]">
                 <span className="text-slate-500">Tasa aplicada</span>
                 <span className="font-mono text-slate-700">
-                  {Number(cotizacion.tasa_aplicada).toLocaleString('es-PY')}
+                  {cotizacion.tasa_origen ?? '-'} / {cotizacion.tasa_destino ?? '-'}
                 </span>
               </div>
+
               {!cotizacion.saldo_suficiente && (
                 <p role="alert" className="text-[12px] text-rose-600 font-semibold">
                   La caja no tiene saldo suficiente de {cotizacion.moneda_destino_codigo}
@@ -545,7 +673,8 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
 
           <button
             onClick={handleEmitInvoice}
-            disabled={emitiendo || cotizando || (cotizacion !== null && !cotizacion.saldo_suficiente)}
+            disabled={emitiendo || cotizando || parInvalido
+              || (cotizacion !== null && !cotizacion.saldo_suficiente)}
             className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white font-bold rounded-lg text-sm shadow transition-all"
           >
             {emitiendo ? 'Procesando…' : '🖨️ Procesar, Emitir e Imprimir'}

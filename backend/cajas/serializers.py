@@ -104,7 +104,10 @@ class CotizacionVentanillaSerializer(serializers.Serializer):
     cliente = serializers.PrimaryKeyRelatedField(queryset=Cliente.objects.all())
     tipo_operacion = serializers.ChoiceField(choices=Operacion.TIPOS)
     moneda = serializers.CharField(max_length=3, help_text='Divisa a comprar o vender.')
-    monto_divisa = serializers.DecimalField(max_digits=18, decimal_places=2)
+    monto = serializers.DecimalField(
+        max_digits=18, decimal_places=2,
+        help_text='Monto que escribió el cajero, en moneda_del_monto.')
+    moneda_del_monto = serializers.CharField(max_length=3, required=False)
     moneda_contraparte = serializers.CharField(max_length=3, required=False, default='PYG')
 
 
@@ -114,7 +117,13 @@ class OperacionPresencialSerializer(serializers.Serializer):
     cliente = serializers.PrimaryKeyRelatedField(queryset=Cliente.objects.all())
     tipo_operacion = serializers.ChoiceField(choices=Operacion.TIPOS)
     moneda = serializers.CharField(max_length=3)
-    monto_divisa = serializers.DecimalField(max_digits=18, decimal_places=2)
+    monto = serializers.DecimalField(
+        max_digits=18, decimal_places=2,
+        help_text='Monto que escribió el cajero, en moneda_del_monto.')
+    moneda_del_monto = serializers.CharField(
+        max_length=3, required=False,
+        help_text='Moneda del campo de monto. Si se omite, se asume que es '
+                  'la divisa operada.')
     moneda_contraparte = serializers.CharField(max_length=3, required=False, default='PYG')
     medio_pago = serializers.ChoiceField(
         choices=MEDIOS_PAGO, default=MEDIO_EFECTIVO,
@@ -123,10 +132,20 @@ class OperacionPresencialSerializer(serializers.Serializer):
     observacion = serializers.CharField(
         max_length=255, required=False, allow_blank=True, default='')
 
-    def validate_monto_divisa(self, value):
+    def validate_monto(self, value):
         if value <= 0:
             raise serializers.ValidationError('El monto debe ser mayor a cero.')
         return value
+
+    def validate(self, attrs):
+        # Compatibilidad: antes el campo se llamaba `monto_divisa` y ya
+        # venía convertido a la divisa operada.
+        legacy = attrs.pop('monto_divisa', None)
+        if legacy is not None:
+            attrs.setdefault('monto', legacy)
+        if attrs.get('monto') is None:
+            raise serializers.ValidationError({'monto': 'Indicá el monto.'})
+        return attrs
 
 
 # --- Arqueos (PI-78: por total de cada moneda) -------------------------
