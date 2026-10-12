@@ -317,6 +317,19 @@ describe('CashierDashboard PI-75 (operación unificada)', () => {
     await screen.findByText('✓ Cliente Seleccionado')
   }
 
+  /**
+   * Espera a que el botón de procesar esté habilitado.
+   *
+   * El desglose se pide con debounce de 350 ms y mientras va en vuelo el
+   * botón queda deshabilitado (no se puede emitir contra un desglose
+   * viejo). Si el test clica antes de eso, el clic se pierde y no pasa
+   * nada: bajo carga de CPU el fallo aparece al azar.
+   */
+  async function esperarListoParaEmitir() {
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Procesar, Emitir e Imprimir/ })).toBeEnabled())
+  }
+
   it('muestra el desglose y ejecuta con una sola llamada', async () => {
     vi.stubGlobal('fetch', mockUnificado({ comprobantes: [comprobante] }))
     const user = userEvent.setup()
@@ -325,6 +338,7 @@ describe('CashierDashboard PI-75 (operación unificada)', () => {
     // Desglose del backend (con debounce).
     expect(await screen.findByText('Desglose de la operación')).toBeInTheDocument()
     expect(screen.getByText('757500 PYG')).toBeInTheDocument()
+    await esperarListoParaEmitir()
     await user.click(screen.getByRole('button', { name: /Procesar, Emitir e Imprimir/ }))
     // Comprobante + resumen de caja en el mismo panel.
     expect((await screen.findAllByText('CPB-000001')).length).toBeGreaterThanOrEqual(2)
@@ -363,20 +377,72 @@ describe('CashierDashboard PI-75 (operación unificada)', () => {
     expect(screen.queryByText(/0\.256410/)).not.toBeInTheDocument()
   })
 
-  it('deduce el tipo de operación desde las divisas, sin selector', async () => {
+  it('precarga el tipo deducido de las divisas, pero deja elegirlo', async () => {
     const user = userEvent.setup()
     render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
-    // PYG -> USD: el cliente compra dólares.
-    expect(await screen.findByText(/Compra de divisas · El cliente compra USD/)).toBeInTheDocument()
-    // El campo es de solo lectura: no es un desplegable.
-    expect(screen.queryByLabelText('Tipo Operación')).not.toBeInTheDocument()
-    expect(document.getElementById('tipo-operacion')?.tagName).not.toBe('SELECT')
-
-    // Cambiar a GBP -> PYG: el cliente vende libras.
     await esperarCatalogo()
+    const selector = screen.getByLabelText('Tipo de operación')
+
+    // PYG -> USD: el cliente compra dólares. Viene precargado, sin tocar.
+    expect(selector).toHaveValue('COMPRA')
+    expect(screen.getByText(/Compra de divisas · El cliente compra USD/)).toBeInTheDocument()
+    // Pero es un desplegable: el criterio 3 pide que se pueda elegir.
+    expect(selector.tagName).toBe('SELECT')
+
+    // Cambiar a GBP -> PYG: el tipo deducido cambia a venta solo.
     await user.selectOptions(screen.getByLabelText('Divisa origen'), 'GBP')
     await user.selectOptions(screen.getByLabelText('Divisa destino'), 'PYG')
-    expect(await screen.findByText(/Venta de divisas · El cliente vende GBP/)).toBeInTheDocument()
+    await waitFor(() => expect(selector).toHaveValue('VENTA'))
+    expect(screen.getByText(/Venta de divisas · El cliente vende GBP/)).toBeInTheDocument()
+  })
+
+  it('avisa si el cajero se aparta del tipo deducido', async () => {
+    const user = userEvent.setup()
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+    await esperarCatalogo()
+    // PYG -> USD deduce COMPRA; el cajero fuerza VENTA.
+    await user.selectOptions(screen.getByLabelText('Tipo de operación'), 'VENTA')
+
+    expect(screen.getByText(/Estás indicando venta/)).toBeInTheDocument()
+    expect(screen.getByText(/sería compra de divisas/)).toBeInTheDocument()
+    // Sigue siendo una advertencia, no un bloqueo.
+    expect(screen.getByLabelText('Tipo de operación')).toHaveValue('VENTA')
+  })
+
+  it('descarta el override cuando cambian las divisas', async () => {
+    const user = userEvent.setup()
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+    await esperarCatalogo()
+    const selector = screen.getByLabelText('Tipo de operación')
+    // PYG -> USD deduce COMPRA; el cajero fuerza VENTA.
+    await user.selectOptions(selector, 'VENTA')
+    expect(selector).toHaveValue('VENTA')
+    expect(screen.getByText(/Estás indicando venta/)).toBeInTheDocument()
+
+    // Cambia el par: la elección manual vale para el par anterior, no
+    // para el siguiente. PYG -> EUR también deduce COMPRA, así que si
+    // el override no se cayera seguiría en VENTA con el aviso.
+    await user.selectOptions(screen.getByLabelText('Divisa destino'), 'EUR')
+    await waitFor(() =>
+      expect(screen.getByLabelText('Tipo de operación')).toHaveValue('COMPRA'))
+    expect(screen.queryByText(/Estás indicando/)).not.toBeInTheDocument()
+    expect(screen.getByText(/Compra de divisas · El cliente compra EUR/)).toBeInTheDocument()
+  })
+
+  it('el tipo elegido es el que va al backend', async () => {
+    const user = userEvent.setup()
+    await seleccionarAna(user)
+    await esperarCatalogo()
+    await user.selectOptions(screen.getByLabelText('Tipo de operación'), 'VENTA')
+    await user.type(screen.getByLabelText(/Monto/), '100')
+    await screen.findByText('Desglose de la operación')
+
+    const cotizar = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .map(([u, i]) => [String(u), i as RequestInit] as const)
+      .filter(([u, i]) => u.includes('/cotizar/') && (i.method ?? 'GET') === 'POST')
+    expect(cotizar.length).toBeGreaterThan(0)
+    const ultimo = cotizar[cotizar.length - 1][1]
+    expect(JSON.parse(String(ultimo.body)).tipo_operacion).toBe('VENTA')
   })
 
   it('marca arbitraje cuando las dos divisas son extranjeras', async () => {
@@ -457,9 +523,37 @@ describe('CashierDashboard PI-75 (operación unificada)', () => {
     const user = userEvent.setup()
     await seleccionarAna(user)
     await user.type(screen.getByLabelText(/Monto/), '757500')
+    await esperarListoParaEmitir()
     await user.click(screen.getByRole('button', { name: /Procesar, Emitir e Imprimir/ }))
     expect(await screen.findByRole('alert')).toHaveTextContent(/cerrada/i)
     expect(screen.queryByText('CPB-000001')).not.toBeInTheDocument()
+  })
+
+  it('el error de la emisión no se borra al recalcular el desglose', async () => {
+    vi.stubGlobal('fetch', mockUnificado({
+      ejecutar: { detail: 'La caja Caja 1 está cerrada.' },
+      ejecutarEstado: 409,
+    }))
+    const user = userEvent.setup()
+    await seleccionarAna(user)
+    await user.type(screen.getByLabelText(/Monto/), '757500')
+    await esperarListoParaEmitir()
+    await user.click(screen.getByRole('button', { name: /Procesar, Emitir e Imprimir/ }))
+    expect(await screen.findByRole('alert')).toHaveTextContent(/cerrada/i)
+
+    // Cambiar el monto dispara el recálculo del desglose. Ese recálculo es
+    // una operación de segundo plano: no puede borrar lo que dijo el
+    // servidor, o el cajero ve cómo desaparece el error solo.
+    await user.type(screen.getByLabelText(/Monto/), '0')
+    // El recálculo de segundo plano ocurrió (va al backend con el monto nuevo)...
+    await waitFor(() => {
+      const cotizaciones = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
+        .filter(([u, i]) => String(u).includes('/cotizar/') && (i as RequestInit).method === 'POST')
+      expect(cotizaciones.map(([, i]) => JSON.parse(String((i as RequestInit).body)).monto))
+        .toContain('7575000')
+    })
+    // ...y el error del servidor sigue en pantalla.
+    expect(screen.getByRole('alert')).toHaveTextContent(/cerrada/i)
   })
 
   it('deshabilita el botón si la caja no tiene saldo', async () => {

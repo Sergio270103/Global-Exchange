@@ -216,6 +216,32 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
   /** El PYG es la moneda base: no tiene sentido un PYG → PYG. */
   const parInvalido = operacion === null
 
+  /**
+   * Tipo de operación elegido a mano, o `null` si va el deducido.
+   *
+   * El criterio 3 de PI-75 pide que el cajero pueda elegir el tipo, así
+   * que el selector vuelve. Pero el valor por defecto es el deducido: sin
+   * eso, elegir "Venta" entregando dólares vuelve a producir el error de
+   * los 2.000.000 PYG.
+   *
+   * Cuando cambian las divisas la deducción cambia, así que el override
+   * se descarta: la elección manual vale para el par actual, no para el
+   * siguiente.
+   */
+  const [tipoElegido, setTipoElegido] = useState<'COMPRA' | 'VENTA' | null>(null)
+  useEffect(() => {
+    setTipoElegido(null)
+  }, [originCurrency, destinationCurrency])
+
+  /** El tipo que se manda al backend: el elegido o, si no, el deducido. */
+  const tipoOperacion = tipoElegido ?? operacion?.tipo ?? 'COMPRA'
+  /**
+   * El cajero se apartó de la deducción. No se lo bloquea (el criterio dice
+   * que puede elegir) pero se le dice, porque combinarla con un monto mal
+   * interpretado es justo lo que rompe el cálculo.
+   */
+  const tipoApartado = tipoElegido !== null && operacion !== null && tipoElegido !== operacion.tipo
+
   /** PI-75: pide el desglose al backend; no crea nada. */
   const refetchCotizacion = async () => {
     if (parInvalido) {
@@ -228,11 +254,14 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
       return
     }
     setCotizando(true)
-    setEmitError('')
+    // OJO: acá NO se limpia `emitError`. Esta función corre sola cada vez
+    // que cambia el monto, el cliente o el tipo, y si borrara el error
+    // este sale de pantalla sin que el cajero haya hecho nada.
+    // El error de la emisión es del flujo de emisión: lo limpia `emitir`.
     try {
       setCotizacion(await cotizarOperacion(cajaId, {
         cliente: selectedClient.id,
-        tipo_operacion: operacion!.tipo,
+        tipo_operacion: tipoOperacion,
         moneda: divisaOperada,
         monto: String(amount),
         moneda_del_monto: originCurrency,
@@ -253,7 +282,9 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
   // Solo primitivos en las dependencias. `operacion` es un objeto nuevo en
   // cada render: ponerlo acá hace que el efecto se dispare siempre y el
   // recuadro del desglose parpadee (se abre y se cierra solo).
-  }, [cajaId, selectedClient, divisaOperada, contraparte, amount, parInvalido])
+  // `tipoOperacion` va porque si el cajero cambia el tipo a mano, el
+  // desglose tiene que volver a calcularse.
+  }, [cajaId, selectedClient, divisaOperada, contraparte, amount, parInvalido, tipoOperacion])
 
   // PI-42: historial real de comprobantes emitidos (reimprimibles).
   const [comprobantes, setComprobantes] = useState<Comprobante[]>([])
@@ -303,7 +334,7 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
     try {
       const resultado = await ejecutarOperacion(cajaId, {
         cliente: selectedClient.id,
-        tipo_operacion: operacion!.tipo,
+        tipo_operacion: tipoOperacion,
         moneda: divisaOperada,
         monto: String(amount),
         moneda_del_monto: originCurrency,
@@ -516,23 +547,39 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
               </select>
             </div>
 
-            {/* El tipo de operación se deduce de las divisas: el cajero no
-                puede elegir una combinación incoherente. */}
+            {/* El tipo viene precargado con el deducido de las divisas, pero
+                el cajero puede cambiarlo si realmente hace falta. Si se
+                aparta de la deducción, se le avisa. */}
             <div>
-              <span className="text-xs font-semibold text-slate-500">Tipo de operación</span>
-              <div
+              <label htmlFor="tipo-operacion" className="text-xs font-semibold text-slate-500">
+                Tipo de operación
+              </label>
+              <select
                 id="tipo-operacion"
-                aria-live="polite"
-                className={`mt-1 p-2 rounded-lg border text-sm font-semibold ${
-                  parInvalido
-                    ? 'border-rose-200 bg-rose-50 text-rose-700'
-                    : 'border-slate-200 bg-slate-50 text-slate-700'
+                value={tipoOperacion}
+                disabled={parInvalido}
+                onChange={(e) => setTipoElegido(e.target.value as 'COMPRA' | 'VENTA')}
+                className={`w-full mt-1 p-2 border rounded-lg text-sm font-semibold disabled:opacity-60 ${
+                  tipoApartado
+                    ? 'border-amber-400 bg-amber-50 text-amber-900'
+                    : 'border-slate-200 bg-white text-slate-700'
                 }`}
               >
-                {parInvalido
-                  ? 'Elegí dos divisas distintas'
-                  : `${operacion!.etiqueta} · ${operacion!.detalle}`}
-              </div>
+                <option value="COMPRA">Compra de divisas</option>
+                <option value="VENTA">Venta de divisas</option>
+              </select>
+              {!parInvalido && (
+                <p
+                  aria-live="polite"
+                  className={`mt-1 text-[11px] ${tipoApartado ? 'text-amber-700' : 'text-slate-400'}`}
+                >
+                  {tipoApartado
+                    ? `Estás indicando ${tipoOperacion === 'COMPRA' ? 'compra' : 'venta'}, pero por las `
+                      + `divisas elegidas sería ${operacion!.etiqueta.toLowerCase()} `
+                      + `(${operacion!.detalle}). Revisá el monto.`
+                    : `${operacion!.etiqueta} · ${operacion!.detalle}`}
+                </p>
+              )}
             </div>
 
             <div>
