@@ -18,6 +18,10 @@
   entrega a una caja (PI-43, RF57), por divisa y denominación. Es el único
   lugar donde se registra la denominación (decisión de la Product Owner).
   Quedan pendientes hasta que el cajero los cuenta y confirma.
+- ``SolicitudReposicion`` + ``DetalleSolicitud``: pedido de efectivo del
+  cajero al administrador (PI-80). Va antes de la entrega: el cajero avisa
+  que se le acaba una divisa y el admin la atiende con una entrega o la
+  rechaza con un motivo.
 """
 
 from decimal import Decimal
@@ -299,6 +303,113 @@ class DetalleEntrega(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=['entrega', 'denominacion'], name='uniq_detalle_entrega_denominacion',
+            )
+        ]
+
+    @property
+    def subtotal(self):
+        return self.denominacion.valor * self.cantidad
+
+    def __str__(self) -> str:
+        return f'{self.cantidad} x {self.denominacion}'
+
+
+class SolicitudReposicion(models.Model):
+    """Pedido de efectivo del cajero al administrador (PI-80, RF58).
+
+    Es el paso previo a la entrega: el cajero avisa que le falta una divisa,
+    el administrador lo atiende registrando una :class:`EntregaBilletes`
+    (PI-43) o lo rechaza indicando por qué. El detalle por denominación es
+    opcional: puede pedir solo el monto total.
+
+    Se guarda la fecha de la solicitud y la de la respuesta por separado,
+    para poder medir cuánto tardó el administrador en atenderla.
+    """
+
+    ESTADO_PENDIENTE = 'PENDIENTE'
+    ESTADO_ATENDIDA = 'ATENDIDA'
+    ESTADO_RECHAZADA = 'RECHAZADA'
+    ESTADOS = (
+        (ESTADO_PENDIENTE, 'Pendiente'),
+        (ESTADO_ATENDIDA, 'Atendida'),
+        (ESTADO_RECHAZADA, 'Rechazada'),
+    )
+
+    caja = models.ForeignKey(
+        Caja, on_delete=models.PROTECT,
+        related_name='solicitudes', verbose_name='caja',
+    )
+    moneda = models.ForeignKey(
+        'monedas.Moneda', on_delete=models.PROTECT,
+        related_name='solicitudes_reposicion', verbose_name='divisa',
+    )
+    monto = models.DecimalField(
+        'monto solicitado', max_digits=18, decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))],
+    )
+    cajero_id = models.CharField('cajero (sub)', max_length=64)
+    cajero_nombre = models.CharField('cajero', max_length=160, blank=True)
+    estado = models.CharField(
+        'estado', max_length=10, choices=ESTADOS, default=ESTADO_PENDIENTE,
+    )
+    observacion = models.CharField('observación', max_length=255, blank=True)
+
+    creado_en = models.DateTimeField('fecha y hora de la solicitud', auto_now_add=True)
+    respondido_por_id = models.CharField('respondido por (sub)', max_length=64, blank=True)
+    respondido_por_nombre = models.CharField('respondido por', max_length=160, blank=True)
+    fecha_respuesta = models.DateTimeField(
+        'fecha y hora de la respuesta', null=True, blank=True,
+    )
+    motivo = models.CharField(
+        'motivo del rechazo', max_length=255, blank=True,
+    )
+
+    #: Entrega que atendió este pedido. Es ``SET_NULL`` a propósito: si
+    #: alguna vez se eliminara la entrega, el pedido queda en su historial.
+    entrega = models.OneToOneField(
+        EntregaBilletes, on_delete=models.SET_NULL,
+        null=True, blank=True, related_name='solicitud_atendida',
+        verbose_name='entrega que la atendió',
+    )
+
+    class Meta:
+        ordering = ['-creado_en', '-id']
+        verbose_name = 'solicitud de reposición'
+        verbose_name_plural = 'solicitudes de reposición'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['caja', 'moneda'], condition=models.Q(estado='PENDIENTE'),
+                name='uniq_solicitud_pendiente_por_caja_y_moneda',
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f'Solicitud #{self.pk} de {self.moneda_id} ({self.get_estado_display()})'
+
+
+class DetalleSolicitud(models.Model):
+    """Billetes de una denominación pedidos en una :class:`SolicitudReposicion`."""
+
+    solicitud = models.ForeignKey(
+        SolicitudReposicion, on_delete=models.CASCADE,
+        related_name='detalle', verbose_name='solicitud',
+    )
+    denominacion = models.ForeignKey(
+        Denominacion, on_delete=models.PROTECT,
+        related_name='detalles_solicitud', verbose_name='denominación',
+    )
+    cantidad = models.PositiveIntegerField(
+        'cantidad de billetes', validators=[MinValueValidator(1)],
+    )
+
+    class Meta:
+        ordering = ['-denominacion__valor']
+        verbose_name = 'detalle de solicitud'
+        verbose_name_plural = 'detalles de solicitud'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['solicitud', 'denominacion'],
+                name='uniq_detalle_solicitud_denominacion',
             )
         ]
 

@@ -9,8 +9,9 @@ from monedas.models import Moneda
 from operaciones.models import Operacion
 
 from .models import (
-    ArqueoCaja, ArqueoMoneda, Caja, DetalleEntrega, Denominacion,
-    EntregaBilletes, MovimientoCaja, TurnoCaja,
+    ArqueoCaja, ArqueoMoneda, Caja, DetalleEntrega, DetalleSolicitud,
+    Denominacion, EntregaBilletes, MovimientoCaja, SolicitudReposicion,
+    TurnoCaja,
 )
 from .servicios import totales_entrega, turno_abierto
 from .servicios_operacion import MEDIO_EFECTIVO, MEDIOS_PAGO
@@ -252,6 +253,10 @@ class NuevaEntregaSerializer(serializers.Serializer):
     caja = serializers.PrimaryKeyRelatedField(queryset=Caja.objects.all())
     detalle = LineaBilletesSerializer(many=True, allow_empty=False)
     observacion = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+    #: Pedido del cajero que esta entrega viene a atender (PI-80).
+    solicitud = serializers.PrimaryKeyRelatedField(
+        queryset=SolicitudReposicion.objects.all(), required=False, allow_null=True,
+    )
 
     def validate_detalle(self, lineas):
         ids = [linea['denominacion'].pk for linea in lineas]
@@ -259,8 +264,89 @@ class NuevaEntregaSerializer(serializers.Serializer):
             raise serializers.ValidationError('Hay denominaciones repetidas.')
         return lineas
 
+    def validate_solicitud(self, solicitud):
+        if solicitud is None:
+            return None
+        if solicitud.estado != SolicitudReposicion.ESTADO_PENDIENTE:
+            raise serializers.ValidationError('La solicitud ya fue respondida.')
+        return solicitud
+
 
 class MotivoSerializer(serializers.Serializer):
     motivo = serializers.CharField(max_length=255, allow_blank=False, trim_whitespace=True,
                                    error_messages={'blank': 'Indicá el motivo.',
                                                    'required': 'Indicá el motivo.'})
+
+
+# --- Solicitud de reposición (PI-80) ------------------------------------
+
+class DetalleSolicitudSerializer(serializers.ModelSerializer):
+    moneda_codigo = serializers.CharField(source='denominacion.moneda.codigo', read_only=True)
+    valor = serializers.SerializerMethodField()
+    subtotal = serializers.SerializerMethodField()
+
+    class Meta:
+        model = DetalleSolicitud
+        fields = ['denominacion', 'moneda_codigo', 'valor', 'cantidad', 'subtotal']
+
+    def get_valor(self, obj) -> str:
+        return _texto_valor(obj.denominacion.valor)
+
+    def get_subtotal(self, obj) -> str:
+        return _texto_valor(obj.subtotal)
+
+
+class SolicitudSerializer(serializers.ModelSerializer):
+    """Pedido de efectivo del cajero al administrador (PI-80)."""
+
+    caja_nombre = serializers.CharField(source='caja.__str__', read_only=True)
+    estado_display = serializers.CharField(source='get_estado_display', read_only=True)
+    moneda_codigo = serializers.CharField(source='moneda.codigo', read_only=True)
+    moneda_nombre = serializers.CharField(source='moneda.nombre', read_only=True)
+    simbolo = serializers.CharField(source='moneda.simbolo', read_only=True)
+    decimales = serializers.IntegerField(source='moneda.decimales', read_only=True)
+    monto = serializers.SerializerMethodField()
+    detalle = DetalleSolicitudSerializer(many=True, read_only=True)
+    entrega_id = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = SolicitudReposicion
+        fields = [
+            'id', 'caja', 'caja_nombre', 'moneda', 'moneda_codigo',
+            'moneda_nombre', 'simbolo', 'decimales', 'monto', 'estado',
+            'estado_display', 'cajero_nombre', 'observacion', 'creado_en',
+            'respondido_por_nombre', 'fecha_respuesta', 'motivo',
+            'entrega_id', 'detalle',
+        ]
+        read_only_fields = fields
+
+    def get_monto(self, obj) -> str:
+        return _texto_valor(obj.monto)
+
+
+class NuevaSolicitudSerializer(serializers.Serializer):
+    """Datos que envía el cajero para pedir reposición (PI-80)."""
+
+    caja = serializers.PrimaryKeyRelatedField(queryset=Caja.objects.all())
+    moneda = serializers.PrimaryKeyRelatedField(queryset=Moneda.objects.all())
+    monto = serializers.DecimalField(max_digits=18, decimal_places=2, min_value=Decimal('0.01'))
+    observacion = serializers.CharField(
+        max_length=255, required=False, allow_blank=True, default='',
+    )
+    #: Opcional: si el cajero pide denominaciones concretas.
+    detalle = LineaBilletesSerializer(many=True, required=False, default=list)
+
+    def validate_detalle(self, lineas):
+        ids = [linea['denominacion'].pk for linea in lineas]
+        if len(ids) != len(set(ids)):
+            raise serializers.ValidationError('Hay denominaciones repetidas.')
+        return lineas
+
+    def validate(self, datos):
+        moneda = datos['moneda']
+        for linea in datos.get('detalle') or []:
+            if linea['denominacion'].moneda_id != moneda.pk:
+                raise serializers.ValidationError({
+                    'detalle': f'Alguna denominación no es de {moneda.codigo}.',
+                })
+        return datos

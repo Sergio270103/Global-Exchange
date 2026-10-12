@@ -6,7 +6,9 @@ la plataforma Global Exchange. Las tasas de cambio viven en su propio
 módulo y apuntan a este modelo mediante una clave foránea.
 """
 
-from django.core.validators import MaxValueValidator, RegexValidator
+from decimal import Decimal
+
+from django.core.validators import MaxValueValidator, MinValueValidator, RegexValidator
 from django.db import models
 
 
@@ -59,6 +61,12 @@ class Moneda(models.Model):
         default=True,
         help_text='Si está desactivada, la moneda no se ofrece a los clientes.',
     )
+    saldo_minimo = models.DecimalField(
+        'saldo mínimo en caja', max_digits=18, decimal_places=2, default=Decimal('0'),
+        validators=[MinValueValidator(Decimal('0'))],
+        help_text='Por debajo de este saldo el cajero ve el aviso de reposición '
+                  '(PI-80). En 0 no se avisa nunca.',
+    )
     creado_en = models.DateTimeField('creado en', auto_now_add=True)
     actualizado_en = models.DateTimeField('actualizado en', auto_now=True)
 
@@ -75,3 +83,11 @@ class Moneda(models.Model):
         self.codigo = self.codigo.strip().upper()
         self.pais_iso = self.pais_iso.strip().upper()
         return super().save(*args, **kwargs)
+
+    def monto_a_precision(self, monto: Decimal) -> Decimal:
+        """Redondea un monto a los decimales de esta moneda.
+
+        El guaraní no maneja decimales, así que ``1000.5`` se guarda como
+        ``1000`` (banker's rounding, igual que el resto del sistema).
+        """
+        return round(monto, self.decimales)

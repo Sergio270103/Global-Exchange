@@ -23,6 +23,10 @@ import {
   cambiarEstadoDenominacion,
   listarMovimientos,
   obtenerSaldo,
+  obtenerAvisosReposicion,
+  listarSolicitudes,
+  crearSolicitud,
+  rechazarSolicitud,
   registrarArqueo,
   registrarMovimiento,
 } from '@/services/cajas'
@@ -65,6 +69,26 @@ const entregaApi = {
     { denominacion: 21, moneda_codigo: 'USD', valor: '20', cantidad: 5, subtotal: '100' },
   ],
 }
+
+const solicitudApi = {
+  id: 7, caja: 1, caja_nombre: 'Central · Caja 1', moneda: 2,
+  moneda_codigo: 'USD', moneda_nombre: 'Dólar', simbolo: '$', decimales: 2,
+  monto: '400.00', estado: 'PENDIENTE', estado_display: 'Pendiente',
+  cajero_nombre: 'Cajera Ana', observacion: 'Se me acabaron', creado_en: '2026-10-09T10:00:00-03:00',
+  respondido_por_nombre: '', fecha_respuesta: null, motivo: '', entrega_id: null,
+  detalle: [
+    { denominacion: 20, moneda_codigo: 'USD', valor: '100.00', cantidad: 3, subtotal: '300.00' },
+    { denominacion: 21, moneda_codigo: 'USD', valor: '20.00', cantidad: 5, subtotal: '100.00' },
+  ],
+}
+
+const avisoReposicionApi = {
+  moneda: 2, moneda_codigo: 'USD', moneda_nombre: 'Dólar', simbolo: '$', decimales: 2,
+  total: '300', saldo_minimo: '500', faltante: '200',
+}
+
+/** Avisos de saldo bajo que devuelve `GET /cajas/{id}/saldo/` (PI-80). */
+let avisosApi: unknown[] = []
 
 describe('entregas de billetes (PI-43)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -143,7 +167,7 @@ describe('cajas (servicio API)', () => {
           monedas: [{ ...saldoApi.monedas[0], total: '0' }],
         })
       }
-      if (u.includes('/saldo/')) return respuesta(saldoApi)
+      if (u.includes('/saldo/')) return respuesta({ ...saldoApi, bajo_minimo: avisosApi })
       if (u.includes('/movimientos/') && method === 'POST') {
         const cuerpo = JSON.parse(String(init.body))
         if (Number(cuerpo.monto) > 400) return respuesta({ detail: 'Saldo insuficiente de USD: hay 400, se piden 500.' }, 400)
@@ -174,6 +198,30 @@ describe('cajas (servicio API)', () => {
         }, 201)
       }
       if (u.includes('/arqueos/')) return respuesta([])
+      if (u.includes('/entregas/') && method === 'POST') return respuesta(entregaApi, 201)
+      if (u.includes('/entregas/')) return respuesta([entregaApi])
+      // --- PI-80: solicitudes de reposición ---
+      if (/\/solicitudes\/\d+\/rechazar\//.test(u) && method === 'POST') {
+        const { motivo } = JSON.parse(String(init.body))
+        if (!motivo) return respuesta({ motivo: ['Indicá el motivo.'] }, 400)
+        return respuesta({ ...solicitudApi, estado: 'RECHAZADA', estado_display: 'Rechazada', motivo })
+      }
+      if (u.includes('/solicitudes/') && method === 'POST') {
+        const cuerpo = JSON.parse(String(init.body))
+        return respuesta({
+          ...solicitudApi,
+          monto: String(cuerpo.monto),
+          observacion: cuerpo.observacion ?? '',
+          detalle: (cuerpo.detalle ?? []).map((d: { denominacion: number; cantidad: number }) => {
+            const den = denominacionesApi.find(x => x.id === d.denominacion)!
+            return {
+              denominacion: den.id, moneda_codigo: 'USD',
+              valor: den.valor, cantidad: d.cantidad, subtotal: String(Number(den.valor) * d.cantidad),
+            }
+          }),
+        }, 201)
+      }
+      if (u.includes('/solicitudes/')) return respuesta([solicitudApi])
       return respuesta({}, 404)
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -257,6 +305,66 @@ describe('cajas (servicio API)', () => {
     expect(JSON.parse(String(patch[1].body))).toEqual({ activa: false })
     expect(fetchMock.mock.calls.every(([u, i]) =>
       (i as RequestInit).method !== 'DELETE')).toBe(true)
+  })
+
+  it('solicitud de reposición (PI-80)', async () => {
+    // Los avisos de saldo bajo salen del mismo endpoint del saldo.
+    avisosApi = [avisoReposicionApi]
+    const [aviso] = await obtenerAvisosReposicion(1)
+    expect(aviso).toEqual({
+      moneda: 2, codigo: 'USD', nombre: 'Dólar', simbolo: '$', decimales: 2,
+      total: 300, saldoMinimo: 500, faltante: 200,
+    })
+    avisosApi = []
+
+    // Listar.
+    const lista = await listarSolicitudes({ caja: 1, estado: 'PENDIENTE' })
+    expect(String(fetchMock.mock.calls.at(-1)![0])).toContain('/solicitudes/?caja=1&estado=PENDIENTE')
+    expect(lista[0]).toMatchObject({
+      id: 7, cajaNombre: 'Central · Caja 1', monedaCodigo: 'USD',
+      monto: 400, estado: 'PENDIENTE', estadoDisplay: 'Pendiente',
+      cajeroNombre: 'Cajera Ana', fechaRespuesta: null, entregaId: null,
+    })
+    // Los montos llegan como texto y vuelven como número.
+    expect(lista[0].detalle[0]).toEqual({
+      denominacion: 20, monedaCodigo: 'USD', valor: 100, cantidad: 3, subtotal: 300,
+    })
+
+    // Crear.
+    const nueva = await crearSolicitud({
+      caja: 1, moneda: 2, monto: '400',
+      detalle: [{ denominacion: 20, cantidad: 3 }, { denominacion: 21, cantidad: 0 }],
+      observacion: 'Se me acabaron',
+    })
+    const post = fetchMock.mock.calls.find(([u, i]) =>
+      String(u).endsWith('/solicitudes/') && (i as RequestInit).method === 'POST')!
+    // Las líneas en cero no se envían.
+    expect(JSON.parse(String(post[1].body))).toEqual({
+      caja: 1, moneda: 2, monto: '400',
+      detalle: [{ denominacion: 20, cantidad: 3 }],
+      observacion: 'Se me acabaron',
+    })
+    expect(nueva.detalle).toHaveLength(1)
+
+    // Rechazar.
+    const rechazada = await rechazarSolicitud(7, 'Tesorería sin efectivo')
+    expect(rechazada.estado).toBe('RECHAZADA')
+    expect(rechazada.motivo).toBe('Tesorería sin efectivo')
+    const rech = fetchMock.mock.calls.find(([u]) => String(u).includes('/solicitudes/7/rechazar/'))!
+    expect(JSON.parse(String(rech[1].body))).toEqual({ motivo: 'Tesorería sin efectivo' })
+  })
+
+  it('la entrega que atiende un pedido lleva el id de la solicitud', async () => {
+    await crearEntrega(1, [{ denominacion: 20, cantidad: 4 }], 'Reposición', 7)
+    const post = fetchMock.mock.calls.find(([u, i]) =>
+      String(u).endsWith('/entregas/') && (i as RequestInit).method === 'POST')!
+    expect(JSON.parse(String(post[1].body))).toMatchObject({ solicitud: 7 })
+
+    // Sin solicitud, el campo no se manda (no es lo mismo que null).
+    await crearEntrega(1, [{ denominacion: 20, cantidad: 4 }], 'Apertura')
+    const post2 = fetchMock.mock.calls.filter(([u, i]) =>
+      String(u).endsWith('/entregas/') && (i as RequestInit).method === 'POST')[1]
+    expect(JSON.parse(String(post2[1].body))).not.toHaveProperty('solicitud')
   })
 
   it('consulta el turno, el historial y cierra la caja (PI-79)', async () => {

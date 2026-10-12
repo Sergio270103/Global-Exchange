@@ -17,7 +17,10 @@ import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import CashCountView from '@/pages/cashier/CashCountView'
 import type { AuthUser } from '@/types'
-import type { Arqueo, Entrega, MovimientoCaja, SaldoMoneda, Turno } from '@/services/cajas'
+import type {
+  Arqueo, AvisoReposicion, Entrega, MovimientoCaja, SaldoMoneda,
+  SolicitudReposicion, Turno,
+} from '@/services/cajas'
 import * as cajas from '@/services/cajas'
 
 vi.mock('@/services/cajas', async importOriginal => {
@@ -35,6 +38,10 @@ vi.mock('@/services/cajas', async importOriginal => {
     rechazarEntrega: vi.fn(),
     obtenerTurno: vi.fn(),
     cerrarCaja: vi.fn(),
+    obtenerAvisosReposicion: vi.fn(),
+    listarSolicitudes: vi.fn(),
+    crearSolicitud: vi.fn(),
+    listarDenominaciones: vi.fn(),
   }
 })
 
@@ -68,6 +75,25 @@ const turnoAbierto: Turno = {
 const admin = { name: 'Admin', email: 'a@x.com', role: 'admin', avatar: '' } as AuthUser
 const cajero = { name: 'Ana', email: 'c@x.com', role: 'cashier', avatar: '' } as AuthUser
 
+/** Divisa que quedó por debajo del mínimo de la caja (PI-80). */
+function aviso(over: Partial<AvisoReposicion> = {}): AvisoReposicion {
+  return {
+    moneda: 2, codigo: 'USD', nombre: 'Dólar Americano', simbolo: '$', decimales: 2,
+    total: 300, saldoMinimo: 500, faltante: 200, ...over,
+  }
+}
+
+function solicitud(over: Partial<SolicitudReposicion> = {}): SolicitudReposicion {
+  return {
+    id: 7, caja: 1, cajaNombre: 'Casa Central · Caja 1', moneda: 2,
+    monedaCodigo: 'USD', monedaNombre: 'Dólar Americano', simbolo: '$', decimales: 2,
+    monto: 200, estado: 'PENDIENTE', estadoDisplay: 'Pendiente',
+    cajeroNombre: 'Cajera Ana', observacion: '', creadoEn: '2026-10-12T09:00:00-03:00',
+    respondidoPorNombre: '', fechaRespuesta: null, motivo: '', entregaId: null, detalle: [],
+    ...over,
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   document.body.style.overflow = ''
@@ -79,6 +105,14 @@ beforeEach(() => {
   mocks.listarArqueos.mockResolvedValue([])
   mocks.listarEntregas.mockResolvedValue([])
   mocks.obtenerTurno.mockResolvedValue(turnoAbierto)
+  mocks.obtenerAvisosReposicion.mockResolvedValue([])
+  mocks.listarSolicitudes.mockResolvedValue([])
+  mocks.listarDenominaciones.mockResolvedValue([
+    {
+      moneda: 2, codigo: 'USD', nombre: 'Dólar Americano', simbolo: '$', decimales: 2, flag: '🇺🇸',
+      denominaciones: [{ denominacion: 20, valor: 100 }, { denominacion: 21, valor: 20 }],
+    },
+  ])
 })
 
 async function abrirModal(nombre: RegExp, titulo: string, auth: AuthUser = cajero) {
@@ -348,6 +382,116 @@ describe('CashCountView · apertura y cierre (PI-79)', () => {
     expect(mocks.cerrarCaja).not.toHaveBeenCalled()
     expect(await screen.findByRole('status')).toHaveTextContent('Arqueo registrado sin diferencias')
     expect(screen.getByTestId('estado-caja')).toHaveTextContent('Caja abierta')
+  })
+})
+
+describe('CashCountView · reposición de billetes (PI-80)', () => {
+  it('avisa las divisas que quedaron por debajo del mínimo', async () => {
+    mocks.obtenerAvisosReposicion.mockResolvedValue([aviso()])
+    render(<CashCountView auth={cajero} />)
+    await screen.findByTestId('total-USD')
+    const seccion = await screen.findByLabelText('Reposición de billetes')
+    expect(seccion).toHaveTextContent('Saldo bajo.')
+    expect(seccion).toHaveTextContent('tenés $ 300 de $ 500')
+    expect(seccion).toHaveTextContent('faltan')
+    expect(screen.getByRole('button', { name: 'Solicitar reposición' })).toBeInTheDocument()
+  })
+
+  it('no muestra la sección si ninguna divisa está bajo el mínimo', async () => {
+    render(<CashCountView auth={cajero} />)
+    await screen.findByTestId('total-USD')
+    expect(screen.queryByLabelText('Reposición de billetes')).not.toBeInTheDocument()
+  })
+
+  it('no deja pedir dos veces la misma divisa mientras está pendiente', async () => {
+    mocks.obtenerAvisosReposicion.mockResolvedValue([aviso()])
+    mocks.listarSolicitudes.mockResolvedValue([solicitud()])
+    render(<CashCountView auth={cajero} />)
+    await screen.findByLabelText('Reposición de billetes')
+    expect(screen.getByRole('button', { name: 'Pedido enviado' })).toBeDisabled()
+  })
+
+  it('muestra el estado de los pedidos que el cajero ya hizo', async () => {
+    mocks.listarSolicitudes.mockResolvedValue([
+      solicitud({ id: 7, estado: 'PENDIENTE', estadoDisplay: 'Pendiente' }),
+      solicitud({
+        id: 6, estado: 'RECHAZADA', estadoDisplay: 'Rechazada',
+        motivo: 'Tesorería sin efectivo', fechaRespuesta: '2026-10-12T11:00:00-03:00',
+      }),
+    ])
+    render(<CashCountView auth={cajero} />)
+    const seccion = await screen.findByLabelText('Reposición de billetes')
+    expect(seccion).toHaveTextContent('Pendiente')
+    expect(seccion).toHaveTextContent('Rechazada')
+    expect(seccion).toHaveTextContent('Tesorería sin efectivo')
+  })
+
+  it('pide el monto por defecto y precarga el que falta', async () => {
+    const user = userEvent.setup()
+    mocks.obtenerAvisosReposicion.mockResolvedValue([aviso()])
+    mocks.crearSolicitud.mockResolvedValue(solicitud({ monto: 200 }))
+    render(<CashCountView auth={cajero} />)
+    await screen.findByTestId('total-USD')
+    await user.click(await screen.findByRole('button', { name: 'Solicitar reposición' }))
+
+    const dialogo = screen.getByRole('dialog', { name: /Solicitar reposición de USD/ })
+    // El monto viene precargado con el faltante.
+    expect(within(dialogo).getByLabelText('Monto que necesitás (USD)')).toHaveValue(200)
+    await user.click(within(dialogo).getByRole('button', { name: 'Enviar solicitud' }))
+
+    expect(mocks.crearSolicitud).toHaveBeenCalledWith({
+      caja: 1, moneda: 2, monto: '200', detalle: [], observacion: '',
+    })
+    expect(await screen.findByText(/Solicitud #7 enviada al administrador/)).toBeInTheDocument()
+  })
+
+  it('permite pedir billetes concretos además del monto', async () => {
+    const user = userEvent.setup()
+    mocks.obtenerAvisosReposicion.mockResolvedValue([aviso()])
+    mocks.crearSolicitud.mockResolvedValue(solicitud({ monto: 300 }))
+    render(<CashCountView auth={cajero} />)
+    await screen.findByTestId('total-USD')
+    await user.click(await screen.findByRole('button', { name: 'Solicitar reposición' }))
+
+    const dialogo = screen.getByRole('dialog', { name: /Solicitar reposición de USD/ })
+    await user.type(within(dialogo).getByLabelText('Monto que necesitás (USD)'), '300')
+    await user.type(within(dialogo).getByLabelText('Billete $ 100'), '3')
+    await user.click(within(dialogo).getByRole('button', { name: 'Enviar solicitud' }))
+
+    expect(mocks.crearSolicitud).toHaveBeenCalledWith(
+      expect.objectContaining({
+        monto: '300',
+        detalle: [{ denominacion: 20, cantidad: 3 }],
+      }),
+    )
+  })
+
+  it('no deja enviar el pedido con monto inválido', async () => {
+    const user = userEvent.setup()
+    mocks.obtenerAvisosReposicion.mockResolvedValue([aviso()])
+    render(<CashCountView auth={cajero} />)
+    await screen.findByTestId('total-USD')
+    await user.click(await screen.findByRole('button', { name: 'Solicitar reposición' }))
+    const dialogo = screen.getByRole('dialog', { name: /Solicitar reposición de USD/ })
+
+    const campo = within(dialogo).getByLabelText('Monto que necesitás (USD)')
+    await user.clear(campo)
+    await user.type(campo, '0')
+    expect(within(dialogo).getByRole('button', { name: 'Enviar solicitud' })).toBeDisabled()
+    await user.type(campo, '5')
+    await user.click(within(dialogo).getByRole('button', { name: 'Enviar solicitud' }))
+    expect(mocks.crearSolicitud).toHaveBeenCalledWith(
+      expect.objectContaining({ monto: '5' }),
+    )
+  })
+
+  it('el saldo sigue mostrando si falla la carga de los avisos', async () => {
+    mocks.obtenerAvisosReposicion.mockRejectedValue(new Error('sin permisos'))
+    mocks.listarSolicitudes.mockRejectedValue(new Error('sin permisos'))
+    render(<CashCountView auth={cajero} />)
+    // El saldo es lo importante: si esto aparece, la pantalla no se rompió.
+    expect(await screen.findByTestId('total-USD')).toHaveTextContent('400')
+    expect(screen.queryByLabelText('Reposición de billetes')).not.toBeInTheDocument()
   })
 })
 

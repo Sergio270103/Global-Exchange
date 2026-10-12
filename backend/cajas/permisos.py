@@ -8,6 +8,11 @@ Entregas de billetes (PI-43): el administrador las registra y puede
 cancelarlas mientras estén pendientes; el cajero las confirma o rechaza.
 
 Cierre de caja (PI-79): lo hace el personal de caja (cajero o admin).
+
+Solicitud de reposición (PI-80): el cajero pide efectivo cuando se le
+acaba una divisa; el administrador lo atiende con una entrega o lo rechaza
+con un motivo. Los roles están al revés que en PI-43: acá el que pide es
+el cajero y el que responde es el administrador.
 """
 
 from rest_framework.permissions import SAFE_METHODS, BasePermission
@@ -50,6 +55,29 @@ class PersonalCaja(BasePermission):
             return True
         if getattr(view, 'action', None) in self.ACCIONES_CAJERO:
             return True
+        return es_admin(usuario)
+
+
+class PermisoSolicitudes(BasePermission):
+    """Solicitud de reposición (PI-80): quién puede hacer cada acción.
+
+    - Ver: cajero o administrador.
+    - Pedir: el cajero (es su rol en la historia). El administrador no
+      pide, directamente entrega.
+    - Rechazar: el administrador, que es quien responde el pedido.
+    """
+
+    message = 'No tenés permiso para esta acción sobre las solicitudes de reposición.'
+
+    def has_permission(self, request, view) -> bool:
+        usuario = request.user
+        if not es_personal_caja(usuario):
+            return False
+        if request.method in SAFE_METHODS:
+            return True
+        accion = getattr(view, 'action', None)
+        if accion == 'create':
+            return es_cajero(usuario)
         return es_admin(usuario)
 
 

@@ -40,18 +40,23 @@ from rest_framework.response import Response
 from monedas.models import Moneda
 from operaciones.serializers import OperacionPublicSerializer
 
-from .models import ArqueoCaja, Caja, Denominacion, EntregaBilletes, MovimientoCaja, TurnoCaja
+from .models import (
+    ArqueoCaja, Caja, Denominacion, EntregaBilletes, MovimientoCaja,
+    SolicitudReposicion, TurnoCaja,
+)
 from .servicios import (
     CajaCerrada, SaldoInsuficiente, cancelar_entrega, cerrar_caja, confirmar_entrega,
-    crear_entrega, rechazar_entrega, registrar_arqueo, registrar_movimiento,
+    crear_entrega, crear_solicitud, divisias_bajo_minimo, rechazar_entrega,
+    rechazar_solicitud, registrar_arqueo, registrar_movimiento,
     saldo_por_moneda, turno_abierto,
 )
-from .permisos import PermisoEntregas, PersonalCaja
+from .permisos import PermisoEntregas, PermisoSolicitudes, PersonalCaja
 from .serializers import (
     ArqueoSerializer, CajaSerializer, CotizacionVentanillaSerializer,
     DenominacionSerializer, EntregaSerializer, MotivoSerializer,
-    MovimientoSerializer, NuevaEntregaSerializer, NuevoArqueoSerializer,
-    NuevoMovimientoSerializer, OperacionPresencialSerializer, TurnoSerializer,
+    MovimientoSerializer, NuevaEntregaSerializer, NuevaSolicitudSerializer,
+    NuevoArqueoSerializer, NuevoMovimientoSerializer, OperacionPresencialSerializer,
+    SolicitudSerializer, TurnoSerializer,
 )
 from comprobantes.serializers import ComprobanteSerializer
 from .servicios_operacion import (
@@ -151,12 +156,18 @@ class CajaViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'])
     def saldo(self, request, pk=None):
-        """Saldo de la caja por divisa (RF56; PI-78)."""
+        """Saldo de la caja por divisa (RF56; PI-78).
+
+        Incluye ``bajo_minimo``: las divisas cuyo saldo quedó por debajo
+        del mínimo configurado, que son las que el cajero tiene que pedir
+        reposición (PI-80).
+        """
         caja = self.get_object()
         return Response({
             'caja': caja.pk,
             'caja_nombre': str(caja),
             'monedas': saldo_por_moneda(caja),
+            'bajo_minimo': divisias_bajo_minimo(caja),
             'turno': _turno_json(caja),
         })
 
@@ -410,6 +421,9 @@ class EntregaViewSet(viewsets.ReadOnlyModelViewSet):
                 caja=datos['caja'],
                 detalle=[(l['denominacion'], l['cantidad']) for l in datos['detalle']],
                 usuario_id=sub, usuario_nombre=nombre, observacion=datos['observacion'],
+                # PI-80: si la entrega viene a atender un pedido del cajero,
+                # el pedido queda enlazado y pasa a ATENDIDA.
+                solicitud=datos.get('solicitud'),
             )
         except DjangoValidationError as exc:
             return Response({'detail': _mensaje(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -459,3 +473,72 @@ class EntregaViewSet(viewsets.ReadOnlyModelViewSet):
         if isinstance(resultado, Response):
             return resultado
         return Response(EntregaSerializer(resultado).data)
+
+
+class SolicitudViewSet(viewsets.ModelViewSet):
+    """Solicitud de reposición de billetes del cajero (PI-80).
+
+    El cajero pide efectivo cuando se le acaba una divisa. El pedido queda
+    pendiente y es el administrador quien lo atiende, registrando una
+    entrega de billetes (PI-43) o rechazándolo con un motivo.
+
+    Endpoints:
+    * ``GET /api/solicitudes/`` lista con filtros ``?caja=``, ``?estado=``
+      y ``?moneda=``
+    * ``POST /api/solicitudes/`` el cajero pide reposición
+    * ``POST /api/solicitudes/{id}/rechazar/`` el admin no lo atiende
+    """
+
+    queryset = (SolicitudReposicion.objects
+                .select_related('caja', 'moneda')
+                .prefetch_related('detalle__denominacion__moneda'))
+    serializer_class = SolicitudSerializer
+    permission_classes = [PermisoSolicitudes]
+    http_method_names = ['get', 'post', 'head', 'options']
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        caja = self.request.query_params.get('caja')
+        if caja:
+            qs = qs.filter(caja_id=caja) if caja.isdigit() else qs.none()
+        estado = self.request.query_params.get('estado')
+        if estado:
+            qs = qs.filter(estado=estado.upper())
+        moneda = self.request.query_params.get('moneda')
+        if moneda:
+            qs = (qs.filter(moneda_id=moneda) if moneda.isdigit()
+                  else qs.filter(moneda__codigo__iexact=moneda))
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        entrada = NuevaSolicitudSerializer(data=request.data)
+        entrada.is_valid(raise_exception=True)
+        datos = entrada.validated_data
+        sub, nombre = _usuario(request)
+        try:
+            solicitud = crear_solicitud(
+                caja=datos['caja'], moneda=datos['moneda'], monto=datos['monto'],
+                usuario_id=sub, usuario_nombre=nombre,
+                detalle=[(l['denominacion'], l['cantidad']) for l in datos['detalle']],
+                observacion=datos['observacion'],
+            )
+        except DjangoValidationError as exc:
+            return Response({'detail': _mensaje(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            SolicitudSerializer(solicitud).data, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def rechazar(self, request, pk=None):
+        """El administrador no puede atender el pedido y explica por qué."""
+        motivo = MotivoSerializer(data=request.data)
+        motivo.is_valid(raise_exception=True)
+        solicitud = self.get_object()
+        sub, nombre = _usuario(request)
+        try:
+            rechazada = rechazar_solicitud(
+                solicitud, motivo=motivo.validated_data['motivo'],
+                usuario_id=sub, usuario_nombre=nombre,
+            )
+        except DjangoValidationError as exc:
+            return Response({'detail': _mensaje(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(SolicitudSerializer(rechazada).data)

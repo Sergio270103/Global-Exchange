@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import CashDeliveries from '@/pages/admin/CashDeliveries'
-import type { CatalogoMoneda, Entrega } from '@/services/cajas'
+import type { CatalogoMoneda, Entrega, SolicitudReposicion } from '@/services/cajas'
 import * as cajas from '@/services/cajas'
 import * as monedasServicio from '@/services/monedas'
 
@@ -19,6 +19,8 @@ vi.mock('@/services/cajas', async importOriginal => {
     listarCajas: vi.fn(),
     listarEntregas: vi.fn(),
     listarDenominaciones: vi.fn(),
+    listarSolicitudes: vi.fn(),
+    rechazarSolicitud: vi.fn(),
     crearEntrega: vi.fn(),
     cancelarEntrega: vi.fn(),
   }
@@ -53,6 +55,23 @@ function entrega(over: Partial<Entrega> = {}): Entrega {
   }
 }
 
+/** Pedido de reposición del cajero (PI-80). */
+function solicitud(over: Partial<SolicitudReposicion> = {}): SolicitudReposicion {
+  return {
+    id: 7, caja: 1, cajaNombre: 'Casa Central · Caja 1', moneda: 2,
+    monedaCodigo: 'USD', monedaNombre: 'Dólar', simbolo: '$', decimales: 2,
+    monto: 400, estado: 'PENDIENTE', estadoDisplay: 'Pendiente',
+    cajeroNombre: 'Cajera Ana', observacion: 'Se me acabaron los billetes grandes',
+    creadoEn: '2026-10-12T09:00:00-03:00',
+    respondidoPorNombre: '', fechaRespuesta: null, motivo: '', entregaId: null,
+    detalle: [
+      { denominacion: 20, monedaCodigo: 'USD', valor: 100, cantidad: 3, subtotal: 300 },
+      { denominacion: 21, monedaCodigo: 'USD', valor: 20, cantidad: 5, subtotal: 100 },
+    ],
+    ...over,
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   document.body.style.overflow = ''
@@ -64,6 +83,7 @@ beforeEach(() => {
     { id: 2, nombre: 'Caja 2', sucursal: 'Casa Central', activa: true, abierta: false, turnoActual: null },
   ])
   mocks.listarDenominaciones.mockResolvedValue(monedas)
+  mocks.listarSolicitudes.mockResolvedValue([])
   vi.mocked(monedasServicio.listarMonedas).mockResolvedValue([
     { id: 1, code: 'PYG', name: 'Guaraní', symbol: '₲', flag: '🇵🇾', decimals: 0, active: true },
     { id: 2, code: 'USD', name: 'Dólar', symbol: '$', flag: '🇺🇸', decimals: 2, active: true },
@@ -158,7 +178,7 @@ describe('CashDeliveries (PI-43)', () => {
       { denominacion: 10, cantidad: 3 },
       { denominacion: 20, cantidad: 10 },
       { denominacion: 21, cantidad: 5 },
-    ], 'Apertura')
+    ], 'Apertura', null)
     expect(await screen.findByRole('status')).toHaveTextContent('Entrega #13 registrada')
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   })
@@ -200,5 +220,117 @@ describe('CashDeliveries (PI-43)', () => {
     mocks.listarEntregas.mockRejectedValue(new Error('No tenés permiso para esta acción sobre entregas de billetes.'))
     render(<CashDeliveries />)
     expect(await screen.findByRole('alert')).toHaveTextContent('No tenés permiso')
+  })
+})
+
+describe('CashDeliveries · solicitudes de reposición (PI-80)', () => {
+  it('lista los pedidos del cajero con el detalle que pidió', async () => {
+    mocks.listarSolicitudes.mockResolvedValue([solicitud()])
+    render(<CashDeliveries />)
+    const seccion = await screen.findByLabelText('Solicitudes de reposición')
+    expect(seccion).toHaveTextContent('1 pendiente(s)')
+    expect(seccion).toHaveTextContent('Pide $ 400 de USD')
+    expect(seccion).toHaveTextContent('por Cajera Ana')
+    expect(seccion).toHaveTextContent('Pide billetes: 3 × $ 100 + 5 × $ 20')
+  })
+
+  it('no ofrece atender ni rechazar un pedido ya respondido', async () => {
+    mocks.listarSolicitudes.mockResolvedValue([
+      solicitud({ estado: 'ATENDIDA', estadoDisplay: 'Atendida', entregaId: 12 }),
+      solicitud({
+        id: 6, estado: 'RECHAZADA', estadoDisplay: 'Rechazada',
+        motivo: 'Tesorería sin efectivo', fechaRespuesta: '2026-10-12T11:00:00-03:00',
+      }),
+    ])
+    render(<CashDeliveries />)
+    const seccion = await screen.findByLabelText('Solicitudes de reposición')
+    expect(seccion).toHaveTextContent('Atendida')
+    expect(seccion).toHaveTextContent('Tesorería sin efectivo')
+    expect(screen.queryByRole('button', { name: 'Registrar entrega' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Rechazar' })).not.toBeInTheDocument()
+  })
+
+  it('atiende el pedido registrando una entrega con lo que pidió cargado', async () => {
+    const user = userEvent.setup()
+    mocks.listarSolicitudes.mockResolvedValue([solicitud()])
+    mocks.crearEntrega.mockResolvedValue(entrega({ id: 13 }))
+    render(<CashDeliveries />)
+    await screen.findByLabelText('Solicitudes de reposición')
+    await user.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+
+    const dialogo = screen.getByRole('dialog', { name: 'Nueva entrega de billetes' })
+    // Los billetes que pidió el cajero ya vienen cargados.
+    expect(within(dialogo).getByLabelText('Billete $ 100')).toHaveValue(3)
+    expect(within(dialogo).getByLabelText('Billete $ 20')).toHaveValue(5)
+    await user.click(within(dialogo).getByRole('button', { name: 'Registrar entrega' }))
+
+    // Y la entrega va enlazada al pedido, que queda atendido.
+    expect(mocks.crearEntrega).toHaveBeenCalledWith(
+      1,
+      [{ denominacion: 20, cantidad: 3 }, { denominacion: 21, cantidad: 5 }],
+      '',
+      7,
+    )
+    expect(await screen.findByRole('status')).toHaveTextContent('Entrega #13 registrada')
+  })
+
+  it('el administrador puede cambiar los billetes precargados', async () => {
+    const user = userEvent.setup()
+    mocks.listarSolicitudes.mockResolvedValue([solicitud()])
+    mocks.crearEntrega.mockResolvedValue(entrega({ id: 13 }))
+    render(<CashDeliveries />)
+    await screen.findByLabelText('Solicitudes de reposición')
+    await user.click(screen.getByRole('button', { name: 'Registrar entrega' }))
+    const dialogo = screen.getByRole('dialog', { name: 'Nueva entrega de billetes' })
+
+    await user.clear(within(dialogo).getByLabelText('Billete $ 100'))
+    await user.type(within(dialogo).getByLabelText('Billete $ 100'), '2')
+    await user.click(within(dialogo).getByRole('button', { name: 'Registrar entrega' }))
+
+    expect(mocks.crearEntrega).toHaveBeenCalledWith(
+      1,
+      [{ denominacion: 20, cantidad: 2 }, { denominacion: 21, cantidad: 5 }],
+      '',
+      7,
+    )
+  })
+
+  it('rechaza el pedido indicando el motivo', async () => {
+    const user = userEvent.setup()
+    mocks.listarSolicitudes.mockResolvedValue([solicitud()])
+    mocks.rechazarSolicitud.mockResolvedValue(
+      solicitud({ estado: 'RECHAZADA', estadoDisplay: 'Rechazada', motivo: 'Sin efectivo' }),
+    )
+    render(<CashDeliveries />)
+    await screen.findByLabelText('Solicitudes de reposición')
+    await user.click(screen.getByRole('button', { name: 'Rechazar' }))
+
+    const dialogo = screen.getByRole('dialog', { name: 'Rechazar solicitud #7' })
+    const boton = within(dialogo).getByRole('button', { name: 'Rechazar solicitud' })
+    expect(boton).toBeDisabled()
+    await user.type(within(dialogo).getByLabelText('Motivo'), 'Tesorería sin efectivo')
+    await user.click(boton)
+
+    expect(mocks.rechazarSolicitud).toHaveBeenCalledWith(7, 'Tesorería sin efectivo')
+    expect(await screen.findByRole('status')).toHaveTextContent('Solicitud #7 rechazada')
+  })
+
+  it('no deja rechazar sin motivo', async () => {
+    const user = userEvent.setup()
+    mocks.listarSolicitudes.mockResolvedValue([solicitud()])
+    render(<CashDeliveries />)
+    await screen.findByLabelText('Solicitudes de reposición')
+    await user.click(screen.getByRole('button', { name: 'Rechazar' }))
+    const dialogo = screen.getByRole('dialog', { name: 'Rechazar solicitud #7' })
+
+    await user.type(within(dialogo).getByLabelText('Motivo'), '   ')
+    expect(within(dialogo).getByRole('button', { name: 'Rechazar solicitud' })).toBeDisabled()
+    expect(mocks.rechazarSolicitud).not.toHaveBeenCalled()
+  })
+
+  it('las entregas se siguen viendo aunque falle la lista de pedidos', async () => {
+    mocks.listarSolicitudes.mockRejectedValue(new Error('sin permisos'))
+    render(<CashDeliveries />)
+    expect(await screen.findByText('#12')).toBeInTheDocument()
   })
 })

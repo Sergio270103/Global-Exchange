@@ -20,6 +20,11 @@
  *   (`crearEntrega`) y quedan pendientes; el cajero las confirma
  *   (`confirmarEntrega`, se suman al saldo) o rechaza con motivo; el admin
  *   puede cancelar una pendiente.
+ * - Reposición (PI-80): el cajero pide efectivo cuando se le acaba una
+ *   divisa (`crearSolicitud`); el admin lo ve en su pantalla de entregas
+ *   (`listarSolicitudes`) y lo atiende pasandole la `solicitud` a
+ *   `crearEntrega`, o lo rechaza con `rechazarSolicitud`.
+ *   `obtenerAvisosReposicion` devuelve las divisas bajo el mínimo.
  *
  * @module services/cajas
  */
@@ -162,6 +167,46 @@ export interface LineaBilletes {
   cantidad: number
 }
 
+// --- Reposición de billetes (PI-80) ------------------------------------
+
+/** Estado del pedido de reposición del cajero al administrador. */
+export type EstadoSolicitud = 'PENDIENTE' | 'ATENDIDA' | 'RECHAZADA'
+
+/** Divisa que el cajero tiene que pedir reposición. */
+export interface AvisoReposicion {
+  moneda: number
+  codigo: string
+  nombre: string
+  simbolo: string
+  decimales: number
+  total: number
+  saldoMinimo: number
+  faltante: number
+}
+
+/** Pedido de efectivo del cajero al administrador. */
+export interface SolicitudReposicion {
+  id: number
+  caja: number
+  cajaNombre: string
+  moneda: number
+  monedaCodigo: string
+  monedaNombre: string
+  simbolo: string
+  decimales: number
+  monto: number
+  estado: EstadoSolicitud
+  estadoDisplay: string
+  cajeroNombre: string
+  observacion: string
+  creadoEn: string
+  respondidoPorNombre: string
+  fechaRespuesta: string | null
+  motivo: string
+  entregaId: number | null
+  detalle: { denominacion: number; monedaCodigo: string; valor: number; cantidad: number; subtotal: number }[]
+}
+
 // --- Formas que devuelve la API ----------------------------------------
 
 interface SaldoMonedaApi {
@@ -191,6 +236,45 @@ interface DenominacionApi {
   decimales: number
   valor: string
   activa?: boolean
+}
+
+interface AvisoReposicionApi {
+  moneda: number
+  moneda_codigo: string
+  moneda_nombre: string
+  simbolo: string
+  decimales: number
+  total: string
+  saldo_minimo: string
+  faltante: string
+}
+
+interface SolicitudApi {
+  id: number
+  caja: number
+  caja_nombre: string
+  moneda: number
+  moneda_codigo: string
+  moneda_nombre: string
+  simbolo: string
+  decimales: number
+  monto: string
+  estado: EstadoSolicitud
+  estado_display: string
+  cajero_nombre: string
+  observacion: string
+  creado_en: string
+  respondido_por_nombre: string
+  fecha_respuesta: string | null
+  motivo: string
+  entrega_id: number | null
+  detalle: {
+    denominacion: number
+    moneda_codigo: string
+    valor: string
+    cantidad: number
+    subtotal: string
+  }[]
 }
 
 interface MovimientoApi {
@@ -398,6 +482,22 @@ export async function obtenerSaldo(cajaId: number): Promise<SaldoMoneda[]> {
   return datos.monedas.map(mapearSaldo)
 }
 
+/**
+ * Divisas cuyo saldo quedó por debajo del mínimo configurado (PI-80).
+ *
+ * Es un subset del mismo endpoint de saldo: solo se devuelven las que el
+ * cajero tiene que pedir reponer.
+ *
+ * @param cajaId - Id de la caja.
+ * @returns Una entrada por divisa en alerta, con el faltante calculado.
+ */
+export async function obtenerAvisosReposicion(cajaId: number): Promise<AvisoReposicion[]> {
+  const datos = await apiFetch<{ bajo_minimo: AvisoReposicionApi[] }>(
+    `/cajas/${cajaId}/saldo/`,
+  )
+  return datos.bajo_minimo.map(mapearAviso)
+}
+
 /** Últimos movimientos de la caja, del más reciente al más antiguo. */
 export async function listarMovimientos(
   cajaId: number,
@@ -472,6 +572,49 @@ function mapearDenominacion(d: DenominacionApi): Denominacion {
     valor: Number(d.valor),
     // El backend siempre lo manda; el `?? true` cubre respuestas viejas.
     activa: d.activa ?? true,
+  }
+}
+
+function mapearAviso(a: AvisoReposicionApi): AvisoReposicion {
+  return {
+    moneda: a.moneda,
+    codigo: a.moneda_codigo,
+    nombre: a.moneda_nombre,
+    simbolo: a.simbolo,
+    decimales: a.decimales,
+    total: Number(a.total),
+    saldoMinimo: Number(a.saldo_minimo),
+    faltante: Number(a.faltante),
+  }
+}
+
+function mapearSolicitud(s: SolicitudApi): SolicitudReposicion {
+  return {
+    id: s.id,
+    caja: s.caja,
+    cajaNombre: s.caja_nombre,
+    moneda: s.moneda,
+    monedaCodigo: s.moneda_codigo,
+    monedaNombre: s.moneda_nombre,
+    simbolo: s.simbolo,
+    decimales: s.decimales,
+    monto: Number(s.monto),
+    estado: s.estado,
+    estadoDisplay: s.estado_display,
+    cajeroNombre: s.cajero_nombre,
+    observacion: s.observacion,
+    creadoEn: s.creado_en,
+    respondidoPorNombre: s.respondido_por_nombre,
+    fechaRespuesta: s.fecha_respuesta,
+    motivo: s.motivo,
+    entregaId: s.entrega_id,
+    detalle: s.detalle.map(d => ({
+      denominacion: d.denominacion,
+      monedaCodigo: d.moneda_codigo,
+      valor: Number(d.valor),
+      cantidad: d.cantidad,
+      subtotal: Number(d.subtotal),
+    })),
   }
 }
 
@@ -574,13 +717,79 @@ export async function listarEntregas(
  * pendiente: no modifica el saldo hasta que el cajero la confirme.
  */
 export async function crearEntrega(
-  cajaId: number, detalle: LineaBilletes[], observacion = '',
+  cajaId: number, detalle: LineaBilletes[], observacion = '', solicitud?: number | null,
 ): Promise<Entrega> {
   const datos = await apiFetch<EntregaApi>('/entregas/', {
     method: 'POST',
-    body: JSON.stringify({ caja: cajaId, detalle: detalle.filter(l => l.cantidad > 0), observacion }),
+    body: JSON.stringify({
+      caja: cajaId,
+      detalle: detalle.filter(l => l.cantidad > 0),
+      observacion,
+      // PI-80: si viene, esta entrega atiende un pedido del cajero.
+      ...(solicitud ? { solicitud } : {}),
+    }),
   })
   return mapearEntrega(datos)
+}
+
+/**
+ * Lista las solicitudes de reposición (PI-80).
+ *
+ * El cajero y el administrador ven la misma lista; lo que cambia es qué
+ * pueden hacer con cada una.
+ *
+ * @param filtros - `caja`, `estado` y `moneda` (código o id).
+ */
+export async function listarSolicitudes(
+  filtros: { caja?: number; estado?: EstadoSolicitud; moneda?: string } = {},
+): Promise<SolicitudReposicion[]> {
+  const qs = new URLSearchParams()
+  if (filtros.caja) qs.set('caja', String(filtros.caja))
+  if (filtros.estado) qs.set('estado', filtros.estado)
+  if (filtros.moneda) qs.set('moneda', filtros.moneda)
+  const sufijo = qs.toString() ? `?${qs}` : ''
+  const datos = await apiFetch<SolicitudApi[]>(`/solicitudes/${sufijo}`)
+  return datos.map(mapearSolicitud)
+}
+
+/**
+ * El cajero pide reposición de una divisa (PI-80).
+ *
+ * @param datos - Caja, divisa, monto y opcionalmente los billetes que
+ *   necesita y cuántos de cada uno.
+ */
+export async function crearSolicitud(datos: {
+  caja: number
+  moneda: number
+  monto: string
+  detalle?: LineaBilletes[]
+  observacion?: string
+}): Promise<SolicitudReposicion> {
+  const creada = await apiFetch<SolicitudApi>('/solicitudes/', {
+    method: 'POST',
+    body: JSON.stringify({
+      caja: datos.caja,
+      moneda: datos.moneda,
+      monto: datos.monto,
+      detalle: (datos.detalle ?? []).filter(l => l.cantidad > 0),
+      observacion: datos.observacion ?? '',
+    }),
+  })
+  return mapearSolicitud(creada)
+}
+
+/**
+ * El administrador no puede atender el pedido y explica por qué (PI-80).
+ *
+ * @param id - Id de la solicitud.
+ * @param motivo - Por qué no se entrega el efectivo.
+ */
+export async function rechazarSolicitud(id: number, motivo: string): Promise<SolicitudReposicion> {
+  const rechazada = await apiFetch<SolicitudApi>(`/solicitudes/${id}/rechazar/`, {
+    method: 'POST',
+    body: JSON.stringify({ motivo }),
+  })
+  return mapearSolicitud(rechazada)
 }
 
 /**

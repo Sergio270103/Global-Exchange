@@ -25,9 +25,16 @@ import {
   formatearMonto,
   listarArqueos,
   listarCajas,
+  listarDenominaciones,
   listarEntregas,
   listarMovimientos,
   obtenerSaldo,
+  obtenerAvisosReposicion,
+  crearSolicitud,
+  listarSolicitudes,
+  type AvisoReposicion,
+  type CatalogoMoneda,
+  type SolicitudReposicion,
   obtenerTurno,
   rechazarEntrega,
   registrarArqueo,
@@ -42,12 +49,14 @@ import {
 } from '@/services/cajas'
 import {
   BotonesModal,
+  CampoCantidad,
   CampoMonto,
   Modal,
   TablaEntrega,
   fechaCorta,
   leerMonto,
   textoBillete,
+  textoSolicitud,
 } from './ComponentesCaja'
 
 /** Propiedades de la vista de control de caja. */
@@ -89,7 +98,11 @@ export default function CashCountView(_props: CashCountViewProps) {
   const [error, setError] = useState('')
   const [aviso, setAviso] = useState('')
   const [actualizado, setActualizado] = useState<Date | null>(null)
-  const [modal, setModal] = useState<'movimiento' | 'arqueo' | 'cierre' | null>(null)
+  const [modal, setModal] = useState<'movimiento' | 'arqueo' | 'cierre' | 'solicitud' | null>(null)
+  // PI-80: avisos de saldo bajo y pedidos de reposición del cajero.
+  const [avisosReposicion, setAvisosReposicion] = useState<AvisoReposicion[]>([])
+  const [solicitudes, setSolicitudes] = useState<SolicitudReposicion[]>([])
+  const [avisoPedido, setAvisoPedido] = useState<AvisoReposicion | null>(null)
 
   useEffect(() => {
     listarCajas()
@@ -106,18 +119,24 @@ export default function CashCountView(_props: CashCountViewProps) {
 
   const recargar = useCallback(async (id: number) => {
     try {
-      const [s, m, a, e, t] = await Promise.all([
+      const [s, m, a, e, t, avisos, sols] = await Promise.all([
         obtenerSaldo(id),
         listarMovimientos(id, { limite: 10 }),
         listarArqueos(id, 5),
         listarEntregas({ caja: id, estado: 'PENDIENTE' }),
         obtenerTurno(id),
+        // El aviso y el pedido no son el centro de esta pantalla: si
+        // fallan, el saldo y los movimientos siguen mostrando.
+        obtenerAvisosReposicion(id).catch(() => [] as AvisoReposicion[]),
+        listarSolicitudes({ caja: id }).catch(() => [] as SolicitudReposicion[]),
       ])
       setSaldo(s)
       setMovimientos(m)
       setArqueos(a)
       setPendientes(e)
       setTurno(t)
+      setAvisosReposicion(avisos)
+      setSolicitudes(sols)
       setActualizado(new Date())
       setError('')
     } catch (e) {
@@ -137,6 +156,16 @@ export default function CashCountView(_props: CashCountViewProps) {
 
   const cajaActual = cajas.find(c => c.id === cajaId)
   const simboloDe = (codigo: string) => saldo.find(m => m.codigo === codigo)
+
+  /** PI-80: el cajero envió el pedido; lo sumo al instante y cierro. */
+  const alSolicitarReposicion = (solicitud: SolicitudReposicion) => {
+    setSolicitudes(prev => [solicitud, ...prev])
+    setAvisoPedido(null)
+    setAviso(
+      `Solicitud #${solicitud.id} enviada al administrador por `
+      + `${textoSolicitud(solicitud, solicitud.monto)} de ${solicitud.monedaCodigo}.`,
+    )
+  }
 
   const alRegistrarMovimiento = (mov: MovimientoCaja, nuevoSaldo: SaldoMoneda[]) => {
     setSaldo(nuevoSaldo)
@@ -326,6 +355,78 @@ export default function CashCountView(_props: CashCountViewProps) {
         </div>
       </section>
 
+      {/* REPOSICIÓN (PI-80) */}
+      {cajaId !== null && (avisosReposicion.length > 0 || solicitudes.length > 0) && (
+        <section aria-label="Reposición de billetes" className="space-y-2">
+          <h3 className="font-semibold text-sm text-slate-700">Reposición de billetes</h3>
+
+          {avisosReposicion.length > 0 && (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 space-y-3">
+              <p className="text-xs text-amber-900">
+                <strong className="font-semibold">Saldo bajo.</strong>{' '}
+                Estas divisas quedaron por debajo del mínimo de la caja. Pedile al administrador
+                la reposición para poder seguir atendiendo.
+              </p>
+              <ul className="space-y-2">
+                {avisosReposicion.map(a => {
+                  const yaPedida = solicitudes.some(
+                    s => s.estado === 'PENDIENTE' && s.moneda === a.moneda,
+                  )
+                  return (
+                    <li key={a.moneda} className="flex items-center justify-between gap-3 flex-wrap">
+                      <span className="text-xs text-amber-900">
+                        <strong className="font-mono font-bold">{a.codigo}</strong>{' '}
+                        tenés {textoBillete(a, a.total)} de {textoBillete(a, a.saldoMinimo)} ·{' '}
+                        faltan{' '}
+                        <strong className="font-mono font-bold">
+                          {textoBillete(a, a.faltante)}
+                        </strong>
+                      </span>
+                      <button
+                        type="button"
+                        disabled={yaPedida}
+                        onClick={() => setAvisoPedido(a)}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-amber-300 bg-white text-amber-900 hover:bg-amber-100 disabled:opacity-60 disabled:cursor-not-allowed"
+                      >
+                        {yaPedida ? 'Pedido enviado' : 'Solicitar reposición'}
+                      </button>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          )}
+
+          {solicitudes.length > 0 && (
+            <ul className="space-y-1.5">
+              {solicitudes.slice(0, 5).map(s => (
+                <li
+                  key={s.id}
+                  className="flex items-center justify-between gap-3 text-xs border border-slate-100 bg-white rounded-lg px-3 py-2"
+                >
+                  <span className="text-slate-700">
+                    <span className="font-mono font-bold">{s.monedaCodigo}</span>{' '}
+                    {textoSolicitud(s, s.monto)} · {fechaCorta(s.creadoEn)} · {s.cajeroNombre}
+                    {s.motivo && <span className="text-slate-500"> · {s.motivo}</span>}
+                  </span>
+                  <span
+                    className={`px-2 py-0.5 rounded font-bold ${
+                      s.estado === 'PENDIENTE'
+                        ? 'bg-amber-100 text-amber-800'
+                        : s.estado === 'ATENDIDA'
+                          ? 'bg-emerald-100 text-emerald-800'
+                          : 'bg-rose-100 text-rose-800'
+                    }`}
+                  >
+                    {s.estadoDisplay}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
       <div className="grid lg:grid-cols-3 gap-6">
         {/* MOVIMIENTOS RECIENTES */}
         <div className="lg:col-span-2 bg-white rounded-xl border border-slate-100 shadow-sm p-5 space-y-3">
@@ -400,6 +501,14 @@ export default function CashCountView(_props: CashCountViewProps) {
           onRespondida={alResponderEntrega}
         />
       )}
+      {avisoPedido && cajaId !== null && (
+        <ModalSolicitud
+          cajaId={cajaId}
+          aviso={avisoPedido}
+          onCerrar={() => setAvisoPedido(null)}
+          onEnviada={alSolicitarReposicion}
+        />
+      )}
       {(modal === 'arqueo' || modal === 'cierre') && cajaId !== null && (
         <ModalArqueo
           modo={modal}
@@ -415,6 +524,132 @@ export default function CashCountView(_props: CashCountViewProps) {
 }
 
 // ----------------------------------------------------------------------
+
+/**
+ * Pedido de reposición de billetes (PI-80).
+ *
+ * El monto es lo obligatorio: si el cajero además sabe qué billetes le
+ * faltan, los carga uno por uno. Si no, alcanza con el total y lo define
+ * el administrador al registrar la entrega.
+ */
+function ModalSolicitud({ cajaId, aviso, onCerrar, onEnviada }: {
+  cajaId: number
+  aviso: AvisoReposicion
+  onCerrar: () => void
+  onEnviada: (solicitud: SolicitudReposicion) => void
+}) {
+  const [monto, setMonto] = useState(String(aviso.faltante))
+  const [cantidades, setCantidades] = useState<Record<number, number>>({})
+  const [observacion, setObservacion] = useState('')
+  const [billetes, setBilletes] = useState<CatalogoMoneda[]>([])
+  const [enviando, setEnviando] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    listarDenominaciones()
+      .then(lista => setBilletes(lista.filter(m => m.codigo === aviso.codigo)))
+      .catch(() => setBilletes([]))
+  }, [aviso.codigo])
+
+  const lectura = leerMonto(monto, aviso.decimales)
+  const problema = 'error' in lectura ? lectura.error : ''
+  const valor = 'monto' in lectura ? lectura.monto : null
+  const detalle = Object.entries(cantidades)
+    .filter(([, c]) => c > 0)
+    .map(([denominacion, cantidad]) => ({ denominacion: Number(denominacion), cantidad }))
+  // Si Detailed se pidió algo, tiene que sumar al menos el monto pedido.
+  const detalleNoVacio = detalle.length > 0
+  const puedeEnviar = valor !== null && !problema && !enviando
+
+  const enviar = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!puedeEnviar || valor === null) return
+    setEnviando(true)
+    setError('')
+    try {
+      onEnviada(await crearSolicitud({
+        caja: cajaId,
+        moneda: aviso.moneda,
+        monto: String(valor),
+        detalle,
+        observacion: observacion.trim(),
+      }))
+    } catch (err) {
+      setError((err as Error).message)
+      setEnviando(false)
+    }
+  }
+
+  const pie = (
+    <>
+      {error && <p role="alert" className="text-rose-600">{error}</p>}
+      <BotonesModal
+        onCerrar={onCerrar}
+        textoConfirmar={enviando ? 'Enviando…' : 'Enviar solicitud'}
+        deshabilitado={!puedeEnviar}
+      />
+    </>
+  )
+
+  return (
+    <Modal titulo={`Solicitar reposición de ${aviso.codigo}`} onCerrar={onCerrar} onSubmit={enviar} pie={pie}>
+      <p className="text-slate-600">
+        Tenés <strong className="font-mono">{textoBillete(aviso, aviso.total)}</strong> y el
+        mínimo de la caja es <strong className="font-mono">{textoBillete(aviso, aviso.saldoMinimo)}</strong>.
+      </p>
+
+      <label className="font-semibold text-slate-600 space-y-1 block">
+        <span>Monto que necesitás ({aviso.codigo})</span>
+        <CampoMonto
+          id="monto-solicitud"
+          valor={monto}
+          onCambio={setMonto}
+          decimales={aviso.decimales}
+          error={!!problema}
+        />
+      </label>
+
+      {billetes.length > 0 && (
+        <div className="space-y-2">
+          <p className="font-semibold text-slate-600">
+            ¿Qué billetes te faltan? <span className="font-normal text-slate-400">(opcional)</span>
+          </p>
+          <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg">
+            {billetes.flatMap(m => m.denominaciones).map(d => (
+              <div key={d.denominacion} className="flex items-center justify-between gap-3 px-3 py-2">
+                <label htmlFor={`sol-${d.denominacion}`} className="font-semibold text-slate-700">
+                  Billete {textoBillete(aviso, d.valor)}
+                </label>
+                <CampoCantidad
+                  id={`sol-${d.denominacion}`}
+                  valor={cantidades[d.denominacion] ?? 0}
+                  onCambio={n => setCantidades({ ...cantidades, [d.denominacion]: n })}
+                />
+              </div>
+            ))}
+          </div>
+          {detalleNoVacio && (
+            <p className="text-[11px] text-slate-400">
+              Lo que carga el administrador es el detalle de arriba; el monto es el total que pedís.
+            </p>
+          )}
+        </div>
+      )}
+
+      <label className="font-semibold text-slate-600 space-y-1 block">
+        <span>Observación</span>
+        <input
+          type="text"
+          maxLength={255}
+          placeholder="Opcional"
+          value={observacion}
+          onChange={e => setObservacion(e.target.value)}
+          className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+        />
+      </label>
+    </Modal>
+  )
+}
 
 function ModalMovimiento({ cajaId, saldo, onCerrar, onRegistrado }: {
   cajaId: number

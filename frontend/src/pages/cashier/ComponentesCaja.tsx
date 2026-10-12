@@ -22,6 +22,24 @@ export function textoBillete(m: Pick<MonedaCaja, 'simbolo' | 'codigo' | 'decimal
 }
 
 /**
+ * Igual que {@link textoBillete}, pero para la divisa de una solicitud de
+ * reposición (PI-80).
+ *
+ * `SolicitudReposicion` llama `monedaCodigo` a lo que en el resto del
+ * sistema es `codigo`; esta función puente evita repetir el objeto en
+ * cada llamada.
+ */
+export function textoSolicitud(
+  s: { monedaCodigo: string; simbolo: string; decimales: number },
+  valor: number,
+): string {
+  return textoBillete(
+    { codigo: s.monedaCodigo, simbolo: s.simbolo, decimales: s.decimales },
+    valor,
+  )
+}
+
+/**
  * Ventana modal con encabezado y botones fijos: solo se desplaza el
  * contenido del medio, así "Guardar" queda siempre a la vista. Mientras
  * está abierta, la página de fondo no scrollea (un solo scroll).

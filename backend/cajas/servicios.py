@@ -17,6 +17,12 @@ Apertura y cierre (PI-79): la caja se abre al confirmar la entrega
 inicial de billetes (:func:`confirmar_entrega`) y los ingresos y retiros
 solo se aceptan con la caja abierta. :func:`cerrar_caja` registra el
 recuento final y devuelve el efectivo a tesorería (saldo en 0).
+
+Reposición (PI-80): :func:`divisias_bajo_minimo` compara el saldo de cada
+divisa contra ``Moneda.saldo_minimo`` para avisar al cajero, y
+:func:`crear_solicitud` guarda su pedido. El administrador lo atiende
+registrando una entrega (:func:`crear_entrega` con ``solicitud=``) o lo
+rechaza con :func:`rechazar_solicitud`.
 """
 
 from decimal import Decimal
@@ -28,8 +34,9 @@ from django.utils import timezone
 from monedas.models import Moneda
 
 from .models import (
-    ArqueoCaja, ArqueoMoneda, Caja, DetalleEntrega, Denominacion,
-    EntregaBilletes, MovimientoCaja, SaldoCaja, TurnoCaja,
+    ArqueoCaja, ArqueoMoneda, Caja, DetalleEntrega, DetalleSolicitud,
+    Denominacion, EntregaBilletes, MovimientoCaja, SaldoCaja,
+    SolicitudReposicion, TurnoCaja,
 )
 
 #: Mensaje cuando se intenta operar con la caja cerrada (PI-79).
@@ -217,6 +224,23 @@ def _validar_detalle_entrega(detalle: list[tuple[Denominacion, int]]) -> None:
         vistos.add(denominacion.pk)
 
 
+def _validar_entrega_atiende_solicitud(
+    solicitud: SolicitudReposicion, detalle: list[tuple[Denominacion, int]],
+) -> None:
+    """La entrega tiene que incluir la divisa que el cajero pidió.
+
+    No se exige que coincida el monto exacto: el administrador puede
+    entregar de más o de menos según el efectivo que tenga. Solo que no
+    se registre una entrega de otra divisa, que sería responder una
+    solicitud con algo que no tiene nada que ver.
+    """
+    divisas = {d.moneda_id for d, _ in detalle}
+    if solicitud.moneda_id not in divisas:
+        raise ValidationError(
+            f'La entrega no incluye {solicitud.moneda.codigo}, que es lo '
+            'que se pidió en la solicitud.')
+
+
 def totales_entrega(entrega: EntregaBilletes) -> list[dict]:
     """Total entregado por divisa."""
     grupos: dict[int, dict] = {}
@@ -245,11 +269,22 @@ def crear_entrega(
     usuario_id: str,
     usuario_nombre: str = '',
     observacion: str = '',
+    solicitud: SolicitudReposicion | None = None,
 ) -> EntregaBilletes:
-    """Registra una entrega PENDIENTE. Todavía no modifica el saldo."""
+    """Registra una entrega PENDIENTE. Todavía no modifica el saldo.
+
+    Si viene ``solicitud`` (PI-80), la entrega es la respuesta a ese pedido
+    del cajero: queda enlazada y el pedido pasa a ATENDIDA. Si la entrega
+    no cuadra con lo pedido, la validación la corta y no se guarda nada.
+    """
     if not caja.activa:
         raise ValidationError('La caja está inactiva.')
     _validar_detalle_entrega(detalle)
+    if solicitud is not None:
+        solicitud = _tomar_solicitud_pendiente(solicitud)
+        if solicitud.caja_id != caja.pk:
+            raise ValidationError('La solicitud es de otra caja.')
+        _validar_entrega_atiende_solicitud(solicitud, detalle)
     entrega = EntregaBilletes.objects.create(
         caja=caja, entregado_por_id=usuario_id or '',
         entregado_por_nombre=usuario_nombre[:160], observacion=observacion[:255],
@@ -257,6 +292,8 @@ def crear_entrega(
     DetalleEntrega.objects.bulk_create([
         DetalleEntrega(entrega=entrega, denominacion=d, cantidad=c) for d, c in detalle
     ])
+    if solicitud is not None:
+        atender_solicitud(solicitud, entrega, usuario_id, usuario_nombre)
     return entrega
 
 
@@ -397,3 +434,153 @@ def cerrar_caja(
     turno.arqueo_cierre = arqueo
     turno.save(update_fields=['cerrado_en', 'cerrado_por_id', 'cerrado_por_nombre', 'arqueo_cierre'])
     return turno
+
+
+# --- Solicitud de reposición (PI-80) -------------------------------------
+
+def divisias_bajo_minimo(caja: Caja) -> list[dict]:
+    """Divisas cuyo saldo de la caja quedó por debajo del mínimo (PI-80).
+
+    El mínimo vive en :attr:`monedas.Moneda.saldo_minimo` y es 0 por
+    defecto: una moneda sin mínimo configurado nunca aparece acá.
+
+    Solo se consideran las monedas activas **con saldo positivo**: una
+    divisa en 0 que el cajero nunca manejó no es una reposición, es
+    simplemente una moneda que esa caja no tiene.
+    """
+    resultado = []
+    saldos = (
+        SaldoCaja.objects
+        .filter(caja=caja, monto__gt=0)
+        .select_related('moneda')
+    )
+    for saldo in saldos:
+        moneda = saldo.moneda
+        if not moneda.activo or moneda.saldo_minimo <= 0:
+            continue
+        if saldo.monto >= moneda.saldo_minimo:
+            continue
+        resultado.append({
+            'moneda': moneda.pk,
+            'moneda_codigo': moneda.codigo,
+            'moneda_nombre': moneda.nombre,
+            'simbolo': moneda.simbolo,
+            'decimales': moneda.decimales,
+            'total': _formatear(saldo.monto),
+            'saldo_minimo': _formatear(moneda.saldo_minimo),
+            'faltante': _formatear(moneda.saldo_minimo - saldo.monto),
+        })
+    return sorted(resultado, key=lambda d: d['moneda_codigo'])
+
+
+def _validar_detalle_solicitud(
+    detalle: list[tuple[Denominacion, int]], moneda: Moneda,
+) -> None:
+    """El detalle es opcional, pero si viene tiene que ser coherente."""
+    vistos = set()
+    for denominacion, cantidad in detalle:
+        if denominacion.pk in vistos:
+            raise ValidationError(f'La denominación {denominacion} está repetida.')
+        if cantidad <= 0:
+            raise ValidationError('Las cantidades deben ser mayores a cero.')
+        if not denominacion.activa or not denominacion.moneda.activo:
+            raise ValidationError(f'La denominación {denominacion} no está habilitada.')
+        if denominacion.moneda_id != moneda.pk:
+            raise ValidationError(
+                f'La denominación {denominacion} no es de {moneda.codigo}.')
+        vistos.add(denominacion.pk)
+
+
+@transaction.atomic
+def crear_solicitud(
+    caja: Caja,
+    moneda: Moneda,
+    monto: Decimal,
+    usuario_id: str,
+    usuario_nombre: str = '',
+    detalle: list[tuple[Denominacion, int]] | None = None,
+    observacion: str = '',
+) -> 'SolicitudReposicion':
+    """El cajero pide reposición de una divisa (PI-80).
+
+    El detalle por denominación es opcional: alcanza con pedir el monto.
+
+    No se toca el saldo: la solicitud es un pedido, el efectivo entra
+    recién cuando el cajero confirma la entrega que registre el admin.
+
+    :raises ValidationError: si la caja está inactiva, la moneda no está
+        habilitada o ya hay un pedido pendiente de esa misma divisa.
+    """
+    if not caja.activa:
+        raise ValidationError('La caja está inactiva.')
+    if not moneda.activo:
+        raise ValidationError('La moneda está deshabilitada.')
+    monto = validar_monto(moneda, monto)
+    _validar_detalle_solicitud(detalle or [], moneda)
+
+    if SolicitudReposicion.objects.filter(
+        caja=caja, moneda=moneda, estado=SolicitudReposicion.ESTADO_PENDIENTE,
+    ).exists():
+        raise ValidationError(
+            f'Ya hay una solicitud pendiente de {moneda.codigo} para esta caja.')
+
+    solicitud = SolicitudReposicion.objects.create(
+        caja=caja, moneda=moneda, monto=moneda.monto_a_precision(monto),
+        cajero_id=usuario_id or '', cajero_nombre=usuario_nombre[:160],
+        observacion=observacion[:255],
+    )
+    DetalleSolicitud.objects.bulk_create([
+        DetalleSolicitud(solicitud=solicitud, denominacion=d, cantidad=c)
+        for d, c in (detalle or [])
+    ])
+    return solicitud
+
+
+def _tomar_solicitud_pendiente(solicitud: 'SolicitudReposicion') -> 'SolicitudReposicion':
+    solicitud = SolicitudReposicion.objects.select_for_update().get(pk=solicitud.pk)
+    if solicitud.estado != SolicitudReposicion.ESTADO_PENDIENTE:
+        raise ValidationError(
+            f'La solicitud ya está {solicitud.get_estado_display().lower()}.')
+    return solicitud
+
+
+@transaction.atomic
+def rechazar_solicitud(
+    solicitud: 'SolicitudReposicion',
+    motivo: str,
+    usuario_id: str = '',
+    usuario_nombre: str = '',
+) -> 'SolicitudReposicion':
+    """El administrador no atiende el pedido y explica por qué (PI-80)."""
+    if not motivo.strip():
+        raise ValidationError('Indicá el motivo del rechazo.')
+    solicitud = _tomar_solicitud_pendiente(solicitud)
+    solicitud.estado = SolicitudReposicion.ESTADO_RECHAZADA
+    solicitud.motivo = motivo.strip()[:255]
+    solicitud.respondido_por_id = usuario_id or ''
+    solicitud.respondido_por_nombre = usuario_nombre[:160]
+    solicitud.fecha_respuesta = timezone.now()
+    solicitud.save(update_fields=[
+        'estado', 'motivo', 'respondido_por_id', 'respondido_por_nombre', 'fecha_respuesta',
+    ])
+    return solicitud
+
+
+def atender_solicitud(
+    solicitud: 'SolicitudReposicion', entrega: EntregaBilletes,
+    usuario_id: str = '', usuario_nombre: str = '',
+) -> 'SolicitudReposicion':
+    """El administrador atendió el pedido registrando una entrega (PI-80).
+
+    No va en su propia transacción: la escribe :func:`crear_entrega` para
+    que la entrega y el cambio de estado del pedido se guarden juntos.
+    """
+    solicitud.estado = SolicitudReposicion.ESTADO_ATENDIDA
+    solicitud.entrega = entrega
+    solicitud.respondido_por_id = usuario_id or ''
+    solicitud.respondido_por_nombre = usuario_nombre[:160]
+    solicitud.fecha_respuesta = timezone.now()
+    solicitud.save(update_fields=[
+        'estado', 'entrega', 'respondido_por_id', 'respondido_por_nombre', 'fecha_respuesta',
+    ])
+    return solicitud

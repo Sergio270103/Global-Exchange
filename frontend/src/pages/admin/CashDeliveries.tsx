@@ -25,7 +25,10 @@ import {
   type Caja,
   type CatalogoMoneda,
   type Entrega,
+  listarSolicitudes,
+  rechazarSolicitud,
   type EstadoEntrega,
+  type SolicitudReposicion,
 } from '@/services/cajas'
 import {
   BotonesModal,
@@ -34,6 +37,7 @@ import {
   TablaEntrega,
   fechaCorta,
   textoBillete,
+  textoSolicitud,
 } from '@/pages/cashier/ComponentesCaja'
 import { INTERVALO_REFRESCO_MS } from '@/pages/cashier/CashCountView'
 import { listarMonedas } from '@/services/monedas'
@@ -70,15 +74,23 @@ export default function CashDeliveries() {
   const [aviso, setAviso] = useState('')
   const [nueva, setNueva] = useState(false)
   const [aCancelar, setACancelar] = useState<Entrega | null>(null)
+  // PI-80: pedidos de reposición de los cajeros.
+  const [solicitudes, setSolicitudes] = useState<SolicitudReposicion[]>([])
+  const [atendiendo, setAtendiendo] = useState<SolicitudReposicion | null>(null)
+  const [aRechazar, setARechazar] = useState<SolicitudReposicion | null>(null)
 
   const recargar = useCallback(async () => {
     try {
-      const [lista, cajasActuales] = await Promise.all([
+      const [lista, cajasActuales, sols] = await Promise.all([
         listarEntregas({ caja: cajaFiltro || undefined, estado: estado || undefined }),
         listarCajas(),
+        // Un pedido no se entrega si falla la lista: el resto de la
+        // pantalla sigue sirviendo.
+        listarSolicitudes().catch(() => [] as SolicitudReposicion[]),
       ])
       setEntregas(lista)
       setCajas(cajasActuales)
+      setSolicitudes(sols)
       setError('')
     } catch (e) {
       setError((e as Error).message)
@@ -94,6 +106,7 @@ export default function CashDeliveries() {
   }, [recargar])
 
   const pendientes = entregas.filter(e => e.estado === 'PENDIENTE').length
+  const solicitudesPendientes = solicitudes.filter(s => s.estado === 'PENDIENTE')
 
   return (
     <div className="space-y-6 animate-fadein text-slate-800">
@@ -227,6 +240,90 @@ export default function CashDeliveries() {
         </div>
       </div>
 
+      {/* PEDIDOS DE REPOSICIÓN (PI-80) */}
+      <section aria-label="Solicitudes de reposición" className="space-y-2">
+        <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
+          <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center gap-3">
+            <div>
+              <h3 className="text-base font-bold text-slate-900" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>
+                Solicitudes de reposición
+                {solicitudesPendientes.length > 0 && (
+                  <span className="ml-2 text-xs font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full">
+                    {solicitudesPendientes.length} pendiente(s)
+                  </span>
+                )}
+              </h3>
+              <p className="text-xs text-slate-400">
+                Los cajeros piden efectivo cuando se les acaba una divisa. Atendé el pedido
+                registrando una entrega, o rechazalo indicando el motivo.
+              </p>
+            </div>
+          </div>
+
+          {!cargando && solicitudes.length === 0 && (
+            <p className="text-xs text-slate-400 py-6 text-center">No hay solicitudes para mostrar.</p>
+          )}
+
+          <div className="space-y-2 mt-3">
+            {solicitudes.map(s => (
+              <div key={s.id} className="border border-slate-100 rounded-lg p-3 text-xs">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-2">
+                  <div className="space-y-0.5 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-bold text-slate-900">#{s.id}</span>
+                      <span
+                        className={`px-2 py-0.5 rounded border font-bold ${
+                          s.estado === 'PENDIENTE'
+                            ? 'bg-amber-50 text-amber-700 border-amber-200'
+                            : s.estado === 'ATENDIDA'
+                              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                              : 'bg-rose-50 text-rose-700 border-rose-200'
+                        }`}
+                      >
+                        {s.estadoDisplay}
+                      </span>
+                      <span className="font-semibold text-slate-700">{s.cajaNombre}</span>
+                    </div>
+                    <div className="font-mono font-semibold text-slate-800">
+                      Pide {textoSolicitud(s, s.monto)} de {s.monedaCodigo}
+                    </div>
+                    <div className="text-[11px] text-slate-500">
+                      Solicitada {fechaCorta(s.creadoEn)} por {s.cajeroNombre || '—'}
+                      {s.fechaRespuesta && (
+                        <> · Respondida {fechaCorta(s.fechaRespuesta)} por {s.respondidoPorNombre || '—'}</>
+                      )}
+                    </div>
+                    {s.observacion && <div className="text-[11px] text-slate-600">Observación: {s.observacion}</div>}
+                    {s.motivo && <div className="text-[11px] text-rose-600">Motivo: {s.motivo}</div>}
+                    {s.detalle.length > 0 && (
+                      <div className="text-[11px] text-slate-600">
+                        Pide billetes: {s.detalle.map(d => `${d.cantidad} × ${textoSolicitud(s, d.valor)}`).join(' + ')}
+                      </div>
+                    )}
+                  </div>
+                  {s.estado === 'PENDIENTE' && (
+                    <div className="flex gap-2 shrink-0">
+                      <button
+                        onClick={() => { setAviso(''); setAtendiendo(s) }}
+                        className="px-3 py-1.5 border border-emerald-200 rounded-lg font-semibold text-emerald-700 hover:bg-emerald-50"
+                      >
+                        Registrar entrega
+                      </button>
+                      <button
+                        onClick={() => { setAviso(''); setARechazar(s) }}
+                        className="px-3 py-1.5 border border-rose-200 rounded-lg font-semibold text-rose-600 hover:bg-rose-50"
+                      >
+                        Rechazar
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
       {nueva && (
         <ModalNuevaEntrega
           cajas={cajas}
@@ -250,22 +347,114 @@ export default function CashDeliveries() {
           }}
         />
       )}
+      {atendiendo && (
+        <ModalNuevaEntrega
+          cajas={cajas}
+          cajaInicial={atendiendo.caja}
+          solicitud={atendiendo}
+          onCerrar={() => setAtendiendo(null)}
+          onRegistrada={entrega => {
+            setAtendiendo(null)
+            setAviso(
+              `Entrega #${entrega.id} registrada para atender la solicitud #${atendiendo.id}. `
+              + 'Queda pendiente hasta que el cajero la confirme.',
+            )
+            recargar()
+          }}
+        />
+      )}
+      {aRechazar && (
+        <ModalRechazarSolicitud
+          solicitud={aRechazar}
+          onCerrar={() => setARechazar(null)}
+          onRechazada={s => {
+            setARechazar(null)
+            setAviso(`Solicitud #${s.id} rechazada. El cajero va a ver el motivo.`)
+            recargar()
+          }}
+        />
+      )}
     </div>
+  )
+}
+
+/** El administrador no puede entregar y deja registrado el motivo (PI-80). */
+function ModalRechazarSolicitud({ solicitud, onCerrar, onRechazada }: {
+  solicitud: SolicitudReposicion
+  onCerrar: () => void
+  onRechazada: (s: SolicitudReposicion) => void
+}) {
+  const [motivo, setMotivo] = useState('')
+  const [enviando, setEnviando] = useState(false)
+  const [error, setError] = useState('')
+  const vacio = motivo.trim().length === 0
+
+  const confirmar = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (vacio || enviando) return
+    setEnviando(true)
+    setError('')
+    try {
+      onRechazada(await rechazarSolicitud(solicitud.id, motivo.trim()))
+    } catch (err) {
+      setError((err as Error).message)
+      setEnviando(false)
+    }
+  }
+
+  const pie = (
+    <>
+      {error && <p role="alert" className="text-rose-600">{error}</p>}
+      <BotonesModal
+        onCerrar={onCerrar}
+        textoConfirmar={enviando ? 'Rechazando…' : 'Rechazar solicitud'}
+        deshabilitado={vacio || enviando}
+      />
+    </>
+  )
+
+  return (
+    <Modal
+      titulo={`Rechazar solicitud #${solicitud.id}`}
+      onCerrar={onCerrar}
+      onSubmit={confirmar}
+      pie={pie}
+    >
+      <p className="text-slate-600">
+        {solicitud.cajeroNombre || 'El cajero'} pidió{' '}
+        <strong className="font-mono">{textoSolicitud(solicitud, solicitud.monto)}</strong> de{' '}
+        {solicitud.monedaCodigo} para {solicitud.cajaNombre}.
+      </p>
+      <label className="font-semibold text-slate-600 space-y-1 block">
+        <span>Motivo</span>
+        <input
+          type="text"
+          maxLength={255}
+          value={motivo}
+          onChange={e => setMotivo(e.target.value)}
+          placeholder="Ej.: Tesorería no tiene efectivo de esa divisa."
+          className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+        />
+      </label>
+      <p className="text-[11px] text-slate-400">El cajero ve este motivo en su panel de caja.</p>
+    </Modal>
   )
 }
 
 // ----------------------------------------------------------------------
 
-function ModalNuevaEntrega({ cajas, cajaInicial, onCerrar, onRegistrada }: {
+function ModalNuevaEntrega({ cajas, cajaInicial, solicitud, onCerrar, onRegistrada }: {
   cajas: Caja[]
   cajaInicial?: number
+  /** PI-80: si viene, la entrega atiende este pedido del cajero. */
+  solicitud?: SolicitudReposicion | null
   onCerrar: () => void
   onRegistrada: (entrega: Entrega) => void
 }) {
   const [cajaId, setCajaId] = useState<number>(cajaInicial ?? cajas[0].id)
   const [monedas, setMonedas] = useState<CatalogoMoneda[]>([])
   const [activas, setActivas] = useState<string[]>([])
-  const [codigo, setCodigo] = useState('')
+  const [codigo, setCodigo] = useState(solicitud?.monedaCodigo ?? '')
   const [cantidades, setCantidades] = useState<Record<number, number>>({})
   const [observacion, setObservacion] = useState('')
   const [enviando, setEnviando] = useState(false)
@@ -278,9 +467,18 @@ function ModalNuevaEntrega({ cajas, cajaInicial, onCerrar, onRegistrada }: {
       .then(lista => {
         setMonedas(lista)
         setCodigo(actual => actual && lista.some(m => m.codigo === actual) ? actual : lista[0]?.codigo ?? '')
+        // PI-80: si la entrega atiende un pedido, se abre con los billetes
+        // que pidió el cajero ya cargados. El administrador puede cambiarlos
+        // según el efectivo que tenga.
+        if (solicitud) {
+          const inicial: Record<number, number> = {}
+          for (const d of solicitud.detalle) inicial[d.denominacion] = d.cantidad
+          setCantidades(prev => (Object.keys(prev).length > 0 ? prev : inicial))
+        }
       })
       .catch((e: Error) => setError(e.message))
-  }, [])
+    // Solo al abrir el modal: si cambia la solicitud, se vuelve a montar.
+  }, [solicitud])
 
   // El selector de arriba solo muestra monedas con billetes. Para poder
   // avisar de las que faltan, hay que cruzarlo con el catálogo completo.
@@ -315,7 +513,9 @@ function ModalNuevaEntrega({ cajas, cajaInicial, onCerrar, onRegistrada }: {
       const detalle = Object.entries(cantidades)
         .filter(([, cantidad]) => cantidad > 0)
         .map(([denominacion, cantidad]) => ({ denominacion: Number(denominacion), cantidad }))
-      onRegistrada(await crearEntrega(cajaId, detalle, observacion.trim()))
+      onRegistrada(await crearEntrega(
+        cajaId, detalle, observacion.trim(), solicitud?.id ?? null,
+      ))
     } catch (err) {
       setError((err as Error).message)
       setEnviando(false)
