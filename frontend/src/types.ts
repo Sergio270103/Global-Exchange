@@ -125,4 +125,12 @@ export interface Currency {
   decimals: number
   /** Indica si la moneda está habilitada para operar. */
   active: boolean
+  /**
+   * Saldo mínimo de efectivo en caja (PI-80). Por debajo de este valor el
+   * cajero ve el aviso de reposición. En 0 no se avisa nunca.
+   *
+   * Opcional a propósito: solo la configuración de caja lo usa, el resto
+   * de la app no tiene por qué saber de mínimos.
+   */
+  saldoMinimo?: number
 }

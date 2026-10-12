@@ -109,6 +109,10 @@ beforeEach(() => {
   mocks.listarSolicitudes.mockResolvedValue([])
   mocks.listarDenominaciones.mockResolvedValue([
     {
+      moneda: 1, codigo: 'PYG', nombre: 'Guaraní', simbolo: '₲', decimales: 0, flag: '🇵🇾',
+      denominaciones: [{ denominacion: 10, valor: 100000 }],
+    },
+    {
       moneda: 2, codigo: 'USD', nombre: 'Dólar Americano', simbolo: '$', decimales: 2, flag: '🇺🇸',
       denominaciones: [{ denominacion: 20, valor: 100 }, { denominacion: 21, valor: 20 }],
     },
@@ -386,6 +390,68 @@ describe('CashCountView · apertura y cierre (PI-79)', () => {
 })
 
 describe('CashCountView · reposición de billetes (PI-80)', () => {
+  it('la sección de reposición está siempre, aunque nada esté bajo el mínimo', async () => {
+    render(<CashCountView auth={cajero} />)
+    // El botón general existe siempre: se puede pedir por falta de
+    // billetes aunque el saldo total todavía alcance. (La sección espera a
+    // que se conozca la caja, así que va con find.)
+    expect(
+      await screen.findByRole('button', { name: '+ Solicitar reposición' }),
+    ).toBeInTheDocument()
+    // Y una vez que cargó, avisa que no hay nada urgente.
+    expect(await screen.findByText(/Ninguna divisa está por debajo del mínimo/)).toBeInTheDocument()
+  })
+
+  it('permite pedir sin aviso de saldo bajo, eligiendo la divisa', async () => {
+    const user = userEvent.setup()
+    mocks.crearSolicitud.mockResolvedValue(solicitud({ monto: 5000 }))
+    render(<CashCountView auth={cajero} />)
+    await screen.findByLabelText('Reposición de billetes')
+    await user.click(screen.getByRole('button', { name: '+ Solicitar reposición' }))
+
+    const dialogo = screen.getByRole('dialog', { name: 'Solicitar reposición de billetes' })
+    // Sin aviso previo, el cajero elige la divisa y el monto arranca vacío.
+    expect(within(dialogo).getByLabelText('Divisa que necesitás')).toBeInTheDocument()
+    const monto = within(dialogo).getByLabelText('Monto que necesitás (PYG)')
+    expect(monto).toHaveValue(null)
+
+    await user.selectOptions(within(dialogo).getByLabelText('Divisa que necesitás'), '2')
+    const usd = await within(dialogo).findByLabelText('Monto que necesitás (USD)')
+    await user.type(usd, '5000')
+    await user.click(within(dialogo).getByRole('button', { name: 'Enviar solicitud' }))
+
+    expect(mocks.crearSolicitud).toHaveBeenCalledWith(
+      expect.objectContaining({ caja: 1, moneda: 2, monto: '5000' }),
+    )
+  })
+
+  it('limpia los billetes al cambiar de divisa en el pedido', async () => {
+    const user = userEvent.setup()
+    render(<CashCountView auth={cajero} />)
+    await screen.findByLabelText('Reposición de billetes')
+    await user.click(screen.getByRole('button', { name: '+ Solicitar reposición' }))
+    const dialogo = screen.getByRole('dialog', { name: 'Solicitar reposición de billetes' })
+
+    await user.type(within(dialogo).getByLabelText('Billete ₲ 100.000'), '2')
+    await user.selectOptions(within(dialogo).getByLabelText('Divisa que necesitás'), '2')
+    // Los billetes de la divisa anterior no arrastran.
+    await screen.findByLabelText('Billete $ 100')
+    expect(within(dialogo).getByLabelText('Billete $ 100')).toHaveValue(null)
+    expect(within(dialogo).queryByLabelText('Billete ₲ 100.000')).not.toBeInTheDocument()
+  })
+
+  it('avisa que no se puede pedir si ninguna moneda tiene billetes', async () => {
+    const user = userEvent.setup()
+    mocks.listarDenominaciones.mockResolvedValue([])
+    render(<CashCountView auth={cajero} />)
+    await screen.findByLabelText('Reposición de billetes')
+    await user.click(screen.getByRole('button', { name: '+ Solicitar reposición' }))
+
+    const dialogo = screen.getByRole('dialog', { name: 'Solicitar reposición de billetes' })
+    expect(within(dialogo).getByText(/todavía no se puede pedir/)).toBeInTheDocument()
+    expect(within(dialogo).getByRole('button', { name: 'Enviar solicitud' })).toBeDisabled()
+  })
+
   it('avisa las divisas que quedaron por debajo del mínimo', async () => {
     mocks.obtenerAvisosReposicion.mockResolvedValue([aviso()])
     render(<CashCountView auth={cajero} />)
@@ -400,15 +466,20 @@ describe('CashCountView · reposición de billetes (PI-80)', () => {
   it('no muestra la sección si ninguna divisa está bajo el mínimo', async () => {
     render(<CashCountView auth={cajero} />)
     await screen.findByTestId('total-USD')
-    expect(screen.queryByLabelText('Reposición de billetes')).not.toBeInTheDocument()
+    // La sección existe siempre; lo que no aparece es el banner de alerta.
+    expect(screen.getByLabelText('Reposición de billetes')).toBeInTheDocument()
+    expect(screen.queryByText('Saldo bajo.')).not.toBeInTheDocument()
   })
 
   it('no deja pedir dos veces la misma divisa mientras está pendiente', async () => {
     mocks.obtenerAvisosReposicion.mockResolvedValue([aviso()])
     mocks.listarSolicitudes.mockResolvedValue([solicitud()])
     render(<CashCountView auth={cajero} />)
-    await screen.findByLabelText('Reposición de billetes')
-    expect(screen.getByRole('button', { name: 'Pedido enviado' })).toBeDisabled()
+    // Hay que esperar al aviso, no solo a la sección: el contador de
+    // pedidos pendientes llega después.
+    expect(
+      await screen.findByRole('button', { name: 'Pedido enviado' }),
+    ).toBeDisabled()
   })
 
   it('muestra el estado de los pedidos que el cajero ya hizo', async () => {
@@ -420,8 +491,10 @@ describe('CashCountView · reposición de billetes (PI-80)', () => {
       }),
     ])
     render(<CashCountView auth={cajero} />)
-    const seccion = await screen.findByLabelText('Reposición de billetes')
-    expect(seccion).toHaveTextContent('Pendiente')
+    // Hay que esperar a que lleguen los pedidos: la sección ya está en
+    // pantalla desde el primer render.
+    expect(await screen.findByText('Pendiente')).toBeInTheDocument()
+    const seccion = screen.getByLabelText('Reposición de billetes')
     expect(seccion).toHaveTextContent('Rechazada')
     expect(seccion).toHaveTextContent('Tesorería sin efectivo')
   })
@@ -434,7 +507,7 @@ describe('CashCountView · reposición de billetes (PI-80)', () => {
     await screen.findByTestId('total-USD')
     await user.click(await screen.findByRole('button', { name: 'Solicitar reposición' }))
 
-    const dialogo = screen.getByRole('dialog', { name: /Solicitar reposición de USD/ })
+    const dialogo = screen.getByRole('dialog', { name: 'Solicitar reposición de billetes' })
     // El monto viene precargado con el faltante.
     expect(within(dialogo).getByLabelText('Monto que necesitás (USD)')).toHaveValue(200)
     await user.click(within(dialogo).getByRole('button', { name: 'Enviar solicitud' }))
@@ -453,7 +526,7 @@ describe('CashCountView · reposición de billetes (PI-80)', () => {
     await screen.findByTestId('total-USD')
     await user.click(await screen.findByRole('button', { name: 'Solicitar reposición' }))
 
-    const dialogo = screen.getByRole('dialog', { name: /Solicitar reposición de USD/ })
+    const dialogo = screen.getByRole('dialog', { name: 'Solicitar reposición de billetes' })
     await user.type(within(dialogo).getByLabelText('Monto que necesitás (USD)'), '300')
     await user.type(within(dialogo).getByLabelText('Billete $ 100'), '3')
     await user.click(within(dialogo).getByRole('button', { name: 'Enviar solicitud' }))
@@ -472,7 +545,7 @@ describe('CashCountView · reposición de billetes (PI-80)', () => {
     render(<CashCountView auth={cajero} />)
     await screen.findByTestId('total-USD')
     await user.click(await screen.findByRole('button', { name: 'Solicitar reposición' }))
-    const dialogo = screen.getByRole('dialog', { name: /Solicitar reposición de USD/ })
+    const dialogo = screen.getByRole('dialog', { name: 'Solicitar reposición de billetes' })
 
     const campo = within(dialogo).getByLabelText('Monto que necesitás (USD)')
     await user.clear(campo)
@@ -491,7 +564,8 @@ describe('CashCountView · reposición de billetes (PI-80)', () => {
     render(<CashCountView auth={cajero} />)
     // El saldo es lo importante: si esto aparece, la pantalla no se rompió.
     expect(await screen.findByTestId('total-USD')).toHaveTextContent('400')
-    expect(screen.queryByLabelText('Reposición de billetes')).not.toBeInTheDocument()
+    // Y el botón de pedir sigue disponible: no depende de los avisos.
+    expect(screen.getByRole('button', { name: '+ Solicitar reposición' })).toBeInTheDocument()
   })
 })
 

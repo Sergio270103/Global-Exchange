@@ -102,7 +102,26 @@ export default function CashCountView(_props: CashCountViewProps) {
   // PI-80: avisos de saldo bajo y pedidos de reposición del cajero.
   const [avisosReposicion, setAvisosReposicion] = useState<AvisoReposicion[]>([])
   const [solicitudes, setSolicitudes] = useState<SolicitudReposicion[]>([])
-  const [avisoPedido, setAvisoPedido] = useState<AvisoReposicion | null>(null)
+  /**
+   * Pedido en curso. `urgente` marca que se abrió desde el aviso de saldo
+   * bajo (en ese caso el monto precarga con el faltante); si se abrió
+   * desde el botón general, el cajero elige la divisa y el monto.
+   */
+  const [pedido, setPedido] = useState<{ urgente: boolean; moneda?: number } | null>(null)
+  /** Divisas para las que se puede pedir efectivo (las que tienen billetes). */
+  const [divisasPedibles, setDivisasPedibles] = useState<DivisaPedible[]>([])
+
+  useEffect(() => {
+    listarDenominaciones()
+      .then(lista => setDivisasPedibles(lista.map(m => ({
+        moneda: m.moneda,
+        codigo: m.codigo,
+        nombre: m.nombre,
+        simbolo: m.simbolo,
+        decimales: m.decimales,
+      }))))
+      .catch(() => setDivisasPedibles([]))
+  }, [])
 
   useEffect(() => {
     listarCajas()
@@ -160,7 +179,7 @@ export default function CashCountView(_props: CashCountViewProps) {
   /** PI-80: el cajero envió el pedido; lo sumo al instante y cierro. */
   const alSolicitarReposicion = (solicitud: SolicitudReposicion) => {
     setSolicitudes(prev => [solicitud, ...prev])
-    setAvisoPedido(null)
+    setPedido(null)
     setAviso(
       `Solicitud #${solicitud.id} enviada al administrador por `
       + `${textoSolicitud(solicitud, solicitud.monto)} de ${solicitud.monedaCodigo}.`,
@@ -356,11 +375,23 @@ export default function CashCountView(_props: CashCountViewProps) {
       </section>
 
       {/* REPOSICIÓN (PI-80) */}
-      {cajaId !== null && (avisosReposicion.length > 0 || solicitudes.length > 0) && (
+      {cajaId !== null && (
         <section aria-label="Reposición de billetes" className="space-y-2">
-          <h3 className="font-semibold text-sm text-slate-700">Reposición de billetes</h3>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="font-semibold text-sm text-slate-700">Reposición de billetes</h3>
+            {/* Siempre disponible: se puede pedir por saldo bajo, pero
+                también cuando faltan billetes de cierta denominación y el
+                total todavía alcanza. */}
+            <button
+              type="button"
+              onClick={() => setPedido({ urgente: false })}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+            >
+              + Solicitar reposición
+            </button>
+          </div>
 
-          {avisosReposicion.length > 0 && (
+          {avisosReposicion.length > 0 ? (
             <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 space-y-3">
               <p className="text-xs text-amber-900">
                 <strong className="font-semibold">Saldo bajo.</strong>{' '}
@@ -385,7 +416,7 @@ export default function CashCountView(_props: CashCountViewProps) {
                       <button
                         type="button"
                         disabled={yaPedida}
-                        onClick={() => setAvisoPedido(a)}
+                        onClick={() => setPedido({ urgente: true, moneda: a.moneda })}
                         className="px-3 py-1.5 rounded-lg text-xs font-semibold border border-amber-300 bg-white text-amber-900 hover:bg-amber-100 disabled:opacity-60 disabled:cursor-not-allowed"
                       >
                         {yaPedida ? 'Pedido enviado' : 'Solicitar reposición'}
@@ -395,7 +426,14 @@ export default function CashCountView(_props: CashCountViewProps) {
                 })}
               </ul>
             </div>
-          )}
+          ) : !cargando ? (
+            // Ojo: mientras cargando no se afirma nada, o el panel
+            // mentiria diciendo que no hay nada bajo el mínimo.
+            <p className="text-xs text-slate-400">
+              Ninguna divisa está por debajo del mínimo de la caja. Si te faltan billetes de
+              alguna denominación, pedilos igual con el botón de arriba.
+            </p>
+          ) : null}
 
           {solicitudes.length > 0 && (
             <ul className="space-y-1.5">
@@ -501,11 +539,12 @@ export default function CashCountView(_props: CashCountViewProps) {
           onRespondida={alResponderEntrega}
         />
       )}
-      {avisoPedido && cajaId !== null && (
+      {pedido && cajaId !== null && (
         <ModalSolicitud
           cajaId={cajaId}
-          aviso={avisoPedido}
-          onCerrar={() => setAvisoPedido(null)}
+          aviso={pedido.moneda ? avisosReposicion.find(a => a.moneda === pedido.moneda) ?? null : null}
+          divisas={divisasPedibles}
+          onCerrar={() => setPedido(null)}
           onEnviada={alSolicitarReposicion}
         />
       )}
@@ -525,20 +564,36 @@ export default function CashCountView(_props: CashCountViewProps) {
 
 // ----------------------------------------------------------------------
 
+/** Divisa para la que el cajero puede pedir efectivo (PI-80). */
+interface DivisaPedible {
+  moneda: number
+  codigo: string
+  nombre: string
+  simbolo: string
+  decimales: number
+}
+
 /**
  * Pedido de reposición de billetes (PI-80).
  *
  * El monto es lo obligatorio: si el cajero además sabe qué billetes le
  * faltan, los carga uno por uno. Si no, alcanza con el total y lo define
  * el administrador al registrar la entrega.
+ *
+ * Se abre desde el aviso de saldo bajo (queda fijada la divisa y el monto
+ * con el faltante) o desde el botón general (el cajero elige la divisa).
  */
-function ModalSolicitud({ cajaId, aviso, onCerrar, onEnviada }: {
+function ModalSolicitud({ cajaId, aviso, divisas, onCerrar, onEnviada }: {
   cajaId: number
-  aviso: AvisoReposicion
+  /** Aviso de saldo bajo que originó el pedido, si vino de ahí. */
+  aviso: AvisoReposicion | null
+  divisas: DivisaPedible[]
   onCerrar: () => void
   onEnviada: (solicitud: SolicitudReposicion) => void
 }) {
-  const [monto, setMonto] = useState(String(aviso.faltante))
+  const [elegida, setElegida] = useState(aviso?.moneda ?? divisas[0]?.moneda ?? 0)
+  const moneda = divisas.find(d => d.moneda === elegida) ?? null
+  const [monto, setMonto] = useState(aviso ? String(aviso.faltante) : '')
   const [cantidades, setCantidades] = useState<Record<number, number>>({})
   const [observacion, setObservacion] = useState('')
   const [billetes, setBilletes] = useState<CatalogoMoneda[]>([])
@@ -546,30 +601,33 @@ function ModalSolicitud({ cajaId, aviso, onCerrar, onEnviada }: {
   const [error, setError] = useState('')
 
   useEffect(() => {
+    const codigo = divisas.find(d => d.moneda === elegida)?.codigo
+    if (!codigo) return
+    setCantidades({})
     listarDenominaciones()
-      .then(lista => setBilletes(lista.filter(m => m.codigo === aviso.codigo)))
+      .then(lista => setBilletes(lista.filter(m => m.codigo === codigo)))
       .catch(() => setBilletes([]))
-  }, [aviso.codigo])
+  }, [elegida, divisas])
 
-  const lectura = leerMonto(monto, aviso.decimales)
+  const decimales = moneda?.decimales ?? 2
+  const lectura = leerMonto(monto, decimales)
   const problema = 'error' in lectura ? lectura.error : ''
   const valor = 'monto' in lectura ? lectura.monto : null
   const detalle = Object.entries(cantidades)
     .filter(([, c]) => c > 0)
     .map(([denominacion, cantidad]) => ({ denominacion: Number(denominacion), cantidad }))
-  // Si Detailed se pidió algo, tiene que sumar al menos el monto pedido.
   const detalleNoVacio = detalle.length > 0
-  const puedeEnviar = valor !== null && !problema && !enviando
+  const puedeEnviar = Boolean(moneda) && valor !== null && !problema && !enviando
 
   const enviar = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!puedeEnviar || valor === null) return
+    if (!puedeEnviar || valor === null || !moneda) return
     setEnviando(true)
     setError('')
     try {
       onEnviada(await crearSolicitud({
         caja: cajaId,
-        moneda: aviso.moneda,
+        moneda: moneda.moneda,
         monto: String(valor),
         detalle,
         observacion: observacion.trim(),
@@ -591,62 +649,101 @@ function ModalSolicitud({ cajaId, aviso, onCerrar, onEnviada }: {
     </>
   )
 
+  const referencia = moneda
+    ? { monedaCodigo: moneda.codigo, simbolo: moneda.simbolo, decimales: moneda.decimales }
+    : null
+
   return (
-    <Modal titulo={`Solicitar reposición de ${aviso.codigo}`} onCerrar={onCerrar} onSubmit={enviar} pie={pie}>
-      <p className="text-slate-600">
-        Tenés <strong className="font-mono">{textoBillete(aviso, aviso.total)}</strong> y el
-        mínimo de la caja es <strong className="font-mono">{textoBillete(aviso, aviso.saldoMinimo)}</strong>.
-      </p>
-
-      <label className="font-semibold text-slate-600 space-y-1 block">
-        <span>Monto que necesitás ({aviso.codigo})</span>
-        <CampoMonto
-          id="monto-solicitud"
-          valor={monto}
-          onCambio={setMonto}
-          decimales={aviso.decimales}
-          error={!!problema}
-        />
-      </label>
-
-      {billetes.length > 0 && (
-        <div className="space-y-2">
-          <p className="font-semibold text-slate-600">
-            ¿Qué billetes te faltan? <span className="font-normal text-slate-400">(opcional)</span>
-          </p>
-          <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg">
-            {billetes.flatMap(m => m.denominaciones).map(d => (
-              <div key={d.denominacion} className="flex items-center justify-between gap-3 px-3 py-2">
-                <label htmlFor={`sol-${d.denominacion}`} className="font-semibold text-slate-700">
-                  Billete {textoBillete(aviso, d.valor)}
-                </label>
-                <CampoCantidad
-                  id={`sol-${d.denominacion}`}
-                  valor={cantidades[d.denominacion] ?? 0}
-                  onCambio={n => setCantidades({ ...cantidades, [d.denominacion]: n })}
-                />
-              </div>
-            ))}
-          </div>
-          {detalleNoVacio && (
-            <p className="text-[11px] text-slate-400">
-              Lo que carga el administrador es el detalle de arriba; el monto es el total que pedís.
+    <Modal
+      titulo="Solicitar reposición de billetes"
+      onCerrar={onCerrar}
+      onSubmit={enviar}
+      pie={pie}
+    >
+      {divisas.length === 0 ? (
+        <p className="text-slate-600">
+          No hay ninguna moneda con billetes cargados, así que todavía no se puede pedir
+          efectivo. Cargar los billetes en Configuración → Monedas → Billetes.
+        </p>
+      ) : (
+        <>
+          {aviso && referencia && (
+            <p className="text-slate-600">
+              <strong className="font-mono">{aviso.codigo}</strong> quedó por debajo del
+              mínimo de la caja: tenés {textoBillete(aviso, aviso.total)} y el mínimo es{' '}
+              {textoBillete(aviso, aviso.saldoMinimo)}.
             </p>
           )}
-        </div>
-      )}
 
-      <label className="font-semibold text-slate-600 space-y-1 block">
-        <span>Observación</span>
-        <input
-          type="text"
-          maxLength={255}
-          placeholder="Opcional"
-          value={observacion}
-          onChange={e => setObservacion(e.target.value)}
-          className="w-full px-3 py-2 border border-slate-200 rounded-lg"
-        />
-      </label>
+          {!aviso && (
+            <label className="font-semibold text-slate-600 space-y-1 block">
+              <span>Divisa que necesitás</span>
+              <select
+                value={elegida}
+                onChange={e => { setElegida(Number(e.target.value)); setMonto('') }}
+                className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+              >
+                {divisas.map(d => (
+                  <option key={d.moneda} value={d.moneda}>{d.codigo} - {d.nombre}</option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {referencia && (
+            <label className="font-semibold text-slate-600 space-y-1 block">
+              <span>Monto que necesitás ({moneda?.codigo})</span>
+              <CampoMonto
+                id="monto-solicitud"
+                valor={monto}
+                onCambio={setMonto}
+                decimales={decimales}
+                error={!!problema}
+              />
+            </label>
+          )}
+
+          {billetes.length > 0 && referencia && (
+            <div className="space-y-2">
+              <p className="font-semibold text-slate-600">
+                ¿Qué billetes te faltan?{' '}
+                <span className="font-normal text-slate-400">(opcional)</span>
+              </p>
+              <div className="divide-y divide-slate-100 border border-slate-200 rounded-lg">
+                {billetes.flatMap(m => m.denominaciones).map(d => (
+                  <div key={d.denominacion} className="flex items-center justify-between gap-3 px-3 py-2">
+                    <label htmlFor={`sol-${d.denominacion}`} className="font-semibold text-slate-700">
+                      Billete {textoSolicitud(referencia, d.valor)}
+                    </label>
+                    <CampoCantidad
+                      id={`sol-${d.denominacion}`}
+                      valor={cantidades[d.denominacion] ?? 0}
+                      onCambio={n => setCantidades({ ...cantidades, [d.denominacion]: n })}
+                    />
+                  </div>
+                ))}
+              </div>
+              {detalleNoVacio && (
+                <p className="text-[11px] text-slate-400">
+                  Esto es lo que le vas a pedir al administrador; el monto es el total.
+                </p>
+              )}
+            </div>
+          )}
+
+          <label className="font-semibold text-slate-600 space-y-1 block">
+            <span>Observación</span>
+            <input
+              type="text"
+              maxLength={255}
+              placeholder="Opcional"
+              value={observacion}
+              onChange={e => setObservacion(e.target.value)}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg"
+            />
+          </label>
+        </>
+      )}
     </Modal>
   )
 }

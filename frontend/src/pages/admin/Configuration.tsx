@@ -11,7 +11,7 @@
  * @module Configuration
  */
 import { useCallback, useEffect, useState } from 'react'
-import { listarMonedas, cambiarEstado } from '@/services/monedas'
+import { listarMonedas, cambiarEstado, definirSaldoMinimo } from '@/services/monedas'
 import type { Currency } from '@/types'
 import { listarMetodos, cambiarEstadoMetodo, type MetodoPago } from '@/services/metodos'
 import { listarAjustesPrecio, actualizarAjustePrecio, type CategoriaCliente } from '@/services/simulador'
@@ -214,11 +214,18 @@ export default function Configuration() {
    */
   const [conBilletes, setConBilletes] = useState<Record<string, number>>({})
   const [monedaBilletes, setMonedaBilletes] = useState<Currency | null>(null)
+  /**
+   * PI-80: saldo mínimo de cada divisa, como texto porque mientras se
+   * escribe tiene que poder quedar vacío o mal formado sin romper la
+   * tabla. Se guarda al salir del campo (onBlur).
+   */
+  const [minimos, setMinimos] = useState<Record<number, string>>({})
 
   useEffect(() => {
     Promise.all([listarMonedas(), listarMetodos(), listarAjustesPrecio().catch(() => ({}))])
       .then(([ms, mps, cs]) => {
         setCurrencies(ms)
+        setMinimos(Object.fromEntries(ms.map(m => [m.id, String(m.saldoMinimo ?? '0')])))
         setPaymentMethods(mps)
         setAjustes(cs)
         setAjusteForm(Object.fromEntries(Object.entries(cs).map(([k, v]) => [k, String(v)])))
@@ -260,6 +267,45 @@ export default function Configuration() {
     } catch {
       setCurrencies(prev => prev.map(x => (x.id === moneda.id ? { ...x, active: moneda.active } : x)))
       setAviso(`No se pudo cambiar el estado de ${moneda.code}.`)
+    }
+  }
+
+  /**
+   * Guarda el saldo mínimo de una divisa (PI-80).
+   *
+   * Se valida con los decimales de la moneda antes de llamar a la API: el
+   * PYG no admite decimales y mandarlos ahí sería un 400 del backend.
+   */
+  const guardarMinimo = async (moneda: Currency) => {
+    const texto = (minimos[moneda.id] ?? '0').trim().replace(',', '.')
+    if (!texto) {
+      setMinimos({ ...minimos, [moneda.id]: '0' })
+      return
+    }
+    const valor = Number(texto)
+    if (!Number.isFinite(valor) || valor < 0) {
+      setAviso(`El saldo mínimo de ${moneda.code} tiene que ser un número mayor o igual a cero.`)
+      setMinimos({ ...minimos, [moneda.id]: String(moneda.saldoMinimo ?? 0) })
+      return
+    }
+    if (moneda.decimals === 0 && !Number.isInteger(valor)) {
+      setAviso(`${moneda.code} no admite decimales en el saldo mínimo.`)
+      setMinimos({ ...minimos, [moneda.id]: String(Math.round(valor)) })
+      return
+    }
+    if (valor === Number(moneda.saldoMinimo ?? 0)) return
+    try {
+      const actualizada = await definirSaldoMinimo(moneda.id, String(valor))
+      setCurrencies(prev => prev.map(m => (m.id === moneda.id ? actualizada : m)))
+      setMinimos(prev => ({ ...prev, [moneda.id]: String(actualizada.saldoMinimo ?? '0') }))
+      setAviso(
+        valor > 0
+          ? `El cajero verá el aviso de reposición cuando ${moneda.code} baje de ${valor}.`
+          : `Se apagó el aviso de reposición para ${moneda.code}.`,
+      )
+    } catch (e) {
+      setAviso(e instanceof Error ? e.message : `No se pudo guardar el mínimo de ${moneda.code}.`)
+      setMinimos({ ...minimos, [moneda.id]: String(moneda.saldoMinimo ?? 0) })
     }
   }
 
@@ -341,7 +387,7 @@ export default function Configuration() {
               <table className="w-full">
                 <thead>
                   <tr className="bg-slate-50/60 border-b border-slate-100">
-                    {['Moneda', 'Nombre', 'Decimales', 'Billetes', 'Estado'].map(h => (
+                    {['Moneda', 'Nombre', 'Decimales', 'Billetes', 'Saldo mínimo', 'Estado'].map(h => (
                       <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-wider">{h}</th>
                     ))}
                   </tr>
@@ -371,6 +417,21 @@ export default function Configuration() {
                             ? `${conBilletes[c.code]} cargados`
                             : 'Sin billetes'}
                         </button>
+                      </td>
+                      <td className="px-5 py-3.5">
+                        <label htmlFor={`minimo-${c.id}`} className="sr-only">
+                          Saldo mínimo de {c.code}
+                        </label>
+                        <input
+                          id={`minimo-${c.id}`}
+                          type="text"
+                          inputMode="decimal"
+                          value={minimos[c.id] ?? '0'}
+                          onChange={e => setMinimos({ ...minimos, [c.id]: e.target.value })}
+                          onBlur={() => guardarMinimo(c)}
+                          placeholder="0"
+                          className="w-28 px-2 py-1.5 border border-slate-200 rounded-lg text-right font-mono text-[13px] focus:outline-none focus:ring-2 focus:ring-emerald-300"
+                        />
                       </td>
                       <td className="px-5 py-3.5">
                         <button

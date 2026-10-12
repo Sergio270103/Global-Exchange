@@ -33,8 +33,9 @@ describe('Configuration (API + tabs)', () => {
    * cajero (no aparecía en el formulario de entregas).
    */
   const catalogo = [
-    { id: 1, codigo: 'USD', nombre: 'Dólar', simbolo: '$', decimales: 2, pais_iso: 'US', activo: true },
-    { id: 2, codigo: 'DKK', nombre: 'Corona Danesa', simbolo: 'kr', decimales: 2, pais_iso: 'DK', activo: true },
+    { id: 1, codigo: 'USD', nombre: 'Dólar', simbolo: '$', decimales: 2, pais_iso: 'US', activo: true, saldo_minimo: '0.00' },
+    { id: 2, codigo: 'PYG', nombre: 'Guaraní Paraguayo', simbolo: '₲', decimales: 0, pais_iso: 'PY', activo: true, saldo_minimo: '0.00' },
+    { id: 3, codigo: 'DKK', nombre: 'Corona Danesa', simbolo: 'kr', decimales: 2, pais_iso: 'DK', activo: true, saldo_minimo: '0.00' },
   ]
 
   /** Filas de `Denominacion`. Se amplía desde cada test. */
@@ -47,6 +48,13 @@ describe('Configuration (API + tabs)', () => {
     vi.fn(async (url: string, init: RequestInit = {}) => {
       const u = String(url)
       const method = (init.method ?? 'GET').toUpperCase()
+      if (u.includes('/monedas/') && method === 'PATCH') {
+        const cuerpo = JSON.parse(String(init.body))
+        const id = Number(u.match(/monedas\/(\d+)/)?.[1])
+        const i = catalogo.findIndex(m => m.id === id)
+        catalogo[i] = { ...catalogo[i], ...cuerpo }
+        return respuesta(catalogo[i])
+      }
       if (u.includes('/monedas/')) return respuesta(catalogo)
       if (u.includes('/denominaciones/') && method === 'POST') {
         const d = JSON.parse(String(init.body))
@@ -128,6 +136,8 @@ describe('Configuration (API + tabs)', () => {
     // DKK no tiene filas en Denominacion: hay que decirlo, no dejarla
     // desaparecer en silencio del formulario de entregas.
     expect(await screen.findByText(/está activa pero no tiene billetes registrados/)).toBeInTheDocument()
+    // El aviso nombra a las dos que no tienen (DKK y PYG).
+    expect(screen.getByText(/DKK, PYG/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Gestionar billetes de DKK' })).toHaveTextContent('Sin billetes')
     expect(screen.getByRole('button', { name: 'Gestionar billetes de USD' })).toHaveTextContent('2 cargados')
   })
@@ -145,10 +155,11 @@ describe('Configuration (API + tabs)', () => {
 
     // El nuevo billete aparece en la lista del modal...
     expect(await screen.findByRole('button', { name: /Desactivar billete de 1000 DKK/ })).toBeInTheDocument()
-    // ...y el aviso de la tabla desaparece.
+    // ...y el aviso de la tabla desaparece para DKK.
     await user.click(screen.getByRole('button', { name: 'Cerrar' }))
-    await waitFor(() => expect(screen.queryByText('Sin billetes')).not.toBeInTheDocument())
-    expect(screen.getByText('1 cargados')).toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Gestionar billetes de DKK' }))
+        .toHaveTextContent('1 cargados'))
   })
 
   it('rechaza un valor de billete inválido sin llamar a la API', async () => {
@@ -165,6 +176,53 @@ describe('Configuration (API + tabs)', () => {
     const posts = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
       .filter(([u, i]) => String(u).includes('/denominaciones/') && (i as RequestInit).method === 'POST')
     expect(posts).toHaveLength(0)
+  })
+
+  it('PI-80: guarda el saldo mínimo de una divisa', async () => {
+    const user = userEvent.setup()
+    render(<Configuration />)
+    await screen.findByText('Monedas admitidas')
+    const campo = screen.getByLabelText('Saldo mínimo de USD')
+    await user.clear(campo)
+    await user.type(campo, '500')
+    await user.tab()
+
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      'El cajero verá el aviso de reposición cuando USD baje de 500.',
+    )
+    const patch = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.find(
+      ([u, i]) => String(u).includes('/monedas/1/') && (i as RequestInit).method === 'PATCH',
+    )
+    expect(JSON.parse(String(patch![1].body))).toEqual({ saldo_minimo: '500' })
+  })
+
+  it('PI-80: avisa si el saldo mínimo no es un número', async () => {
+    const user = userEvent.setup()
+    render(<Configuration />)
+    await screen.findByText('Monedas admitidas')
+    const campo = screen.getByLabelText('Saldo mínimo de USD')
+    await user.clear(campo)
+    await user.type(campo, '-5')
+    await user.tab()
+
+    expect(await screen.findByRole('status')).toHaveTextContent('mayor o igual a cero')
+    // No se llamó a la API con un valor inválido.
+    const patches = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(
+      ([u, i]) => String(u).includes('/monedas/1/') && (i as RequestInit).method === 'PATCH',
+    )
+    expect(patches).toHaveLength(0)
+  })
+
+  it('PI-80: el guaraní no admite decimales en el mínimo', async () => {
+    const user = userEvent.setup()
+    render(<Configuration />)
+    await screen.findByText('Monedas admitidas')
+    const campo = screen.getByLabelText('Saldo mínimo de PYG')
+    await user.clear(campo)
+    await user.type(campo, '1.5')
+    await user.tab()
+
+    expect(await screen.findByRole('status')).toHaveTextContent('no admite decimales')
   })
 
   it('desactiva un billete sin borrarlo del historial', async () => {

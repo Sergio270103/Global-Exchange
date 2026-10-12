@@ -19,6 +19,7 @@ interface MonedaApi {
   decimales: number
   pais_iso: string
   activo: boolean
+  saldo_minimo?: string
 }
 
 /** Datos editables de una moneda (sin el id ni el estado). */
@@ -49,6 +50,8 @@ function mapear(m: MonedaApi): Currency {
     flag: banderaDesdeCodigo(m.codigo),
     decimals: m.decimales,
     active: m.activo,
+    // El backend siempre lo manda; el `?? 0` cubre respuestas viejas.
+    saldoMinimo: Number(m.saldo_minimo ?? 0),
   }
 }
 /**
