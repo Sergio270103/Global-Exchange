@@ -207,8 +207,14 @@ export default function RatesManagement() {
           </thead>
           <tbody className="divide-y divide-slate-50">
             {rates.map(rate => {
-              const spread = rate.sell - rate.buy
-              const spreadPct = rate.buy > 0 ? ((spread / rate.buy) * 100).toFixed(2) : '0.00'
+              // Sin alguna de las dos tasas no hay spread (PI-82 deja el
+              // campo vacío cuando la moneda todavía no tiene cotización).
+              const spread = rate.sell !== null && rate.buy !== null
+                ? rate.sell - rate.buy
+                : null
+              const spreadPct = spread !== null && rate.buy !== null && rate.buy > 0
+                ? ((spread / rate.buy) * 100).toFixed(2)
+                : '—'
               return (
                 <tr key={rate.currency} className={`transition-colors ${rate.isDirty ? 'bg-amber-50/40' : 'hover:bg-slate-50/60'}`}>
                   <td className="px-5 py-4">
@@ -254,7 +260,9 @@ export default function RatesManagement() {
                     </div>
                   </td>
                   <td className="px-5 py-4">
-                    <div className="text-[13px] font-mono font-semibold text-slate-700">₲ {formatearTasa(spread)}</div>
+                    <div className="text-[13px] font-mono font-semibold text-slate-700">
+                      {spread === null ? '—' : `₲ ${formatearTasa(spread)}`}
+                    </div>
                     <div className="text-[11px] text-slate-400">{spreadPct}%</div>
                   </td>
                   <td className="px-5 py-4 text-[12px] text-slate-500">{rate.updatedAt}</td>

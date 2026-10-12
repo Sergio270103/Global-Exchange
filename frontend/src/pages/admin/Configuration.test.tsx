@@ -16,6 +16,18 @@ function respuesta(data: unknown, status = 200) {
 }
 
 describe('Configuration (API + tabs)', () => {
+  /** Fila de `Denominacion` tal como la devuelve el backend. */
+  interface DenominacionApi {
+    id: number
+    moneda: number
+    moneda_codigo: string
+    moneda_nombre: string
+    simbolo: string
+    decimales: number
+    valor: string
+    activa: boolean
+  }
+
   /**
    * `DKK` está activa pero sin billetes: es el caso real que reportaba el
    * cajero (no aparecía en el formulario de entregas).
@@ -26,7 +38,7 @@ describe('Configuration (API + tabs)', () => {
   ]
 
   /** Filas de `Denominacion`. Se amplía desde cada test. */
-  let denominaciones: unknown[] = [
+  let denominaciones: DenominacionApi[] = [
     { id: 1, moneda: 1, moneda_codigo: 'USD', moneda_nombre: 'Dólar', simbolo: '$', decimales: 2, valor: '100.00', activa: true },
     { id: 2, moneda: 1, moneda_codigo: 'USD', moneda_nombre: 'Dólar', simbolo: '$', decimales: 2, valor: '20.00', activa: true },
   ]
@@ -38,14 +50,14 @@ describe('Configuration (API + tabs)', () => {
       if (u.includes('/monedas/')) return respuesta(catalogo)
       if (u.includes('/denominaciones/') && method === 'POST') {
         const d = JSON.parse(String(init.body))
-        const moneda = catalogo.find(m => m.id === d.moneda)
-        const creada = {
+        const moneda = catalogo.find(m => m.id === d.moneda)!
+        const creada: DenominacionApi = {
           id: denominaciones.length + 10,
-          moneda: d.moneda,
-          moneda_codigo: moneda?.codigo,
-          moneda_nombre: moneda?.nombre,
-          simbolo: moneda?.simbolo,
-          decimales: moneda?.decimales,
+          moneda: moneda.id,
+          moneda_codigo: moneda.codigo,
+          moneda_nombre: moneda.nombre,
+          simbolo: moneda.simbolo,
+          decimales: moneda.decimales,
           valor: String(d.valor),
           activa: true,
         }
