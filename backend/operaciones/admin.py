@@ -12,14 +12,14 @@ class OperacionAdmin(admin.ModelAdmin):
         'moneda_destino', 'monto_enviado', 'monto_recibido',
         'fecha_creacion',
     )
-    list_filter = ('tipo_operacion', 'moneda_origen', 'moneda_destino')
-    search_fields = ('cliente__nombre', 'usuario_keycloak_id')
+    list_filter = ('tipo_operacion', 'moneda_origen', 'moneda_destino', 'estado')
+    search_fields = ('cliente__nombre', 'usuario_keycloak_id', 'stripe_session_id')
     readonly_fields = (
         'cliente', 'usuario_keycloak_id', 'tipo_operacion', 'moneda_origen',
         'moneda_destino', 'monto_enviado', 'monto_recibido',
         'cotizacion_aplicada', 'tasa_origen', 'tasa_destino',
         'porcentaje_comision_aplicado', 'monto_comision',
-        'metodo_pago', 'fecha_creacion',
+        'metodo_pago', 'fecha_creacion', 'stripe_session_id',
     )
 
     def has_delete_permission(self, request, obj=None):

@@ -51,6 +51,7 @@ function monto(valor: number, codigo: string): string {
 const MOTIVO_CORTO: Record<string, string> = {
   COTIZACION_CAMBIADA: 'No aceptó la nueva cotización',
   DESISTIO: 'Desistió',
+  ANULADA: 'Comprobante anulado en ventanilla',
 }
 
 /**

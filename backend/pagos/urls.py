@@ -3,7 +3,7 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from .views import CuentaBancariaViewSet, MetodoPagoViewSet
+from .views import CuentaBancariaViewSet, MetodoPagoViewSet, webhook_stripe
 
 router = DefaultRouter()
 router.register(r'metodos-pago', MetodoPagoViewSet, basename='metodo-pago')
@@ -11,4 +11,5 @@ router.register(r'cuentas-bancarias', CuentaBancariaViewSet, basename='cuenta-ba
 
 urlpatterns = [
     path('', include(router.urls)),
+    path('payments/webhook/', webhook_stripe, name='stripe-webhook'),
 ]

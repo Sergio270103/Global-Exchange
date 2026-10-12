@@ -24,6 +24,7 @@
 
 from decimal import Decimal, ROUND_HALF_UP
 
+from django.conf import settings
 from django.db import transaction
 from django.db.models import CharField, F, OuterRef, Q, Subquery, Value
 from django.db.models.functions import Coalesce
@@ -36,6 +37,7 @@ from rest_framework.response import Response
 
 from billeteras.models import Billetera, Movimiento
 from clientes.models import Cliente, ClienteUsuario, Comision
+from clientes.permisos import es_cajero
 from cotizaciones.models import Cotizacion
 from monedas.models import Moneda
 from monedas.permisos import es_admin
@@ -59,6 +61,9 @@ RESULTADO_COTIZACION_CAMBIADA = 'COTIZACION_CAMBIADA'
 RESULTADO_FONDOS_INSUFICIENTES = 'FONDOS_INSUFICIENTES'
 ERROR_FONDOS = 'Fondos insuficientes en la billetera origen. La operación fue cancelada.'
 METODO_BILLETERA = 'wallet'
+#: Pago en efectivo en ventanilla (PI-42): sin billeteras ni cuentas,
+#: solo para el cajero operando en nombre del cliente presencial.
+METODO_EFECTIVO = 'efectivo'
 
 
 class ErrorCotizacion(Exception):
@@ -109,6 +114,19 @@ def _cliente_operable(cliente: Cliente, sub: str) -> bool:
     """Cliente activo y asociado al usuario Keycloak."""
     asociado = ClienteUsuario.objects.filter(cliente=cliente, keycloak_id=sub).exists()
     return bool(cliente.activo and asociado)
+
+
+def _puede_operar_por(cliente: Cliente, usuario) -> bool:
+    """¿Puede el solicitante operar en nombre del cliente? (PI-42).
+
+    Además de la asociación normal, el cajero puede operar por
+    cualquier cliente activo (ventanilla presencial): la operación
+    queda a nombre del cliente y firmada por el cajero.
+    """
+    sub = getattr(usuario, 'id', '') or ''
+    if _cliente_operable(cliente, sub):
+        return True
+    return bool(es_cajero(usuario) and cliente.activo)
 
 
 def _porcentaje_ajuste(cliente: Cliente) -> Decimal:
@@ -237,6 +255,28 @@ def _dentro_de_tolerancia(op: Operacion) -> bool:
 
 
 class OperacionViewSet(viewsets.ModelViewSet):
+    """Vistas completas para operaciones (COMPRA/VENTA con métodos variados).
+
+    Endpoints principales:
+    * ``GET /api/operaciones/`` historial filtrado por cliente, fechas,
+      tipo, moneda y estado. El usuario ve solo sus clientes (``?mine=1``)
+      o todas si es admin (PI-65).
+    * ``POST /api/operaciones/`` crea una operación en estado PENDIENTE con
+      la cotización congelada (RF34/RF35).
+    * ``POST /api/operaciones/{id}/confirmar/`` (PI-64, RF27): confirma el
+      pago dentro/afuera de la ventana de tolerancia; si la tasa cambió responde
+      ``COTIZACION_CAMBIADA`` y abre una nueva ventana.
+    * ``POST /api/operaciones/{id}/cancelar/`` (PI-64): cancela una operación
+      pendiente registrando quién y cuándo.
+    * ``POST /api/operaciones/{id}/iniciar-pago/`` (PI-66c): inicia pago por
+      pasarela Stripe (solo tarjeta); la sesión expira a los 30 minutos.
+    * ``GET /api/operaciones/resumen/`` (solo admin): volumen y ganancias en
+      PYG por moneda.
+
+    Filtros comunes de lista: ``?desde`` ``?hasta`` ``?tipo`` ``?moneda``
+    ``?estado`` ``?cliente`` ``?buscar``.
+    """
+
     queryset = Operacion.objects.select_related(
         'cliente', 'moneda_origen', 'moneda_destino',
     ).all()
@@ -272,9 +312,15 @@ class OperacionViewSet(viewsets.ModelViewSet):
         # Seguridad (PI-65): un usuario ve solo lo de sus clientes asociados,
         # aunque llame a la API sin ?mine=1. Aplica también al detalle
         # GET /operaciones/{id}/ (una operación ajena da 404).
+        # PI-42: el cajero además ve las que él mismo creó en ventanilla.
         solo_propias = params.get('mine') in ('1', 'true', 'si', 'sí')
         if solo_propias or not _es_personal_autorizado(self.request.user):
-            qs = qs.filter(cliente_id__in=_clientes_del_usuario(self.request))
+            if es_cajero(self.request.user):
+                qs = qs.filter(
+                    Q(cliente_id__in=_clientes_del_usuario(self.request))
+                    | Q(usuario_keycloak_id=_sub(self.request)))
+            else:
+                qs = qs.filter(cliente_id__in=_clientes_del_usuario(self.request))
 
         cliente = params.get('cliente')
         if cliente:
@@ -307,6 +353,95 @@ class OperacionViewSet(viewsets.ModelViewSet):
         return qs
 
     # ------------------------------------------------------------------
+    # Resumen agregado para el dashboard del administrador.
+    # ------------------------------------------------------------------
+    @action(detail=False, methods=['get'], url_path='resumen')
+    def resumen(self, request):
+        """Agregado de operaciones PAGADA para el dashboard admin.
+
+        Solo administradores (el serializer público oculta
+        ``monto_comision`` a los clientes, así que el total de
+        ganancias no puede calcularse en el frontend).
+
+        Conversión a PYG con la última cotización vigente (lado
+        venta): el bruto en destino es ``monto_recibido +
+        monto_comision`` (vale para COMPRA y VENTA) y la ganancia
+        es ``monto_comision``. Si la moneda destino es PYG se usa
+        directo; sin cotización vigente la operación cuenta en los
+        totales pero no suma al equivalente en PYG
+        (``operaciones_sin_tasa``).
+        """
+        if not _es_personal_autorizado(request.user):
+            return Response(
+                {'detail': 'Solo un administrador puede ver el resumen.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        ultimas: dict[str, Cotizacion] = {}
+        for cot in Cotizacion.objects.select_related('moneda').order_by(
+            'moneda__codigo', '-vigente_desde',
+        ):
+            codigo = cot.moneda.codigo.strip().upper()
+            if codigo not in ultimas:
+                ultimas[codigo] = cot
+
+        ops = Operacion.objects.filter(
+            estado=Operacion.ESTADO_PAGADA,
+        ).select_related('moneda_origen', 'moneda_destino')
+
+        total = compras = ventas = 0
+        sin_tasa = 0
+        volumen_pyg = Decimal('0')
+        ganancias_pyg = Decimal('0')
+        por_moneda: dict[str, dict] = {}
+
+        for op in ops:
+            total += 1
+            if op.tipo_operacion == Operacion.TIPO_COMPRA:
+                compras += 1
+            else:
+                ventas += 1
+            dest = op.moneda_destino.codigo.strip().upper()
+            bruto_dest = op.monto_recibido + op.monto_comision
+            if dest == 'PYG':
+                volumen_pyg += bruto_dest
+                ganancias_pyg += op.monto_comision
+            else:
+                cot = ultimas.get(dest)
+                if cot is None:
+                    sin_tasa += 1
+                    continue
+                tasa = Decimal(str(cot.venta))
+                volumen_pyg += bruto_dest * tasa
+                ganancias_pyg += op.monto_comision * tasa
+            entrada = por_moneda.setdefault(dest, {'total': Decimal('0')})
+            entrada['total'] += op.monto_comision
+
+        comisiones = []
+        for codigo in sorted(por_moneda):
+            total_moneda = por_moneda[codigo]['total']
+            if codigo == 'PYG':
+                equiv = total_moneda
+            else:
+                cot = ultimas.get(codigo)
+                equiv = total_moneda * Decimal(str(cot.venta)) if cot else Decimal('0')
+            comisiones.append({
+                'moneda': codigo,
+                'total': float(total_moneda),
+                'equivalente_pyg': float(equiv.quantize(Decimal('1'))),
+            })
+
+        return Response({
+            'volumen_total_pyg': float(volumen_pyg.quantize(Decimal('1'))),
+            'total_operaciones': total,
+            'compras': compras,
+            'ventas': ventas,
+            'ganancias_pyg': float(ganancias_pyg.quantize(Decimal('1'))),
+            'comisiones_por_moneda': comisiones,
+            'operaciones_sin_tasa': sin_tasa,
+        })
+
+    # ------------------------------------------------------------------
     # Iniciar (queda PENDIENTE con la tasa congelada)
     # ------------------------------------------------------------------
     def create(self, request, *args, **kwargs):
@@ -321,14 +456,20 @@ class OperacionViewSet(viewsets.ModelViewSet):
         monto_div = Decimal(str(datos['monto_divisa']))
         metodo_pago = str(datos.get('metodo_pago') or '').strip().lower()[:24]
 
-        # Cliente + asociación Keycloak.
+        # Cliente + asociación Keycloak (o cajero en ventanilla, PI-42).
         sub = _sub(request)
         try:
             cliente = Cliente.objects.get(id=datos['cliente'])
         except Cliente.DoesNotExist:
             return Response({'detail': ERROR_CLIENTE}, status=status.HTTP_400_BAD_REQUEST)
-        if not _cliente_operable(cliente, sub):
+        if not _puede_operar_por(cliente, request.user):
             return Response({'detail': ERROR_CLIENTE}, status=status.HTTP_400_BAD_REQUEST)
+
+        es_efectivo = metodo_pago == METODO_EFECTIVO
+        if es_efectivo and not es_cajero(request.user):
+            return Response(
+                {'detail': 'El pago en efectivo es solo en ventanilla.'},
+                status=status.HTTP_400_BAD_REQUEST)
 
         try:
             cotizacion = _cotizar(
@@ -339,8 +480,14 @@ class OperacionViewSet(viewsets.ModelViewSet):
 
         # PI-66: vinculación de billetera destino y cuenta origen.
         # Solo registro: los fondos se mueven al confirmar (fuera de PI-66).
+        # En efectivo (PI-42) no hay acreditación digital: el cliente
+        # recibe/paga billetes físicos en ventanilla.
         billetera_destino = None
         if datos.get('billetera_destino') is not None:
+            if es_efectivo:
+                return Response(
+                    {'detail': 'Con pago en efectivo no se usan billeteras.'},
+                    status=status.HTTP_400_BAD_REQUEST)
             try:
                 billetera_destino = Billetera.objects.select_related('moneda').get(
                     pk=datos['billetera_destino'])
@@ -359,10 +506,16 @@ class OperacionViewSet(viewsets.ModelViewSet):
         else:
             # PI-73: si no se eligió, se acredita siempre en la billetera
             # del cliente en la moneda destino (se crea en cero si no existe).
-            billetera_destino, _ = Billetera.objects.get_or_create(
-                cliente=cliente, moneda=cotizacion['moneda_destino'])
+            # En efectivo no se crea ni se acredita nada digital.
+            if not es_efectivo:
+                billetera_destino, _ = Billetera.objects.get_or_create(
+                    cliente=cliente, moneda=cotizacion['moneda_destino'])
         cuenta_origen = None
         if datos.get('cuenta_origen') is not None:
+            if es_efectivo:
+                return Response(
+                    {'detail': 'Con pago en efectivo no se usan cuentas.'},
+                    status=status.HTTP_400_BAD_REQUEST)
             # La cuenta bancaria es el origen de la transferencia en la compra.
             # No tiene saldo en el sistema (cuenta externa), así que no puede
             # ser origen de una venta: esa se debita de la billetera.
@@ -386,8 +539,18 @@ class OperacionViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_400_BAD_REQUEST)
 
         # PI-66c: billetera origen con validación de fondos desde el alta.
+        # Con pasarela (Stripe) no hay débito interno: la pasarela es el
+        # origen de los fondos, así que no se usa ni se crea billetera.
+        # En efectivo tampoco: el cliente entrega billetes físicos.
+        es_stripe = metodo_pago in settings.STRIPE_METODOS
         billetera_origen = None
-        if datos.get('billetera_origen') is not None:
+        if es_efectivo:
+            pass
+        elif datos.get('billetera_origen') is not None:
+            if es_stripe:
+                return Response(
+                    {'detail': 'Con pago por pasarela no se usa billetera origen.'},
+                    status=status.HTTP_400_BAD_REQUEST)
             try:
                 billetera_origen = Billetera.objects.get(
                     pk=datos['billetera_origen'])
@@ -403,10 +566,10 @@ class OperacionViewSet(viewsets.ModelViewSet):
                 return Response(
                     {'detail': 'La billetera origen debe ser de la moneda origen.'},
                     status=status.HTTP_400_BAD_REQUEST)
-        elif tipo == 'VENTA' or metodo_pago == METODO_BILLETERA:
+        elif (tipo == 'VENTA' and not es_stripe) or metodo_pago == METODO_BILLETERA:
             # PI-73: se debita de la billetera del cliente en la moneda origen
             # cuando vende divisas (siempre) o cuando compra pagando con su
-            # billetera (método "wallet").
+            # billetera (método "wallet"). Con pasarela no (cobra Stripe).
             billetera_origen, _ = Billetera.objects.get_or_create(
                 cliente=cliente, moneda=cotizacion['moneda_origen'])
 
@@ -450,11 +613,16 @@ class OperacionViewSet(viewsets.ModelViewSet):
             except Operacion.DoesNotExist:
                 return Response({'detail': 'La operación no existe.'}, status=status.HTTP_404_NOT_FOUND)
 
-            if not _cliente_operable(op.cliente, sub):
+            if not _puede_operar_por(op.cliente, request.user):
                 return Response({'detail': ERROR_CLIENTE}, status=status.HTTP_400_BAD_REQUEST)
             if op.estado != Operacion.ESTADO_PENDIENTE:
                 return Response(
                     {'detail': f'La operación ya está {op.get_estado_display().lower()}.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if op.metodo_pago in settings.STRIPE_METODOS:
+                return Response(
+                    {'detail': 'Esta operación se paga por pasarela (Stripe).'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -544,6 +712,54 @@ class OperacionViewSet(viewsets.ModelViewSet):
             'resultado': RESULTADO_CONFIRMADA,
             'operacion': OperacionPublicSerializer(op).data,
         })
+
+    # ------------------------------------------------------------------
+    # Iniciar el cobro por pasarela (Stripe Checkout, redirect externo)
+    # ------------------------------------------------------------------
+    @action(detail=True, methods=['post'], url_path='iniciar-pago')
+    def iniciar_pago(self, request, pk=None):
+        """Crea la Checkout Session y devuelve su URL de pago.
+
+        Si ya hay una sesión guardada y sigue abierta, devuelve su URL
+        para retomar el pago con el mismo monto y cotización congelada.
+        La operación queda PENDIENTE; el webhook la pasa a PAGADA al
+        acreditarse (vale lo congelado aunque llegue fuera de la
+        ventana) o a CANCELADA con motivo PAGO_FALLIDO al expirar o
+        rechazarse (la sesión expira a los 30 minutos).
+        """
+        from pagos.stripe_pagos import ErrorPasarela, crear_sesion_checkout, sesion_abierta
+
+        try:
+            op = (
+                Operacion.objects.select_related('cliente', 'moneda_origen', 'moneda_destino')
+                .get(pk=pk)
+            )
+        except Operacion.DoesNotExist:
+            return Response({'detail': 'La operación no existe.'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not _cliente_operable(op.cliente, _sub(request)):
+            return Response({'detail': ERROR_CLIENTE}, status=status.HTTP_400_BAD_REQUEST)
+        if op.estado != Operacion.ESTADO_PENDIENTE:
+            return Response(
+                {'detail': 'Solo se puede pagar una operación pendiente.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if op.metodo_pago not in settings.STRIPE_METODOS:
+            return Response(
+                {'detail': 'Esta operación usa confirmación directa.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        url = sesion_abierta(op.stripe_session_id)
+        if url:
+            return Response({'url': url, 'session_id': op.stripe_session_id})
+        try:
+            sesion = crear_sesion_checkout(op)
+        except ErrorPasarela as err:
+            return Response({'detail': str(err)}, status=status.HTTP_400_BAD_REQUEST)
+
+        op.stripe_session_id = sesion['id']
+        op.save(update_fields=['stripe_session_id'])
+        return Response({'url': sesion['url'], 'session_id': sesion['id']})
 
     # ------------------------------------------------------------------
     # Cancelar (PI-64)

@@ -13,6 +13,7 @@ import keycloak, { initKeycloak } from './keycloak'
 import { type AuthUser, type Page, type Role, type ClienteActivo } from './types'
 
 import Layout from './components/Layout'
+import RetornoPago from './components/RetornoPago'
 import Landing from './pages/Landing'
 import Login from './pages/Login'
 import Register from './pages/Register'
@@ -28,6 +29,7 @@ import Payments from './pages/Payments'
 import Banks from './pages/Banks'
 import CashierDashboard from './pages/cashier/CashierDashboard'
 import CashCountView from './pages/cashier/CashCountView'
+import CashDeliveries from './pages/admin/CashDeliveries'
 import RatesManagement from './pages/analyst/RatesManagement'
 import Earnings from './pages/analyst/Earnings'
 
@@ -84,6 +86,8 @@ export default function App() {
   const [auth, setAuth] = useState<AuthUser | null>(null)
   const [page, setPage] = useState<Page>('landing')
   const [currentClient, setCurrentClient] = useState<ClienteActivo | null>(null)
+  // Retorno desde Stripe Checkout (`?pago=exito|cancelado&op={id}`).
+  const [retorno, setRetorno] = useState<{ resultado: 'exito' | 'cancelado'; opId: number } | null>(null)
 
   const navigate = (p: Page) => setPage(p)
 
@@ -103,6 +107,15 @@ export default function App() {
       })
       .catch(err => console.error('Error inicializando Keycloak', err))
       .finally(() => setKeycloakReady(true))
+
+    // Retorno del pago: se limpia la URL para no reprocesarlo.
+    const qs = new URLSearchParams(window.location.search)
+    const pago = qs.get('pago')
+    const op = Number(qs.get('op'))
+    if ((pago === 'exito' || pago === 'cancelado') && Number.isFinite(op) && op > 0) {
+      setRetorno({ resultado: pago, opId: op })
+      window.history.replaceState({}, '', window.location.pathname)
+    }
   }, [])
 
   if (!keycloakReady) {
@@ -115,6 +128,22 @@ export default function App() {
   }
   
   // Authenticated layout
+  if (retorno) {
+    const irHistorial = () => { setRetorno(null); setPage('transactions') }
+    const reintentar = () => { setRetorno(null); setPage('buy') }
+    return (
+      <Layout
+        auth={auth}
+        currentPage="transactions"
+        navigate={navigate}
+        onLogout={onLogout}
+        currentClient={currentClient}
+        setCurrentClient={setCurrentClient}
+      >
+        <RetornoPago opId={retorno.opId} resultado={retorno.resultado} onVerHistorial={irHistorial} onReintentar={reintentar} />
+      </Layout>
+    )
+  }
   const renderPage = () => {
     switch (page) {
       case 'dashboard':
@@ -124,7 +153,7 @@ export default function App() {
           <Dashboard auth={auth} currentClient={currentClient} navigate={navigate} />
         )
       case 'cash-count':
-        return <CashCountView /> // 👈 Pestaña de Arqueo y Dinero Recibido
+        return <CashCountView auth={auth} /> // PI-44: saldo de billetes por caja
       case 'wallets':
         return <Wallets navigate={navigate} currentClient={currentClient} />
       case 'buy':
@@ -163,6 +192,8 @@ export default function App() {
         return <ReportsPlaceholder />
       case 'admin-config':
         return <Configuration />
+      case 'admin-cash-deliveries':
+        return <CashDeliveries /> // PI-43: entregas de billetes a cajas
       default:
         return <Dashboard auth={auth} currentClient={currentClient} navigate={navigate} />
     }

@@ -24,6 +24,7 @@ from rest_framework.test import APIClient
 
 from clientes.models import Cliente, ClienteUsuario, Comision
 from cotizaciones.models import Cotizacion
+from billeteras.models import Billetera
 from monedas.models import Moneda
 
 from .models import Operacion
@@ -92,6 +93,11 @@ class CancelacionPorCotizacionTests(TestCase):
         Comision.objects.update_or_create(
             categoria=Cliente.CAT_MINORISTA, defaults={'porcentaje': Decimal('0')},
         )
+        # Las compras de prueba pagan con billetera (transfer/card/qr van
+        # por Stripe y ya no pasan por `confirmar`).
+        Billetera.objects.create(
+            cliente=cls.cliente, moneda=cls.pyg, saldo=Decimal('10000000'),
+        )
 
     def setUp(self):
         self.api = APIClient()
@@ -105,7 +111,7 @@ class CancelacionPorCotizacionTests(TestCase):
             'moneda': 'USD',
             'monto_divisa': monto,
             'moneda_contraparte': 'PYG',
-            'metodo_pago': 'transfer',
+            'metodo_pago': 'wallet',
         }, format='json')
         self.assertEqual(r.status_code, 201, r.data)
         return r.data

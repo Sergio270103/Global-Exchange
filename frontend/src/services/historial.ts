@@ -56,6 +56,7 @@ const ETIQUETA_MOTIVO: Record<MotivoCancelacion, string> = {
   COTIZACION_CAMBIADA: 'No aceptó la nueva cotización',
   DESISTIO: 'Desistió',
   FONDOS_INSUFICIENTES: 'Fondos insuficientes',
+  PAGO_FALLIDO: 'Pago rechazado o expiró',
 }
 
 /** Clases Tailwind del badge de cada estado (historial y dashboard admin). */

@@ -21,7 +21,7 @@ export type Page =
   | 'landing' | 'login' | 'register' | 'verify' | 'simulator'
   | 'dashboard' | 'cashier' | 'wallets' | 'buy' | 'sell' | 'transactions' | 'payments' | 'invoices' | 'cash-count' | 'rates' | 'notifications' | 'banks'
   | 'analyst-rates' | 'analyst-earnings'
-  | 'admin-clients' | 'admin-users' | 'admin-roles' | 'admin-currencies' | 'admin-rates' | 'admin-payments' | 'admin-earnings' | 'admin-reports' | 'admin-config'
+  | 'admin-clients' | 'admin-users' | 'admin-roles' | 'admin-currencies' | 'admin-rates' | 'admin-payments' | 'admin-earnings' | 'admin-reports' | 'admin-config' | 'admin-cash-deliveries'
 
 /**
  * Información del usuario autenticado en la aplicación.
@@ -125,4 +125,12 @@ export interface Currency {
   decimals: number
   /** Indica si la moneda está habilitada para operar. */
   active: boolean
+  /**
+   * Saldo mínimo de efectivo en caja (PI-80). Por debajo de este valor el
+   * cajero ve el aviso de reposición. En 0 no se avisa nunca.
+   *
+   * Opcional a propósito: solo la configuración de caja lo usa, el resto
+   * de la app no tiene por qué saber de mínimos.
+   */
+  saldoMinimo?: number
 }

@@ -35,8 +35,17 @@ class Cliente(models.Model):
     )
 
     nombre = models.CharField('nombre / razón social', max_length=160)
+    apellido = models.CharField(
+        'apellido', max_length=160, blank=True,
+        help_text='Opcional. Para personas físicas el nombre y el apellido '
+                  'se muestran juntos; las razones sociales lo dejan vacío.',
+    )
     documento = models.CharField('documento / RUC', max_length=32, unique=True)
     email = models.EmailField('correo electrónico', max_length=160)
+    telefono = models.CharField(
+        'teléfono', max_length=32, blank=True,
+        help_text='Opcional. Contacto del cliente presencial.',
+    )
     tipo = models.CharField('tipo de cliente', max_length=10, choices=TIPOS, default=TIPO_FISICA)
     categoria = models.CharField('categoría', max_length=12, choices=CATEGORIAS, default=CAT_MINORISTA)
     activo = models.BooleanField('activo', default=True)
@@ -48,8 +57,13 @@ class Cliente(models.Model):
         verbose_name = 'cliente'
         verbose_name_plural = 'clientes'
 
+    @property
+    def nombre_completo(self) -> str:
+        """Nombre y apellido juntos; solo el nombre si no hay apellido."""
+        return f'{self.nombre} {self.apellido}'.strip()
+
     def __str__(self) -> str:
-        return f'{self.nombre} ({self.get_categoria_display()})'
+        return f'{self.nombre_completo} ({self.get_categoria_display()})'
 
 
 class ClienteUsuario(models.Model):

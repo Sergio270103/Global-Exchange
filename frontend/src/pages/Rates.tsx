@@ -16,6 +16,7 @@ import { Plus, X } from 'lucide-react'
 import { type AuthUser } from '@/types'
 import { vigentes, historial, crearCotizacion, type Cotizacion } from '@/services/cotizaciones'
 import { listarMonedas } from '@/services/monedas'
+import { formatearTasa, normalizarTasa, redondearTasa } from '@/utils/tasas'
 
 const periods = ['Hoy', 'Semana', 'Mes', 'Año', 'Personalizado']
 const chartTypes = ['Líneas', 'Barras']
@@ -126,10 +127,15 @@ export default function Rates({ authUser }: RatesProps) {
 
   const guardarTasa = async (e: React.FormEvent) => {
     e.preventDefault()
-    const compra = Number(formCompra)
-    const venta = Number(formVenta)
-    if (!formMoneda || !compra || !venta) {
+    // PI-82: acepta punto o coma, y distingue el campo vacío de un cero.
+    const compra = normalizarTasa(formCompra)
+    const venta = normalizarTasa(formVenta)
+    if (!formMoneda || compra === null || venta === null) {
       setFormError('Completá moneda, compra y venta.')
+      return
+    }
+    if (compra <= 0 || venta <= 0) {
+      setFormError('Las tasas deben ser mayores a cero.')
       return
     }
     if (venta < compra) {
@@ -142,8 +148,9 @@ export default function Rates({ authUser }: RatesProps) {
       return
     }
     setGuardando(true)
+    setFormError('')
     try {
-      const nueva = await crearCotizacion(monedaId, compra, venta)
+      const nueva = await crearCotizacion(monedaId, redondearTasa(compra), redondearTasa(venta))
       setRates(prev => {
         const resto = prev.filter(r => r.moneda !== nueva.moneda)
         return [...resto, nueva]
@@ -243,11 +250,11 @@ export default function Rates({ authUser }: RatesProps) {
                   <div className="grid grid-cols-2 gap-2.5">
                     <div className="bg-slate-50 rounded-lg p-2.5">
                       <div className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider mb-1">COMPRA</div>
-                      <div className="font-mono font-bold text-slate-800 text-[13px]">₲ {r.compra.toLocaleString()}</div>
+                      <div className="font-mono font-bold text-slate-800 text-[13px]">₲ {formatearTasa(r.compra)}</div>
                     </div>
                     <div className="bg-emerald-50 rounded-lg p-2.5">
                       <div className="text-[10px] text-emerald-600 font-semibold uppercase tracking-wider mb-1">VENTA</div>
-                      <div className="font-mono font-bold text-emerald-700 text-[13px]">₲ {r.venta.toLocaleString()}</div>
+                      <div className="font-mono font-bold text-emerald-700 text-[13px]">₲ {formatearTasa(r.venta)}</div>
                     </div>
                   </div>
 
@@ -351,10 +358,10 @@ export default function Rates({ authUser }: RatesProps) {
 
           <div className="grid grid-cols-4 gap-4 mt-6 pt-5 border-t border-slate-100">
             {[
-              { label: 'Compra actual', value: `₲ ${(seleccionada.compra || 0).toLocaleString()}` },
-              { label: 'Venta actual', value: `₲ ${(seleccionada.venta || 0).toLocaleString()}` },
-              { label: 'Mín. del período', value: `₲ ${displayData.length ? Math.min(...displayData.map(d => d.buy)).toLocaleString() : 0}` },
-              { label: 'Máx. del período', value: `₲ ${displayData.length ? Math.max(...displayData.map(d => d.sell)).toLocaleString() : 0}` },
+              { label: 'Compra actual', value: `₲ ${formatearTasa(seleccionada.compra || 0)}` },
+              { label: 'Venta actual', value: `₲ ${formatearTasa(seleccionada.venta || 0)}` },
+              { label: 'Mín. del período', value: `₲ ${displayData.length ? formatearTasa(Math.min(...displayData.map(d => d.buy))) : 0}` },
+              { label: 'Máx. del período', value: `₲ ${displayData.length ? formatearTasa(Math.max(...displayData.map(d => d.sell))) : 0}` },
             ].map(stat => (
               <div key={stat.label}>
                 <div className="text-[11px] text-slate-400 font-semibold uppercase tracking-wider mb-1">{stat.label}</div>
@@ -397,6 +404,8 @@ export default function Rates({ authUser }: RatesProps) {
                   <input
                     id="rate-buy"
                     type="number"
+                    inputMode="decimal"
+                    step="any"
                     required
                     min={0}
                     placeholder="7400"
@@ -410,6 +419,8 @@ export default function Rates({ authUser }: RatesProps) {
                   <input
                     id="rate-sell"
                     type="number"
+                    inputMode="decimal"
+                    step="any"
                     required
                     min={0}
                     placeholder="7500"
@@ -424,7 +435,7 @@ export default function Rates({ authUser }: RatesProps) {
               {formMoneda && rates.some(r => r.moneda === formMoneda) && (
                 <p className="text-[12px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
                   {formMoneda} ya tiene tasa vigente
-                  (C ₲ {(rates.find(r => r.moneda === formMoneda)?.compra ?? 0).toLocaleString()} / V ₲ {(rates.find(r => r.moneda === formMoneda)?.venta ?? 0).toLocaleString()}):
+                  (C ₲ {formatearTasa(rates.find(r => r.moneda === formMoneda)?.compra ?? 0)} / V ₲ {formatearTasa(rates.find(r => r.moneda === formMoneda)?.venta ?? 0)}):
                   al guardar se agrega un punto nuevo al historial, no se duplica la moneda.
                 </p>
               )}

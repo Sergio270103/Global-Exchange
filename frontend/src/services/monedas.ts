@@ -19,6 +19,7 @@ interface MonedaApi {
   decimales: number
   pais_iso: string
   activo: boolean
+  saldo_minimo?: string
 }
 
 /** Datos editables de una moneda (sin el id ni el estado). */
@@ -49,9 +50,10 @@ function mapear(m: MonedaApi): Currency {
     flag: banderaDesdeCodigo(m.codigo),
     decimals: m.decimales,
     active: m.activo,
+    // El backend siempre lo manda; el `?? 0` cubre respuestas viejas.
+    saldoMinimo: Number(m.saldo_minimo ?? 0),
   }
 }
-
 /**
  * Lista las monedas registradas.
  *
@@ -120,6 +122,24 @@ export async function cambiarEstado(id: number, active: boolean): Promise<Curren
   const actualizada = await apiFetch<MonedaApi>(`/monedas/${id}/estado/`, {
     method: 'PATCH',
     body: JSON.stringify({ activo: active }),
+  })
+  return mapear(actualizada)
+}
+
+/**
+ * Define el saldo mínimo de efectivo en caja para una divisa (PI-80).
+ *
+ * Es el umbral contra el que el sistema avisa al cajero que tiene que
+ * pedir reposición. En 0 no se avisa nunca, que es el valor por defecto.
+ *
+ * @param id - Identificador de la moneda.
+ * @param saldoMinimo - Monto mínimo, con los decimales de la moneda.
+ * @returns La moneda con el mínimo actualizado.
+ */
+export async function definirSaldoMinimo(id: number, saldoMinimo: string): Promise<Currency> {
+  const actualizada = await apiFetch<MonedaApi>(`/monedas/${id}/`, {
+    method: 'PATCH',
+    body: JSON.stringify({ saldo_minimo: saldoMinimo }),
   })
   return mapear(actualizada)
 }

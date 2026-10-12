@@ -28,6 +28,8 @@ import {
   confirmarOperacion,
   cancelarOperacion,
   verificarClienteOperable,
+  iniciarPago,
+  esMetodoStripe,
   ERROR_CLIENTE_INACTIVO,
   type Operacion,
   type MotivoCancelacion,
@@ -66,6 +68,8 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
   const [amount, setAmount] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('transfer')
   const [metodos, setMetodos] = useState<MetodoPago[]>([])
+  // Venta: billetera interna (débito actual) o tarjeta por Stripe.
+  const [sellMetodo, setSellMetodo] = useState<'wallet' | 'card'>('wallet')
 
   // PI-73: la compra se paga por transferencia (cuenta bancaria obligatoria)
   // o con la billetera PYG; lo recibido se acredita siempre en la billetera.
@@ -256,7 +260,9 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
     : []
   const billeteraOrigen = billeteras.find(b => b.moneda_codigo === codigoOrigen)
   const billeteraDestino = billeteras.find(b => b.moneda_codigo === codigoDestino)
-  const pagaConBilletera = mode === 'sell' || paymentMethod === 'wallet'
+  // Método efectivo: en compra el elegido; en venta billetera o tarjeta.
+  const metodoEfectivo = mode === 'buy' ? paymentMethod : sellMetodo
+  const pagaConBilletera = metodoEfectivo === 'wallet'
   const requiereCuenta = mode === 'buy' && paymentMethod === 'transfer'
 
   // Si el par cambia y la cuenta elegida ya no vale, se limpia.
@@ -283,7 +289,7 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
         moneda: divisa,
         montoDivisa: amountNum,
         monedaContraparte: contraparte,
-        metodoPago: mode === 'buy' ? paymentMethod : '',
+        metodoPago: metodoEfectivo,
         cuentaOrigenId: requiereCuenta && origenSel ? Number(origenSel.slice(2)) : null,
         billeteraDestinoId: null,
         billeteraOrigenId: null,
@@ -304,12 +310,17 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
     }
   }
 
-  /** Confirma; si la tasa cambió, muestra la nueva y espera la decisión. */
+  /** Confirma con billetera/transferencia o redirige al pago seguro de Stripe. */
   const confirmar = async () => {
     if (!pendiente || creando) return
     setCreando(true)
     setErrorPost('')
     try {
+      if (esMetodoStripe(pendiente.metodo_pago)) {
+        const sesion = await iniciarPago(pendiente.id)
+        window.location.href = sesion.url
+        return
+      }
       const r = await confirmarOperacion(pendiente.id)
       if (r.resultado === 'CONFIRMADA') {
         setOperacion(r.operacion)
@@ -459,6 +470,11 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
               Fondos insuficientes en la billetera origen.
             </p>
           )}
+          {operacion.motivo_cancelacion === 'PAGO_FALLIDO' && (
+            <p className="text-red-600 text-[14px] font-semibold mb-2">
+              El pago fue rechazado o expiró en Stripe.
+            </p>
+          )}
           <p className="text-slate-500 text-[14px] mb-6">
             No se te cobró nada. La operación #{operacion.id} queda en tu historial como cancelada.
           </p>
@@ -485,6 +501,7 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
           : formatoMonto(anterior.monto_recibido, anterior.moneda_destino_codigo, decimales))
       : ''
     const ocupado = creando || cancelando
+    const pagaPorStripe = esMetodoStripe(op.metodo_pago)
 
     return (
       <div className="max-w-lg mx-auto animate-fadein">
@@ -558,6 +575,12 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
 
           {errorPost && <p role="alert" className="mb-4 text-red-600 text-[13px] font-medium">{errorPost}</p>}
 
+          {pagaPorStripe && (
+            <p className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-[13px] text-blue-800">
+              Serás redirigido al pago seguro de Stripe. Al acreditarse, la operación queda confirmada automáticamente.
+            </p>
+          )}
+
           <div className="flex gap-3">
             {cambio ? (
               <button
@@ -587,7 +610,9 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
                 ? 'Procesando…'
                 : cambio
                   ? 'Aceptar nueva cotización'
-                  : `Confirmar ${esCompra ? 'compra' : 'venta'}`}
+                  : pagaPorStripe
+                    ? `Pagar ${esCompra ? 'compra' : 'venta'} con Stripe`
+                    : `Confirmar ${esCompra ? 'compra' : 'venta'}`}
             </button>
           </div>
         </div>
@@ -693,14 +718,41 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
                       { id: 'card', icon: '💳', label: 'Tarjeta' },
                       { id: 'qr', icon: '⊞', label: 'QR' },
                     ]
-                ).map(m => (
+                ).map(m => {
+                  // QR deshabilitado por ahora (sin pasarela asignada).
+                  const bloqueadoQR = m.id === 'qr'
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() => setPaymentMethod(m.id)}
+                      disabled={bloqueadoQR}
+                      title={bloqueadoQR ? 'Próximamente' : undefined}
+                      className={`flex flex-col items-center gap-1.5 py-3 rounded-xl border text-center transition-all ${paymentMethod === m.id ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 hover:border-slate-300'} ${bloqueadoQR ? 'opacity-40 cursor-not-allowed' : ''}`}
+                    >
+                      <span className="text-xl">{m.icon}</span>
+                      <span className={`text-[11px] font-semibold ${paymentMethod === m.id ? 'text-emerald-600' : 'text-slate-500'}`}>{m.label}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {mode === 'sell' && (
+            <div>
+              <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Método de pago</label>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { id: 'wallet' as const, icon: '◈', label: 'Billetera' },
+                  { id: 'card' as const, icon: '💳', label: 'Tarjeta (Stripe)' },
+                ].map(m => (
                   <button
                     key={m.id}
-                    onClick={() => setPaymentMethod(m.id)}
-                    className={`flex flex-col items-center gap-1.5 py-3 rounded-xl border text-center transition-all ${paymentMethod === m.id ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 hover:border-slate-300'}`}
+                    onClick={() => setSellMetodo(m.id)}
+                    className={`flex flex-col items-center gap-1.5 py-3 rounded-xl border text-center transition-all ${sellMetodo === m.id ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 hover:border-slate-300'}`}
                   >
                     <span className="text-xl">{m.icon}</span>
-                    <span className={`text-[11px] font-semibold ${paymentMethod === m.id ? 'text-emerald-600' : 'text-slate-500'}`}>{m.label}</span>
+                    <span className={`text-[11px] font-semibold ${sellMetodo === m.id ? 'text-emerald-600' : 'text-slate-500'}`}>{m.label}</span>
                   </button>
                 ))}
               </div>
@@ -735,6 +787,11 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
               <p className="text-[13px] text-slate-600">
                 👛 Se descontará de tu billetera {codigoOrigen}
                 {billeteraOrigen ? ` (saldo ${billeteraOrigen.saldo.toLocaleString()})` : ''}.
+              </p>
+            )}
+            {!pagaConBilletera && (
+              <p className="text-[13px] text-slate-600">
+                💳 Se cobrará con Stripe al confirmar la operación.
               </p>
             )}
             <p className="text-[13px] text-slate-600">

@@ -464,12 +464,14 @@ class DebitoTests(TestCase):
         self.assertEqual(self.billetera_usd.saldo, Decimal('600'))
 
     def test_compra_por_transferencia_no_toca_billetera_pyg(self):
-        """PI-73: pagando por transferencia no se debita la billetera."""
+        """Transferencia es confirmación directa; no debita la billetera."""
         res = self._crear_compra({'metodo_pago': 'transfer'})
         op = Operacion.objects.get(pk=res.data['id'])
         self.assertIsNone(op.billetera_origen_id)
         self.assertEqual(self._confirmar(op).data['resultado'], 'CONFIRMADA')
+        self.billetera_pyg.refresh_from_db()
         self.billetera_usd.refresh_from_db()
+        self.assertEqual(self.billetera_pyg.saldo, Decimal('0'))
         self.assertEqual(self.billetera_usd.saldo, Decimal('600'))
 
     def test_motivo_fondos_no_se_puede_elegir_a_mano(self):

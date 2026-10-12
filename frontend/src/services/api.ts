@@ -59,7 +59,7 @@ async function mensajeDeError(res: Response): Promise<string> {
  *
  * @param ruta - Ruta relativa a la API, ej. `/monedas/`.
  * @param init - Opciones de `fetch` (`method`, `body`, ...).
- * @returns El cuerpo JSON ya parseado (o `null` en 204).
+ * @returns El cuerpo JSON ya parseado (o `null` en 204 o si viene vacío).
  * @throws {ApiError} Si la respuesta no es 2xx.
  */
 export async function apiFetch<T>(ruta: string, init: RequestInit = {}): Promise<T> {
@@ -73,5 +73,7 @@ export async function apiFetch<T>(ruta: string, init: RequestInit = {}): Promise
   const res = await fetch(`${API_BASE}${ruta}`, { ...init, headers })
   if (res.status === 204) return null as T
   if (!res.ok) throw new ApiError(res.status, await mensajeDeError(res))
-  return (await res.json()) as T
+  // Un cuerpo vacío (ej. `Response(None)` en DRF) no es JSON válido.
+  const texto = await res.text()
+  return (texto ? JSON.parse(texto) : null) as T
 }

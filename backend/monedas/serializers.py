@@ -18,6 +18,7 @@ class MonedaSerializer(serializers.ModelSerializer):
             'decimales',
             'pais_iso',
             'activo',
+            'saldo_minimo',
             'creado_en',
             'actualizado_en',
         ]

@@ -10,11 +10,19 @@
  *
  * @module Configuration
  */
-import { useEffect, useState } from 'react'
-import { listarMonedas, cambiarEstado } from '@/services/monedas'
+import { useCallback, useEffect, useState } from 'react'
+import { listarMonedas, cambiarEstado, definirSaldoMinimo } from '@/services/monedas'
 import type { Currency } from '@/types'
 import { listarMetodos, cambiarEstadoMetodo, type MetodoPago } from '@/services/metodos'
 import { listarAjustesPrecio, actualizarAjustePrecio, type CategoriaCliente } from '@/services/simulador'
+import {
+  listarDenominaciones,
+  listarDenominacionesDe,
+  crearDenominacion,
+  cambiarEstadoDenominacion,
+  formatearMonto,
+  type Denominacion,
+} from '@/services/cajas'
 
 const tabs = [
   { id: 'currencies', label: 'Monedas' },
@@ -26,6 +34,170 @@ const tabs = [
 
 const categorias: CategoriaCliente[] = ['MINORISTA', 'CORPORATIVO', 'VIP']
 
+/**
+ * Alta y baja de los billetes de una moneda.
+ *
+ * El formulario de entregas del cajero no lista el catálogo de monedas sino
+ * las monedas **que tienen billetes registrados**. Sin esto, una moneda recién
+ * dada de alta desde "Monedas admitidas" no aparece en las entregas y el
+ * faltante queda invisible.
+ *
+ * Los billetes no se borran: se desactivan, porque las entregas ya
+ * registradas los referencian (`on_delete=PROTECT`).
+ */
+function ModalBilletes({ moneda, onCerrar, onCambio }: {
+  moneda: Currency
+  onCerrar: () => void
+  onCambio: () => void
+}) {
+  const [lista, setLista] = useState<Denominacion[]>([])
+  const [cargando, setCargando] = useState(true)
+  const [nuevo, setNuevo] = useState('')
+  const [guardando, setGuardando] = useState(false)
+  const [error, setError] = useState('')
+
+  const recargar = () =>
+    listarDenominacionesDe(moneda.id)
+      .then(setLista)
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setCargando(false))
+
+  useEffect(() => {
+    void recargar()
+  }, [moneda.id])
+
+  const agregar = async (e: React.FormEvent) => {
+    e.preventDefault()
+    const valor = nuevo.trim().replace(',', '.')
+    if (!valor) return
+    const numero = Number(valor)
+    if (!Number.isFinite(numero) || numero <= 0) {
+      setError('El valor del billete tiene que ser un número mayor que cero.')
+      return
+    }
+    setGuardando(true)
+    setError('')
+    try {
+      const creada = await crearDenominacion(moneda.id, numero.toFixed(2))
+      setLista(prev => [...prev, creada].sort((a, b) => b.valor - a.valor))
+      setNuevo('')
+      // La tabla de afuera lleva el conteo: hay que refrescarlo.
+      onCambio()
+    } catch (e2) {
+      setError(e2 instanceof Error ? e2.message : 'No se pudo registrar el billete.')
+    } finally {
+      setGuardando(false)
+    }
+  }
+
+  const alternar = async (d: Denominacion) => {
+    setError('')
+    try {
+      const actualizada = await cambiarEstadoDenominacion(d.id, !d.activa)
+      setLista(prev => prev.map(x => (x.id === d.id ? actualizada : x)))
+      onCambio()
+    } catch (e2) {
+      setError(e2 instanceof Error ? e2.message : 'No se pudo actualizar el billete.')
+    }
+  }
+
+  const activas = lista.filter(d => d.activa).length
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div
+        aria-label={`Billetes de ${moneda.code}`}
+        role="dialog"
+        aria-modal="true"
+        className="w-full max-w-md rounded-2xl bg-white shadow-xl border border-slate-100"
+      >
+        <header className="px-5 py-4 border-b border-slate-100">
+          <h4 className="font-semibold text-slate-800 text-[15px]" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>
+            <span className="mr-2">{moneda.flag}</span>
+            Billetes de {moneda.code}
+          </h4>
+          <p className="text-[12px] text-slate-400 mt-0.5">
+            Se usan en las entregas de billetes y en el arqueo de cierre. Si la lista está
+            vacía, la moneda no aparece en el formulario de entregas.
+          </p>
+        </header>
+
+        <div className="px-5 py-4 max-h-72 overflow-y-auto">
+          {cargando ? (
+            <p className="text-[13px] text-slate-400 py-4 text-center">Cargando billetes…</p>
+          ) : lista.length === 0 ? (
+            <p className="text-[13px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-3">
+              Todavía no hay billetes cargados para {moneda.code}. Agregá al menos uno para
+              que la moneda pueda usarse en las entregas de efectivo.
+            </p>
+          ) : (
+            <ul className="space-y-1.5">
+              {lista.map(d => (
+                <li
+                  key={d.id}
+                  className={`flex items-center justify-between rounded-lg border px-3 py-2 ${
+                    d.activa ? 'border-slate-100 bg-slate-50/50' : 'border-slate-100 bg-white opacity-50'
+                  }`}
+                >
+                  <span className="font-mono text-[14px] font-semibold text-slate-800">
+                    {formatearMonto(d.valor, moneda.decimals)}
+                  </span>
+                  <button
+                    onClick={() => alternar(d)}
+                    aria-label={`${d.activa ? 'Desactivar' : 'Activar'} billete de ${d.valor} ${moneda.code}`}
+                    className="text-[12px] font-semibold text-slate-500 hover:text-slate-800"
+                  >
+                    {d.activa ? 'Desactivar' : 'Activar'}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {error && (
+            <p role="alert" className="mt-3 text-[12px] text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+              {error}
+            </p>
+          )}
+        </div>
+
+        <form onSubmit={agregar} className="px-5 py-3 border-t border-slate-100 flex gap-2">
+          <label htmlFor="nuevo-billete" className="sr-only">
+            Valor del billete en {moneda.code}
+          </label>
+          <input
+            id="nuevo-billete"
+            type="text"
+            inputMode="decimal"
+            placeholder={`Valor en ${moneda.code} (ej. 1000)`}
+            value={nuevo}
+            onChange={e => setNuevo(e.target.value)}
+            className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-300"
+          />
+          <button
+            type="submit"
+            disabled={guardando || !nuevo.trim()}
+            className="px-4 py-2 rounded-lg text-white text-[13px] font-semibold disabled:opacity-50"
+            style={{ background: '#10b981' }}
+          >
+            {guardando ? 'Guardando…' : 'Agregar'}
+          </button>
+        </form>
+
+        <footer className="px-5 py-3 border-t border-slate-100 flex items-center justify-between">
+          <span className="text-[12px] text-slate-400">{activas} billete(s) activo(s)</span>
+          <button
+            onClick={onCerrar}
+            className="px-4 py-2 rounded-lg border border-slate-200 text-[13px] font-semibold text-slate-600 hover:bg-slate-50"
+          >
+            Cerrar
+          </button>
+        </footer>
+      </div>
+    </div>
+  )
+}
+
 export default function Configuration() {
   const [tab, setTab] = useState('currencies')
   const [currencies, setCurrencies] = useState<Currency[]>([])
@@ -36,10 +208,24 @@ export default function Configuration() {
   const [aviso, setAviso] = useState('')
   const [saved, setSaved] = useState(false)
 
+  /**
+   * Cuántos billetes tiene registrados cada moneda, para poder avisar de las
+   * que todavía no tienen ninguno (y por eso no salen en las entregas).
+   */
+  const [conBilletes, setConBilletes] = useState<Record<string, number>>({})
+  const [monedaBilletes, setMonedaBilletes] = useState<Currency | null>(null)
+  /**
+   * PI-80: saldo mínimo de cada divisa, como texto porque mientras se
+   * escribe tiene que poder quedar vacío o mal formado sin romper la
+   * tabla. Se guarda al salir del campo (onBlur).
+   */
+  const [minimos, setMinimos] = useState<Record<number, string>>({})
+
   useEffect(() => {
     Promise.all([listarMonedas(), listarMetodos(), listarAjustesPrecio().catch(() => ({}))])
       .then(([ms, mps, cs]) => {
         setCurrencies(ms)
+        setMinimos(Object.fromEntries(ms.map(m => [m.id, String(m.saldoMinimo ?? '0')])))
         setPaymentMethods(mps)
         setAjustes(cs)
         setAjusteForm(Object.fromEntries(Object.entries(cs).map(([k, v]) => [k, String(v)])))
@@ -47,6 +233,29 @@ export default function Configuration() {
       .catch(() => setAviso('No se pudo cargar la configuración. Verificá que el backend esté corriendo.'))
       .finally(() => setCargando(false))
   }, [])
+
+  /**
+   * Recalcula cuántos billetes tiene cada moneda.
+   *
+   * Se llama al montar y también después de cada cambio en el modal de
+   * billetes, así el contador de la tabla y el aviso de "faltan billetes"
+   * no quedan desactualizados.
+   */
+  const refrescarBilletes = useCallback(() => {
+    listarDenominaciones()
+      .then(denoms => {
+        const conteo: Record<string, number> = {}
+        for (const d of denoms) {
+          if (d.denominaciones.length > 0) conteo[d.codigo] = d.denominaciones.length
+        }
+        setConBilletes(conteo)
+      })
+      .catch(() => setConBilletes({}))
+  }, [])
+
+  useEffect(() => {
+    refrescarBilletes()
+  }, [refrescarBilletes])
 
   const save = () => { setSaved(true); setTimeout(() => setSaved(false), 3000) }
 
@@ -58,6 +267,45 @@ export default function Configuration() {
     } catch {
       setCurrencies(prev => prev.map(x => (x.id === moneda.id ? { ...x, active: moneda.active } : x)))
       setAviso(`No se pudo cambiar el estado de ${moneda.code}.`)
+    }
+  }
+
+  /**
+   * Guarda el saldo mínimo de una divisa (PI-80).
+   *
+   * Se valida con los decimales de la moneda antes de llamar a la API: el
+   * PYG no admite decimales y mandarlos ahí sería un 400 del backend.
+   */
+  const guardarMinimo = async (moneda: Currency) => {
+    const texto = (minimos[moneda.id] ?? '0').trim().replace(',', '.')
+    if (!texto) {
+      setMinimos({ ...minimos, [moneda.id]: '0' })
+      return
+    }
+    const valor = Number(texto)
+    if (!Number.isFinite(valor) || valor < 0) {
+      setAviso(`El saldo mínimo de ${moneda.code} tiene que ser un número mayor o igual a cero.`)
+      setMinimos({ ...minimos, [moneda.id]: String(moneda.saldoMinimo ?? 0) })
+      return
+    }
+    if (moneda.decimals === 0 && !Number.isInteger(valor)) {
+      setAviso(`${moneda.code} no admite decimales en el saldo mínimo.`)
+      setMinimos({ ...minimos, [moneda.id]: String(Math.round(valor)) })
+      return
+    }
+    if (valor === Number(moneda.saldoMinimo ?? 0)) return
+    try {
+      const actualizada = await definirSaldoMinimo(moneda.id, String(valor))
+      setCurrencies(prev => prev.map(m => (m.id === moneda.id ? actualizada : m)))
+      setMinimos(prev => ({ ...prev, [moneda.id]: String(actualizada.saldoMinimo ?? '0') }))
+      setAviso(
+        valor > 0
+          ? `El cajero verá el aviso de reposición cuando ${moneda.code} baje de ${valor}.`
+          : `Se apagó el aviso de reposición para ${moneda.code}.`,
+      )
+    } catch (e) {
+      setAviso(e instanceof Error ? e.message : `No se pudo guardar el mínimo de ${moneda.code}.`)
+      setMinimos({ ...minimos, [moneda.id]: String(moneda.saldoMinimo ?? 0) })
     }
   }
 
@@ -125,10 +373,21 @@ export default function Configuration() {
                   {saved ? '✓ Guardado' : 'Guardar cambios'}
                 </button>
               </div>
+              {currencies.some(c => c.active && (conBilletes[c.code] ?? 0) === 0) && (
+                <div className="px-5 py-3 bg-amber-50 border-b border-amber-100 text-[12px] text-amber-800">
+                  <strong className="font-semibold">Faltan billetes.</strong>{' '}
+                  {currencies
+                    .filter(c => c.active && (conBilletes[c.code] ?? 0) === 0)
+                    .map(c => c.code)
+                    .join(', ')}{' '}
+                  está activa pero no tiene billetes registrados, así que no aparece en el
+                  formulario de entregas del cajero ni se puede contar en el arqueo.
+                </div>
+              )}
               <table className="w-full">
                 <thead>
                   <tr className="bg-slate-50/60 border-b border-slate-100">
-                    {['Moneda', 'Nombre', 'Decimales', 'Estado'].map(h => (
+                    {['Moneda', 'Nombre', 'Decimales', 'Billetes', 'Saldo mínimo', 'Estado'].map(h => (
                       <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-wider">{h}</th>
                     ))}
                   </tr>
@@ -144,6 +403,36 @@ export default function Configuration() {
                       </td>
                       <td className="px-5 py-3.5 text-[13px] text-slate-600">{c.name}</td>
                       <td className="px-5 py-3.5 text-[13px] font-mono text-slate-600">{c.decimals}</td>
+                      <td className="px-5 py-3.5">
+                        <button
+                          onClick={() => setMonedaBilletes(c)}
+                          aria-label={`Gestionar billetes de ${c.code}`}
+                          className={`text-[12px] font-semibold px-2.5 py-1 rounded-lg border transition-colors ${
+                            (conBilletes[c.code] ?? 0) > 0
+                              ? 'border-slate-200 text-slate-600 hover:bg-slate-50'
+                              : 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+                          }`}
+                        >
+                          {(conBilletes[c.code] ?? 0) > 0
+                            ? `${conBilletes[c.code]} cargados`
+                            : 'Sin billetes'}
+                        </button>
+                      </td>
+                      <td className="px-5 py-3.5">
+                        <label htmlFor={`minimo-${c.id}`} className="sr-only">
+                          Saldo mínimo de {c.code}
+                        </label>
+                        <input
+                          id={`minimo-${c.id}`}
+                          type="text"
+                          inputMode="decimal"
+                          value={minimos[c.id] ?? '0'}
+                          onChange={e => setMinimos({ ...minimos, [c.id]: e.target.value })}
+                          onBlur={() => guardarMinimo(c)}
+                          placeholder="0"
+                          className="w-28 px-2 py-1.5 border border-slate-200 rounded-lg text-right font-mono text-[13px] focus:outline-none focus:ring-2 focus:ring-emerald-300"
+                        />
+                      </td>
                       <td className="px-5 py-3.5">
                         <button
                           role="switch"
@@ -272,6 +561,14 @@ export default function Configuration() {
             </div>
           )}
         </>
+      )}
+
+      {monedaBilletes && (
+        <ModalBilletes
+          moneda={monedaBilletes}
+          onCerrar={() => setMonedaBilletes(null)}
+          onCambio={refrescarBilletes}
+        />
       )}
     </div>
   )

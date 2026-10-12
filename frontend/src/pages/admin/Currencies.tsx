@@ -27,6 +27,7 @@ import {
   type DatosMoneda,
 } from '@/services/monedas'
 import { vigentes, crearCotizacion, type Cotizacion } from '@/services/cotizaciones'
+import { formatearTasa, normalizarTasa, redondearTasa } from '@/utils/tasas'
 import type { AuthUser, Currency } from '@/types'
 
 /** Valores iniciales del formulario de moneda. */
@@ -192,10 +193,19 @@ export default function Currencies({ auth }: { auth: AuthUser }) {
 
   const guardarTasa = async () => {
     if (!tasaTarget) return
-    const compra = Number(tasaCompra)
-    const venta = Number(tasaVenta)
-    if (!compra || !venta) {
+    // PI-82: acepta punto o coma y distingue el campo vacío de un cero.
+    const compra = normalizarTasa(tasaCompra)
+    const venta = normalizarTasa(tasaVenta)
+    if (compra === null || venta === null) {
       setTasaError('Cargá compra y venta en guaraníes.')
+      return
+    }
+    if (compra <= 0 || venta <= 0) {
+      setTasaError('Las tasas deben ser mayores a cero.')
+      return
+    }
+    if (venta < compra) {
+      setTasaError('La venta no puede ser menor que la compra.')
       return
     }
     if (venta < compra) {
@@ -204,9 +214,9 @@ export default function Currencies({ auth }: { auth: AuthUser }) {
     }
     setTasaGuardando(true)
     try {
-      const nueva = await crearCotizacion(tasaTarget.id, compra, venta)
+      const nueva = await crearCotizacion(tasaTarget.id, redondearTasa(compra), redondearTasa(venta))
       setVigentesMap(prev => ({ ...prev, [nueva.moneda]: nueva }))
-      setAviso(`Tasa de ${nueva.moneda} registrada: C ₲${nueva.compra.toLocaleString()} / V ₲${nueva.venta.toLocaleString()}.`)
+      setAviso(`Tasa de ${nueva.moneda} registrada: C ₲${formatearTasa(nueva.compra)} / V ₲${formatearTasa(nueva.venta)}.`)
       setTasaTarget(null)
     } catch (err) {
       setTasaError(err instanceof Error ? err.message : 'No se pudo registrar la tasa.')
@@ -320,7 +330,7 @@ export default function Currencies({ auth }: { auth: AuthUser }) {
                     </div>
                   ) : vigente ? (
                     <div className="text-[12px] font-mono font-semibold text-emerald-700 mt-1">
-                      C ₲{vigente.compra.toLocaleString()} · V ₲{vigente.venta.toLocaleString()}
+                      C ₲{vigente.compra.toLocaleString('es-PY')} · V ₲{vigente.venta.toLocaleString('es-PY')}
                     </div>
                   ) : (
                     <div className="mt-1">
@@ -378,11 +388,19 @@ export default function Currencies({ auth }: { auth: AuthUser }) {
             <div className="grid grid-cols-2 gap-4">
               <div>
                 <label htmlFor="tasa-compra" className={labelClass}>Compra (₲)</label>
-                <input id="tasa-compra" type="number" min={0} value={tasaCompra} onChange={e => setTasaCompra(e.target.value)} placeholder="7400" className={`${inputClass} font-mono`} />
+                <input
+                  id="tasa-compra" type="number" inputMode="decimal" step="any" min={0}
+                  value={tasaCompra} onChange={e => setTasaCompra(e.target.value)}
+                  placeholder="7400" className={`${inputClass} font-mono`}
+                />
               </div>
               <div>
                 <label htmlFor="tasa-venta" className={labelClass}>Venta (₲)</label>
-                <input id="tasa-venta" type="number" min={0} value={tasaVenta} onChange={e => setTasaVenta(e.target.value)} placeholder="7500" className={`${inputClass} font-mono`} />
+                <input
+                  id="tasa-venta" type="number" inputMode="decimal" step="any" min={0}
+                  value={tasaVenta} onChange={e => setTasaVenta(e.target.value)}
+                  placeholder="7500" className={`${inputClass} font-mono`}
+                />
               </div>
             </div>
             {tasaError && <p role="alert" className="text-red-500 text-[12px] mt-3">{tasaError}</p>}

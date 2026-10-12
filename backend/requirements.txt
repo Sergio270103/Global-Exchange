@@ -6,3 +6,4 @@ django-cors-headers==4.7.0
 psycopg2-binary==2.9.13
 PyJWT[crypto]==2.10.1
 python-dotenv==1.1.1
+stripe==16.0.0
