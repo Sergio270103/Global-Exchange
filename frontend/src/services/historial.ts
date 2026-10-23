@@ -52,7 +52,7 @@ export const ETIQUETA_TIPO: Record<TipoOperacion, string> = {
   VENTA: 'Venta',
 }
 
-const ETIQUETA_MOTIVO: Record<MotivoCancelacion, string> = {
+export const ETIQUETA_MOTIVO: Record<MotivoCancelacion, string> = {
   COTIZACION_CAMBIADA: 'No aceptó la nueva cotización',
   DESISTIO: 'Desistió',
   FONDOS_INSUFICIENTES: 'Fondos insuficientes',
