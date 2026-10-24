@@ -39,9 +39,12 @@ Criterios de aceptación:
   consulta `get_estado_sifen` con un CDC inventado respondió un error de
   validación (`-80006`), lo que confirma que la autorización funciona. Ninguna de
   esas pruebas emite documentos ni gasta números.
-- Faltan datos del emisor (nombre, dirección, departamento, ciudad, correo y
-  actividad económica). Se pidieron a soporte: **no se inventan**, porque SIFEN
-  los valida contra el RUC y un rechazo gasta un número.
+- Faltaban datos del emisor (nombre, dirección, departamento, ciudad, correo y
+  actividad económica). Se pidieron a soporte en lugar de inventarlos, porque
+  SIFEN los valida y un rechazo gasta un número. Soporte los envió el 24/10/2026,
+  con dos actividades económicas y el distrito (`cDisEmi`/`dDesDisEmi`), que el
+  primer armado no contemplaba: se agregó el distrito (opcional) y varias
+  actividades separadas con `|` en el `.env`.
 
 ## 3. Solución
 

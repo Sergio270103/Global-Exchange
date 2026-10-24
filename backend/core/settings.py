@@ -209,10 +209,14 @@ FACTURASEGURA = {
         'dNumCas': os.getenv('FACTURASEGURA_NUMERO_CASA', ''),
         'cDepEmi': os.getenv('FACTURASEGURA_DEPARTAMENTO_COD', ''),
         'dDesDepEmi': os.getenv('FACTURASEGURA_DEPARTAMENTO', ''),
+        'cDisEmi': os.getenv('FACTURASEGURA_DISTRITO_COD', ''),
+        'dDesDisEmi': os.getenv('FACTURASEGURA_DISTRITO', ''),
         'cCiuEmi': os.getenv('FACTURASEGURA_CIUDAD_COD', ''),
         'dDesCiuEmi': os.getenv('FACTURASEGURA_CIUDAD', ''),
         'dTelEmi': os.getenv('FACTURASEGURA_TELEFONO', ''),
         'dEmailE': os.getenv('FACTURASEGURA_EMAIL', ''),
+        # Una o más actividades económicas, separadas con "|" en el mismo
+        # orden en los dos campos (las descripciones pueden tener comas).
         'cActEco': os.getenv('FACTURASEGURA_ACT_ECO_COD', ''),
         'dDesActEco': os.getenv('FACTURASEGURA_ACT_ECO', ''),
     },
