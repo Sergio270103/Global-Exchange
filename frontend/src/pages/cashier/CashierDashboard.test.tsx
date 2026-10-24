@@ -396,6 +396,21 @@ describe('CashierDashboard PI-75 (operación unificada)', () => {
     expect(screen.getByText(/Venta de divisas · El cliente vende GBP/)).toBeInTheDocument()
   })
 
+  it('elegir en origen la divisa del destino intercambia las dos', async () => {
+    const user = userEvent.setup()
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+    await esperarCatalogo()
+    // Arranca en PYG -> USD; elegir USD en origen deja USD -> PYG (venta).
+    await user.selectOptions(screen.getByLabelText('Divisa origen'), 'USD')
+    expect(screen.getByLabelText('Divisa origen')).toHaveValue('USD')
+    expect(screen.getByLabelText('Divisa destino')).toHaveValue('PYG')
+    await waitFor(() => expect(screen.getByLabelText('Tipo de operación')).toHaveValue('VENTA'))
+    // Y al revés desde el destino.
+    await user.selectOptions(screen.getByLabelText('Divisa destino'), 'USD')
+    expect(screen.getByLabelText('Divisa origen')).toHaveValue('PYG')
+    expect(screen.getByLabelText('Divisa destino')).toHaveValue('USD')
+  })
+
   it('avisa si el cajero se aparta del tipo deducido', async () => {
     const user = userEvent.setup()
     render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)

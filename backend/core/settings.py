@@ -36,7 +36,6 @@ ALLOWED_HOSTS = [h.strip() for h in os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost
 # Application definition
 
 INSTALLED_APPS = [
-    'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
@@ -55,6 +54,7 @@ INSTALLED_APPS = [
     'cajas',
     'alertas',
     'comprobantes',
+    'facturacion',
 ]
 
 MIDDLEWARE = [
@@ -179,3 +179,40 @@ FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173')
 # Métodos que se cobran por pasarela; 'transfer' es confirmación directa
 # (sin verificación de saldo) y 'wallet' es saldo interno.
 STRIPE_METODOS = ('card',)
+
+# Facturación electrónica con Factura Segura (PI-30).
+# Token y datos del emisor solo en backend/.env (nunca se commitean).
+# FACTURASEGURA_MODO: 'simulado' (por defecto, no llama a la API) o 'real'.
+FACTURASEGURA = {
+    'MODO': os.getenv('FACTURASEGURA_MODO', 'simulado').strip().lower(),
+    'URL': os.getenv(
+        'FACTURASEGURA_URL',
+        'https://apitest.facturasegura.com.py/misife00/v1/esi'),
+    'TOKEN': os.getenv('FACTURASEGURA_TOKEN', ''),
+    'TIMEOUT': int(os.getenv('FACTURASEGURA_TIMEOUT', '40')),
+    # Rango de dNumDoc asignado por Factura Segura (inclusive).
+    'NUMERO_DESDE': int(os.getenv('FACTURASEGURA_NUMERO_DESDE', '100')),
+    'NUMERO_HASTA': int(os.getenv('FACTURASEGURA_NUMERO_HASTA', '111')),
+    # Tratamiento de IVA del ítem facturado: 10, 5 o 0 (exento).
+    'IVA_TASA': int(os.getenv('FACTURASEGURA_IVA_TASA', '10')),
+    'EMISOR': {
+        'dRucEm': os.getenv('FACTURASEGURA_RUC', ''),
+        'dDVEmi': os.getenv('FACTURASEGURA_DV', ''),
+        'iTipCont': os.getenv('FACTURASEGURA_TIPO_CONTRIBUYENTE', ''),
+        'dNumTim': os.getenv('FACTURASEGURA_TIMBRADO', ''),
+        'dFeIniT': os.getenv('FACTURASEGURA_TIMBRADO_INICIO', ''),
+        'dEst': os.getenv('FACTURASEGURA_ESTABLECIMIENTO', '001'),
+        'dPunExp': os.getenv('FACTURASEGURA_PUNTO_EXPEDICION', '003'),
+        'dNomEmi': os.getenv('FACTURASEGURA_NOMBRE', ''),
+        'dDirEmi': os.getenv('FACTURASEGURA_DIRECCION', ''),
+        'dNumCas': os.getenv('FACTURASEGURA_NUMERO_CASA', ''),
+        'cDepEmi': os.getenv('FACTURASEGURA_DEPARTAMENTO_COD', ''),
+        'dDesDepEmi': os.getenv('FACTURASEGURA_DEPARTAMENTO', ''),
+        'cCiuEmi': os.getenv('FACTURASEGURA_CIUDAD_COD', ''),
+        'dDesCiuEmi': os.getenv('FACTURASEGURA_CIUDAD', ''),
+        'dTelEmi': os.getenv('FACTURASEGURA_TELEFONO', ''),
+        'dEmailE': os.getenv('FACTURASEGURA_EMAIL', ''),
+        'cActEco': os.getenv('FACTURASEGURA_ACT_ECO_COD', ''),
+        'dDesActEco': os.getenv('FACTURASEGURA_ACT_ECO', ''),
+    },
+}

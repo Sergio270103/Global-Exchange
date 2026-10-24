@@ -5,10 +5,16 @@
  * número único, con botones para imprimir (`window.print`, solo sale
  * el comprobante gracias al CSS de impresión) y descargar en PDF.
  *
+ * Un solo scroll: el contenido se desplaza dentro de la ventana, los
+ * botones quedan fijos abajo y la página de fondo no se mueve.
+ *
  * @module ComprobanteVista
  */
+import { useEffect } from 'react'
+import { createPortal } from 'react-dom'
 import { jsPDF } from 'jspdf'
 import type { Comprobante } from '@/services/comprobantes'
+import EmitirFactura from '@/components/EmitirFactura'
 
 interface Props {
   comprobante: Comprobante
@@ -48,36 +54,53 @@ function generarPdf(c: Comprobante): void {
 }
 
 export default function ComprobanteVista({ comprobante: c, onClose }: Props) {
-  return (
-    <div className="fixed inset-0 bg-slate-900/60 flex justify-center items-start z-50 p-4 pt-[6vh] overflow-y-auto">
-      <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-6 max-h-[88vh] overflow-y-auto">
-        {/* Zona imprimible */}
-        <div id="comprobante-print" className="border border-slate-200 rounded-lg p-5 font-mono text-sm text-slate-900">
-          <h3 className="font-bold text-center text-base">GLOBAL EXCHANGE</h3>
-          <p className="text-center text-xs text-slate-500">Comprobante interno de operación</p>
-          <p className="text-center font-bold mt-1">{c.numero}</p>
-          <p className="text-center text-xs">{new Date(c.fecha_operacion).toLocaleString()}</p>
-          <hr className="my-3 border-dashed" />
-          <dl className="space-y-1.5">
-            <div className="flex justify-between gap-2"><dt className="text-slate-500">Cliente</dt><dd className="font-bold text-right">{c.cliente_nombre}</dd></div>
-            <div className="flex justify-between gap-2"><dt className="text-slate-500">Documento</dt><dd className="text-right">{c.cliente_documento || '-'}</dd></div>
-            <div className="flex justify-between gap-2"><dt className="text-slate-500">Operación</dt><dd className="text-right">{c.tipo_operacion}</dd></div>
-            <div className="flex justify-between gap-2"><dt className="text-slate-500">Entrega</dt><dd className="text-right">{c.monto_enviado.toLocaleString()} {c.moneda_origen_codigo}</dd></div>
-            <div className="flex justify-between gap-2"><dt className="text-slate-500">Recibe</dt><dd className="text-right">{c.monto_recibido.toLocaleString()} {c.moneda_destino_codigo}</dd></div>
-            {(c.tasa_origen != null || c.tasa_destino != null) && (
-              <div className="flex justify-between gap-2"><dt className="text-slate-500">Tasas</dt><dd className="text-right">{c.tasa_origen ?? '-'} / {c.tasa_destino ?? '-'}</dd></div>
-            )}
-            {c.monto_comision != null && (
-              <div className="flex justify-between gap-2"><dt className="text-slate-500">Comisión</dt><dd className="text-right">{c.monto_comision.toLocaleString()}</dd></div>
-            )}
-            <div className="flex justify-between gap-2"><dt className="text-slate-500">Método</dt><dd className="text-right">{c.metodo_pago || '-'}</dd></div>
-            <div className="flex justify-between gap-2"><dt className="text-slate-500">Atendido por</dt><dd className="text-right">{c.cajero_nombre || '-'}</dd></div>
-          </dl>
-          <hr className="my-3 border-dashed" />
-          <p className="text-center text-[11px] text-slate-500">Comprobante interno, no es factura electrónica.</p>
+  // Mientras está abierta, la página de fondo no scrollea (un solo scroll).
+  useEffect(() => {
+    const anterior = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = anterior }
+  }, [])
+
+  // Portal a <body>: la página usa una animación con transform, y eso
+  // hace que `fixed` se ubique respecto de la página y no de la ventana.
+  return createPortal(
+    <div className="fixed inset-0 bg-slate-900/60 flex justify-center items-center z-50 p-4">
+      <div
+        role="dialog"
+        aria-label={`Comprobante ${c.numero}`}
+        className="bg-white rounded-xl shadow-xl max-w-md w-full max-h-[92vh] flex flex-col overflow-hidden"
+      >
+        <div className="flex-1 min-h-0 overflow-y-auto p-6 pb-4">
+          {/* Zona imprimible */}
+          <div id="comprobante-print" className="border border-slate-200 rounded-lg p-5 font-mono text-sm text-slate-900">
+            <h3 className="font-bold text-center text-base">GLOBAL EXCHANGE</h3>
+            <p className="text-center text-xs text-slate-500">Comprobante interno de operación</p>
+            <p className="text-center font-bold mt-1">{c.numero}</p>
+            <p className="text-center text-xs">{new Date(c.fecha_operacion).toLocaleString()}</p>
+            <hr className="my-3 border-dashed" />
+            <dl className="space-y-1.5">
+              <div className="flex justify-between gap-2"><dt className="text-slate-500">Cliente</dt><dd className="font-bold text-right">{c.cliente_nombre}</dd></div>
+              <div className="flex justify-between gap-2"><dt className="text-slate-500">Documento</dt><dd className="text-right">{c.cliente_documento || '-'}</dd></div>
+              <div className="flex justify-between gap-2"><dt className="text-slate-500">Operación</dt><dd className="text-right">{c.tipo_operacion}</dd></div>
+              <div className="flex justify-between gap-2"><dt className="text-slate-500">Entrega</dt><dd className="text-right">{c.monto_enviado.toLocaleString()} {c.moneda_origen_codigo}</dd></div>
+              <div className="flex justify-between gap-2"><dt className="text-slate-500">Recibe</dt><dd className="text-right">{c.monto_recibido.toLocaleString()} {c.moneda_destino_codigo}</dd></div>
+              {(c.tasa_origen != null || c.tasa_destino != null) && (
+                <div className="flex justify-between gap-2"><dt className="text-slate-500">Tasas</dt><dd className="text-right">{c.tasa_origen ?? '-'} / {c.tasa_destino ?? '-'}</dd></div>
+              )}
+              {c.monto_comision != null && (
+                <div className="flex justify-between gap-2"><dt className="text-slate-500">Comisión</dt><dd className="text-right">{c.monto_comision.toLocaleString()}</dd></div>
+              )}
+              <div className="flex justify-between gap-2"><dt className="text-slate-500">Método</dt><dd className="text-right">{c.metodo_pago || '-'}</dd></div>
+              <div className="flex justify-between gap-2"><dt className="text-slate-500">Atendido por</dt><dd className="text-right">{c.cajero_nombre || '-'}</dd></div>
+            </dl>
+            <hr className="my-3 border-dashed" />
+            <p className="text-center text-[11px] text-slate-500">Comprobante interno, no es factura electrónica.</p>
+          </div>
+          {/* Factura electrónica (PI-30, no se imprime) */}
+          {c.estado !== 'anulado' && <EmitirFactura operacionId={c.operacion} />}
         </div>
-        {/* Acciones (no se imprimen) */}
-        <div className="flex gap-2 mt-4 no-print">
+        {/* Acciones fijas (no se imprimen) */}
+        <div className="shrink-0 flex gap-2 px-6 py-4 border-t border-slate-200 bg-slate-50 no-print">
           <button
             onClick={() => window.print()}
             className="flex-1 py-2 bg-slate-900 text-white rounded-lg font-semibold text-sm hover:bg-slate-800"
@@ -98,6 +121,7 @@ export default function ComprobanteVista({ comprobante: c, onClose }: Props) {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }
