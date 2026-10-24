@@ -2,16 +2,6 @@
 ###############################################################################
 # Script de despliegue automático - Global Exchange (PI-88)
 # Versión para PowerShell (Windows)
-#
-# Modos:
-#   dev     - Levanta todo en localhost (Postgres + Keycloak + backend + frontend)
-#   prod    - Prepara y despliega en un servidor (Docker Compose de producción)
-#   check   - Valida que las herramientas necesarias estén instaladas
-#
-# Uso:
-#   .\scripts\deploy.ps1 dev
-#   .\scripts\deploy.ps1 prod
-#   .\scripts\deploy.ps1 check
 ###############################################################################
 $ErrorActionPreference = 'Stop'
 
