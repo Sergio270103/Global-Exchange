@@ -1,0 +1,85 @@
+# docker-compose.prod.yml - Orquestación de producción (PI-88)
+# Servicios: backend (gunicorn+Django) + base de datos PostgreSQL.
+# El frontend se despliega por separado con su propio Dockerfile + nginx.
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: global-exchange-db-prod
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: global_exchange_bd
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata_prod:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d global_exchange_bd"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build: .
+    container_name: global-exchange-backend-prod
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY}
+      DJANGO_DEBUG: 'False'
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS}
+      POSTGRES_DB: global_exchange_bd
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      KEYCLOAK_URL: ${KEYCLOAK_URL}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM}
+      KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS}
+      PAYMENT_GATEWAY: stripe
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      FRONTEND_URL: ${FRONTEND_URL}
+      FACTURASEGURA_MODO: ${FACTURASEGURA_MODO:-simulado}
+      FACTURASEGURA_URL: ${FACTURASEGURA_URL}
+      FACTURASEGURA_TOKEN: ${FACTURASEGURA_TOKEN}
+      FACTURASEGURA_TIMEOUT: ${FACTURASEGURA_TIMEOUT:-40}
+      FACTURASEGURA_NUMERO_DESDE: ${FACTURASEGURA_NUMERO_DESDE:-100}
+      FACTURASEGURA_NUMERO_HASTA: ${FACTURASEGURA_NUMERO_HASTA:-111}
+      FACTURASEGURA_IVA_TASA: ${FACTURASEGURA_IVA_TASA:-10}
+      FACTURASEGURA_RUC: ${FACTURASEGURA_RUC}
+      FACTURASEGURA_DV: ${FACTURASEGURA_DV}
+      FACTURASEGURA_TIPO_CONTRIBUYENTE: ${FACTURASEGURA_TIPO_CONTRIBUYENTE}
+      FACTURASEGURA_TIMBRADO: ${FACTURASEGURA_TIMBRADO}
+      FACTURASEGURA_TIMBRADO_INICIO: ${FACTURASEGURA_TIMBRADO_INICIO}
+      FACTURASEGURA_ESTABLECIMIENTO: ${FACTURASEGURA_ESTABLECIMIENTO:-001}
+      FACTURASEGURA_PUNTO_EXPEDICION: ${FACTURASEGURA_PUNTO_EXPEDICION:-003}
+      FACTURASEGURA_TELEFONO: ${FACTURASEGURA_TELEFONO}
+      FACTURASEGURA_NOMBRE: ${FACTURASEGURA_NOMBRE}
+      FACTURASEGURA_DIRECCION: ${FACTURASEGURA_DIRECCION}
+      FACTURASEGURA_NUMERO_CASA: ${FACTURASEGURA_NUMERO_CASA}
+      FACTURASEGURA_DEPARTAMENTO_COD: ${FACTURASEGURA_DEPARTAMENTO_COD}
+      FACTURASEGURA_DEPARTAMENTO: ${FACTURASEGURA_DEPARTAMENTO}
+      FACTURASEGURA_CIUDAD_COD: ${FACTURASEGURA_CIUDAD_COD}
+      FACTURASEGURA_CIUDAD: ${FACTURASEGURA_CIUDAD}
+      FACTURASEGURA_EMAIL: ${FACTURASEGURA_EMAIL}
+      FACTURASEGURA_ACT_ECO_COD: ${FACTURASEGURA_ACT_ECO_COD}
+      FACTURASEGURA_ACT_ECO: ${FACTURASEGURA_ACT_ECO}
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - staticfiles:/app/staticfiles
+
+volumes:
+  pgdata_prod:
+  staticfiles:
