@@ -1,17 +1,36 @@
 /**
- * Pruebas de facturas con datos reales (`GET /api/operaciones/`).
+ * Pruebas de la pantalla de facturas (PI-28 / PI-86).
  *
- * PI-28: los tres estados (Emitida/Aprobada/Rechazada) se distinguen por
- * color, las rechazadas muestran el motivo, el botón Actualizar refresca
- * sin recargar y hay filtros por estado y rango de fechas. La restricción
- * "el cliente ve solo lo suyo / el admin ve todo" la hace el backend
- * (cubierta en `backend/operaciones/test_historial.py`).
+ * PI-28 se mantiene: filas por operación, tres estados con color, motivo
+ * de rechazo, filtros por estado y fechas, refresco sin recargar.
+ *
+ * PI-86 agrega: el PDF por fila solo se habilita cuando la factura
+ * electrónica de PI-30 está APROBADA (rechazadas, pendientes y sin
+ * emitir quedan bloqueadas) y el CSV exporta solo las filas filtradas.
  *
  * @module Invoices.test
  */
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import { render, screen, fireEvent, within, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import Invoices from '@/pages/Invoices'
+
+vi.mock('@/services/facturasDescarga', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/services/facturasDescarga')>()
+  return {
+    ...actual,
+    descargarFacturaPdf: vi.fn(),
+    descargarFacturasCsv: vi.fn(),
+  }
+})
+
+import {
+  descargarFacturaPdf,
+  descargarFacturasCsv,
+} from '@/services/facturasDescarga'
+import type { EstadoFactura } from '@/services/facturas'
+
+const pdfMock = vi.mocked(descargarFacturaPdf)
+const csvMock = vi.mocked(descargarFacturasCsv)
 
 function respuesta(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
@@ -20,15 +39,15 @@ function respuesta(data: unknown, status = 200) {
   })
 }
 
-function operacion(id: number, estado: string) {
+function operacion(id: number, estado: string, extra: Record<string, unknown> = {}) {
   return {
     id, cliente: 1, cliente_nombre: 'Carlos Martínez',
     usuario_keycloak_id: 'sub', usuario_nombre: 'Carlos',
     tipo_operacion: 'COMPRA', moneda_origen: 1,
     moneda_origen_codigo: 'PYG', moneda_destino: 2,
-    moneda_destino_codigo: 'USD', monto_enviado: '757500.00',
-    monto_recibido: '100.00', cotizacion_aplicada: '7575.000000',
-    tasa_origen: null, tasa_destino: '7575.00', metodo_pago: 'efectivo',
+    moneda_destino_codigo: 'USD', monto_enviado: 757500,
+    monto_recibido: 100, cotizacion_aplicada: 7575,
+    tasa_origen: null, tasa_destino: 7575, metodo_pago: 'efectivo',
     billetera_destino: null, billetera_destino_detalle: '',
     cuenta_origen: null, cuenta_origen_detalle: '',
     billetera_origen: null, billetera_origen_detalle: '',
@@ -38,6 +57,33 @@ function operacion(id: number, estado: string) {
     cancelada_por: '', cancelada_por_nombre: '',
     motivo_cancelacion: '', tolerancia_segundos: 300,
     segundos_restantes: 300,
+    ...extra,
+  }
+}
+
+/** Factura electrónica de PI-30 tal como la devuelve `GET /api/facturas/`. */
+function facturaApi(operacionId: number, estado: EstadoFactura, extra: Record<string, unknown> = {}) {
+  return {
+    id: operacionId * 10,
+    operacion: operacionId,
+    cliente_nombre: 'Carlos Martínez',
+    simulada: true,
+    numero: '0000100',
+    numero_completo: '001-003-0000100',
+    cdc: '0180069560101101199369560110100000100000101a1b2c3d',
+    estado,
+    total: 757500,
+    email_destino: 'carlos@test.com',
+    detalle: '',
+    respuesta_servicio: {},
+    envio_fecha: null,
+    envio_destinatario: '',
+    envio_resultado: '',
+    emitida_por_nombre: 'Cajero',
+    creada: '2024-01-15T15:00:00Z',
+    actualizada: '2024-01-15T15:00:00Z',
+    estado_consultado: null,
+    ...extra,
   }
 }
 
@@ -51,11 +97,15 @@ function mockTresEstados() {
         operacion(7, 'PENDIENTE'),
       ])
     }
-    return respuesta({}, 404)
+    return respuesta([], 200)
   }))
 }
 
-describe('Invoices (datos reales)', () => {
+describe('Invoices (PI-28 + PI-86)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   afterEach(() => {
     vi.unstubAllGlobals()
   })
@@ -63,6 +113,7 @@ describe('Invoices (datos reales)', () => {
   it('muestra tarjetas, tabla y los tres estados desde la API', async () => {
     mockTresEstados()
     render(<Invoices />)
+
     expect(await screen.findByText('F001-0009')).toBeInTheDocument()
     expect(screen.getByText('Total facturas')).toBeInTheDocument()
     expect(screen.getByText('Emitidas')).toBeInTheDocument()
@@ -80,6 +131,7 @@ describe('Invoices (datos reales)', () => {
   it('distingue cada estado por color', async () => {
     mockTresEstados()
     render(<Invoices />)
+
     const tabla = await screen.findByRole('table')
     expect(within(tabla).getByText('Emitida')).toHaveClass('bg-amber-50')
     expect(within(tabla).getByText('Aprobada')).toHaveClass('bg-emerald-50')
@@ -89,6 +141,7 @@ describe('Invoices (datos reales)', () => {
   it('muestra el error del backend', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => respuesta({ detail: 'Error' }, 500)))
     render(<Invoices />)
+
     expect(await screen.findByRole('alert')).toHaveTextContent('Error')
   })
 
@@ -100,9 +153,10 @@ describe('Invoices (datos reales)', () => {
       if (String(url).includes('/operaciones/')) {
         return respuesta([operacion(9, 'PAGADA')])
       }
-      return respuesta({}, 404)
+      return respuesta([], 200)
     }))
     render(<Invoices />)
+
     expect(await screen.findByText('F001-0009')).toBeInTheDocument()
     const tabla = await screen.findByRole('table')
     expect(within(tabla).getByText('Rechazada')).toBeInTheDocument()
@@ -122,9 +176,10 @@ describe('Invoices (datos reales)', () => {
       if (String(url).includes('/operaciones/')) {
         return respuesta([operacion(9, 'PAGADA')])
       }
-      return respuesta({}, 404)
+      return respuesta([], 200)
     }))
     render(<Invoices />)
+
     expect(await screen.findByText('F001-0009')).toBeInTheDocument()
     expect(await screen.findByText('El cliente desistió de la operación.')).toBeInTheDocument()
   })
@@ -134,9 +189,10 @@ describe('Invoices (datos reales)', () => {
       if (String(url).includes('/operaciones/')) {
         return respuesta([{ ...operacion(8, 'CANCELADA'), motivo_cancelacion: 'DESISTIO' }])
       }
-      return respuesta({}, 404)
+      return respuesta([], 200)
     }))
     render(<Invoices />)
+
     expect(await screen.findByText('F001-0008')).toBeInTheDocument()
     expect(await screen.findByText('Desistió')).toBeInTheDocument()
   })
@@ -146,21 +202,22 @@ describe('Invoices (datos reales)', () => {
       if (String(url).includes('/operaciones/')) {
         return respuesta([operacion(9, 'PAGADA')])
       }
-      return respuesta({}, 404)
+      return respuesta([], 200)
     })
     vi.stubGlobal('fetch', fetchMock)
     render(<Invoices />)
+
     expect(await screen.findByText('F001-0009')).toBeInTheDocument()
     const llamadas = fetchMock.mock.calls.length
     fireEvent.click(screen.getByRole('button', { name: /actualizar/i }))
     await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(llamadas))
-    // El refresco no vacía la tabla: la fila sigue visible.
     expect(screen.getByText('F001-0009')).toBeInTheDocument()
   })
 
   it('filtra las facturas por estado desde el selector', async () => {
     mockTresEstados()
     render(<Invoices />)
+
     expect(await screen.findByText('F001-0009')).toBeInTheDocument()
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'Rechazada' } })
     await waitFor(() => expect(screen.queryByText('F001-0009')).not.toBeInTheDocument())
@@ -171,6 +228,7 @@ describe('Invoices (datos reales)', () => {
   it('filtra las facturas emitidas', async () => {
     mockTresEstados()
     render(<Invoices />)
+
     expect(await screen.findByText('F001-0007')).toBeInTheDocument()
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'Emitida' } })
     await waitFor(() => expect(screen.queryByText('F001-0009')).not.toBeInTheDocument())
@@ -181,6 +239,7 @@ describe('Invoices (datos reales)', () => {
   it('filtra las facturas por rango de fechas', async () => {
     mockTresEstados()
     render(<Invoices />)
+
     expect(await screen.findByText('F001-0009')).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Desde'), { target: { value: '2024-02-01' } })
     fireEvent.change(screen.getByLabelText('Hasta'), { target: { value: '2024-12-31' } })
@@ -192,10 +251,143 @@ describe('Invoices (datos reales)', () => {
   it('limpia los filtros y vuelve a mostrar todo', async () => {
     mockTresEstados()
     render(<Invoices />)
+
     expect(await screen.findByText('F001-0009')).toBeInTheDocument()
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'Rechazada' } })
     await waitFor(() => expect(screen.queryByText('F001-0009')).not.toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: /limpiar filtros/i }))
     await waitFor(() => expect(screen.getByText('F001-0009')).toBeInTheDocument())
+  })
+
+  it('muestra el número de la factura electrónica cuando existe', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).includes('/operaciones/')) {
+        return respuesta([operacion(9, 'PAGADA'), operacion(7, 'PENDIENTE')])
+      }
+      if (String(url).includes('/facturas/')) {
+        return respuesta([facturaApi(9, 'APROBADA')])
+      }
+      return respuesta([], 200)
+    }))
+    render(<Invoices />)
+
+    expect(await screen.findByText('F001-0009')).toBeInTheDocument()
+    expect(screen.getByText('001-003-0000100')).toBeInTheDocument()
+    expect(screen.getAllByText('—')).toHaveLength(1)
+  })
+
+  it('descarga el PDF de una factura aprobada por SIFEN', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).includes('/operaciones/')) {
+        return respuesta([operacion(9, 'PAGADA')])
+      }
+      if (String(url).includes('/facturas/')) {
+        return respuesta([facturaApi(9, 'APROBADA')])
+      }
+      return respuesta([], 200)
+    }))
+    render(<Invoices />)
+
+    const boton = await screen.findByRole('button', {
+      name: 'Descargar factura 001-003-0000100',
+    })
+    expect(boton).toBeEnabled()
+    fireEvent.click(boton)
+
+    expect(pdfMock).toHaveBeenCalledTimes(1)
+    expect(pdfMock).toHaveBeenCalledWith(
+      expect.objectContaining({ numero_completo: '001-003-0000100', estado: 'APROBADA' }),
+      expect.objectContaining({ id: 9 }),
+    )
+  })
+
+  it('no descarga facturas rechazadas, pendientes o sin emitir', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).includes('/operaciones/')) {
+        return respuesta([operacion(9, 'PAGADA'), operacion(8, 'PAGADA'), operacion(7, 'PENDIENTE')])
+      }
+      if (String(url).includes('/facturas/')) {
+        return respuesta([
+          facturaApi(9, 'APROBADA'),
+          facturaApi(8, 'RECHAZADA', { detalle: 'RUC inválido' }),
+        ])
+      }
+      return respuesta([], 200)
+    }))
+    render(<Invoices />)
+
+    const rechazada = await screen.findByRole('button', {
+      name: 'PDF no disponible: SIFEN rechazó la factura: RUC inválido',
+    })
+    const sinEmitir = screen.getByRole('button', {
+      name: 'PDF no disponible: Todavía no se emitió la factura electrónica de esta operación.',
+    })
+
+    expect(rechazada).toBeDisabled()
+    expect(sinEmitir).toBeDisabled()
+    fireEvent.click(rechazada)
+    fireEvent.click(sinEmitir)
+    expect(pdfMock).not.toHaveBeenCalled()
+  })
+
+  it('bloquea también el PDF de una factura emitida sin aprobar', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).includes('/operaciones/')) {
+        return respuesta([operacion(9, 'PAGADA')])
+      }
+      if (String(url).includes('/facturas/')) {
+        return respuesta([facturaApi(9, 'EMITIDA')])
+      }
+      return respuesta([], 200)
+    }))
+    render(<Invoices />)
+
+    const emitida = await screen.findByRole('button', {
+      name: 'PDF no disponible: La factura todavía no está aprobada por SIFEN.',
+    })
+    expect(emitida).toBeDisabled()
+    fireEvent.click(emitida)
+    expect(pdfMock).not.toHaveBeenCalled()
+  })
+
+  it('exporta a CSV solo las filas filtradas', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).includes('/operaciones/')) {
+        return respuesta([
+          operacion(9, 'PAGADA'),
+          operacion(8, 'CANCELADA'),
+          operacion(7, 'PENDIENTE'),
+        ])
+      }
+      if (String(url).includes('/facturas/')) {
+        return respuesta([facturaApi(9, 'APROBADA')])
+      }
+      return respuesta([], 200)
+    }))
+    render(<Invoices />)
+
+    expect(await screen.findByText('F001-0009')).toBeInTheDocument()
+    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'Aprobada' } })
+    await waitFor(() => expect(screen.queryByText('F001-0008')).not.toBeInTheDocument())
+
+    fireEvent.click(screen.getByRole('button', { name: /exportar csv/i }))
+
+    expect(csvMock).toHaveBeenCalledTimes(1)
+    const [filas, filtros] = csvMock.mock.calls[0]
+    expect(filas.map(f => f.operacion.id)).toEqual([9])
+    expect(filas[0].factura?.numero_completo).toBe('001-003-0000100')
+    expect(filtros).toEqual({ estado: 'Aprobada', desde: '', hasta: '' })
+  })
+
+  it('deshabilita la exportación cuando no hay filas', async () => {
+    mockTresEstados()
+    render(<Invoices />)
+
+    expect(await screen.findByText('F001-0009')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Desde'), { target: { value: '2024-02-01' } })
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /exportar csv/i })).toBeDisabled()
+    })
   })
 })
