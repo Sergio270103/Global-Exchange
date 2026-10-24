@@ -18,7 +18,10 @@ Including another URLconf
 """
 from django.urls import include, path
 
+from . import views
+
 urlpatterns = [
+    path('api/health/', views.health_check, name='health-check'),
     path('api/', include('monedas.urls')),
     path('api/', include('clientes.urls')),
     path('api/', include('cotizaciones.urls')),
