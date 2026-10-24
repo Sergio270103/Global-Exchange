@@ -149,9 +149,6 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
         <h1 className="text-[17px] font-semibold text-slate-800" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>
           {title}
         </h1>
-        <div className="text-[11px] text-slate-400 font-medium mt-0.5">
-          Lun, 15 Enero 2024 &nbsp;·&nbsp; 14:32
-        </div>
       </div>
 
       {/* Client selector */}

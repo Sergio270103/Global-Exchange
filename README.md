@@ -3,7 +3,6 @@
 Global-Exchange
 ├─ backend
 │  ├─ clientes
-│  │  ├─ admin.py
 │  │  ├─ apps.py
 │  │  ├─ migrations
 │  │  │  ├─ 0001_initial.py
@@ -24,7 +23,6 @@ Global-Exchange
 │  │  ├─ wsgi.py
 │  │  └─ __init__.py
 │  ├─ cotizaciones
-│  │  ├─ admin.py
 │  │  ├─ apps.py
 │  │  ├─ migrations
 │  │  │  ├─ 0001_initial.py
@@ -38,12 +36,8 @@ Global-Exchange
 │  │  ├─ views.py
 │  │  └─ __init__.py
 │  ├─ docker-compose.yml
-│  ├─ docs
-│  │  └─ CHIA
-│  │     └─ sesion-backend-hito4.md
 │  ├─ manage.py
 │  ├─ monedas
-│  │  ├─ admin.py
 │  │  ├─ apps.py
 │  │  ├─ autenticacion.py
 │  │  ├─ fixtures
@@ -60,7 +54,6 @@ Global-Exchange
 │  │  ├─ views.py
 │  │  └─ __init__.py
 │  ├─ pagos
-│  │  ├─ admin.py
 │  │  ├─ apps.py
 │  │  ├─ migrations
 │  │  │  ├─ 0001_initial.py
@@ -73,6 +66,22 @@ Global-Exchange
 │  │  ├─ views.py
 │  │  └─ __init__.py
 │  └─ requirements.txt
+├─ docs
+│  └─ CHIA
+│     ├─ claude-apertura-cierre-pi79.md
+│     ├─ claude-cancelacion-transaccion.md
+│     ├─ claude-control-cajas-pi44.md
+│     ├─ claude-emitir-factura-pi30.md
+│     ├─ claude-entregas-billetes-pi43.md
+│     ├─ claude-historial-transacciones.md
+│     ├─ claude-saldo-por-divisa-pi78.md
+│     ├─ gemini-dashboard-cajero-rf.md
+│     ├─ gemini-git-flow-configuracion.md
+│     ├─ gemini-keycloak-integracion.md
+│     ├─ gemini-keycloak-verificacion-email-temp.md
+│     ├─ muse-crud-medios-pago-cliente.md
+│     ├─ sesion-backend-hito4.md
+│     └─ sesion-frontend-hito4.md
 └─ frontend
    ├─ .figma
    │  └─ make
@@ -90,13 +99,6 @@ Global-Exchange
    ├─ CLAUDE.md
    ├─ docker-compose.yml
    ├─ docs
-   │  ├─ CHIA
-   │  │  ├─ gemini-dashboard-cajero-rf.md
-   │  │  ├─ gemini-git-flow-configuracion.md
-   │  │  ├─ gemini-keycloak-integracion.md
-   │  │  ├─ gemini-keycloak-verificacion-email-temp.md
-   │  │  ├─ muse-crud-medios-pago-cliente.md
-   │  │  └─ sesion-frontend-hito4.md
    │  └─ PDO
    │     ├─ .nojekyll
    │     ├─ assets
