@@ -22,14 +22,19 @@ from .armado import armar_de_resumido
 from .models import FacturaElectronica
 from .views import FacturaElectronicaViewSet
 
-EMISOR = {
+EMISOR = {  # datos de TEST enviados por soporte de Factura Segura
     'dRucEm': '2595733', 'dDVEmi': '3', 'iTipCont': '1',
     'dNumTim': '02595733', 'dFeIniT': '2025-03-27',
-    'dEst': '001', 'dPunExp': '003', 'dNomEmi': 'EMISOR DE PRUEBA',
-    'dDirEmi': 'CALLE 1', 'dNumCas': '123', 'cDepEmi': '1',
-    'dDesDepEmi': 'CAPITAL', 'cCiuEmi': '1', 'dDesCiuEmi': 'ASUNCION (DISTRITO)',
-    'dTelEmi': '(021)5887000', 'dEmailE': 'emisor@test.com',
-    'cActEco': '66120', 'dDesActEco': 'Actividades de cambio',
+    'dEst': '001', 'dPunExp': '003',
+    'dNomEmi': 'GUILLERMO JACOBO GONZALEZ RODAS',
+    'dDirEmi': 'CAMPUS UNA SAN LORENZO', 'dNumCas': '0',
+    'cDepEmi': '1', 'dDesDepEmi': 'CAPITAL',
+    'cDisEmi': '1', 'dDesDisEmi': 'ASUNCION (DISTRITO)',
+    'cCiuEmi': '1', 'dDesCiuEmi': 'ASUNCION (DISTRITO)',
+    'dTelEmi': '(021)5887000', 'dEmailE': 'ggonzalez@pol.una.py',
+    'cActEco': '62010|74909',
+    'dDesActEco': ('Actividades de programación informática|'
+                   'Otras actividades profesionales, científicas y técnicas n.c.p.'),
 }
 
 

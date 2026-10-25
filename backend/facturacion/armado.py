@@ -16,6 +16,7 @@ Decisiones a confirmar con la profesora (PO) y validar con
 - Medio de pago según ``metodo_pago`` (ver ``TIPO_PAGO``).
 """
 
+import re
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.utils import timezone
@@ -53,6 +54,17 @@ TIPO_PAGO = {
 }
 
 
+def actividades_economicas(emisor: dict) -> list[dict]:
+    """``gActEco`` a partir de códigos y descripciones separados con ``|``."""
+    codigos = [c.strip() for c in str(emisor.get('cActEco', '')).split('|')]
+    descripciones = [d.strip() for d in str(emisor.get('dDesActEco', '')).split('|')]
+    if len(codigos) != len(descripciones):
+        raise DatosIncompletos(
+            'FACTURASEGURA_ACT_ECO_COD y FACTURASEGURA_ACT_ECO deben tener la '
+            'misma cantidad de actividades (separadas con "|").')
+    return [{'cActEco': c, 'dDesActEco': d} for c, d in zip(codigos, descripciones)]
+
+
 def datos_emisor() -> dict:
     """Datos del emisor desde settings; valida que estén completos."""
     emisor = dict(config()['EMISOR'])
@@ -88,12 +100,16 @@ def monto_total_pyg(op: Operacion) -> Decimal:
 
 def datos_receptor(op: Operacion, email: str) -> dict:
     cliente = op.cliente
-    documento = (cliente.documento or '').strip().replace('.', '')
+    original = (cliente.documento or '').strip()
+    # Se aceptan puntos, espacios y guiones dentro del número
+    # (23.456.789-0, 80-012345-6): el último guion separa el DV.
+    documento = re.sub(r'[\s.]', '', original)
     nombre = (cliente.nombre_completo or str(cliente))[:255]
     if '-' in documento:
         ruc, dv = documento.rsplit('-', 1)
-        if not (ruc.isdigit() and dv.isdigit()):
-            raise DatosIncompletos(f'El RUC del cliente "{documento}" no es válido.')
+        ruc = ruc.replace('-', '')
+        if not (ruc.isdigit() and dv.isdigit() and len(dv) == 1):
+            raise DatosIncompletos(f'El RUC del cliente "{original}" no es válido.')
         return {
             'iNatRec': '1',  # contribuyente
             'iTiOpe': '1',  # B2B
@@ -108,7 +124,7 @@ def datos_receptor(op: Operacion, email: str) -> dict:
         }
     if not documento.isdigit():
         raise DatosIncompletos(
-            f'El documento del cliente "{documento}" no es una cédula ni un RUC.')
+            f'El documento del cliente "{original}" no es una cédula ni un RUC.')
     return {
         'iNatRec': '2',  # no contribuyente
         'iTiOpe': '2',  # B2C
@@ -162,14 +178,14 @@ def armar_de_resumido(op: Operacion, numero: str, email: str) -> dict:
         'dNumCas': emisor['dNumCas'],
         'cDepEmi': emisor['cDepEmi'],
         'dDesDepEmi': emisor['dDesDepEmi'],
+        # El distrito es opcional: se envía solo si está configurado.
+        **({'cDisEmi': emisor['cDisEmi'], 'dDesDisEmi': emisor['dDesDisEmi']}
+           if str(emisor.get('cDisEmi', '')).strip() else {}),
         'cCiuEmi': emisor['cCiuEmi'],
         'dDesCiuEmi': emisor['dDesCiuEmi'],
         'dTelEmi': emisor['dTelEmi'],
         'dEmailE': emisor['dEmailE'],
-        'gActEco': [{
-            'cActEco': emisor['cActEco'],
-            'dDesActEco': emisor['dDesActEco'],
-        }],
+        'gActEco': actividades_economicas(emisor),
         **datos_receptor(op, email),
         'iIndPres': '1' if metodo in ('efectivo', 'cash') else '2',
         'iCondOpe': '1',  # contado

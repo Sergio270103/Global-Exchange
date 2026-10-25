@@ -15,6 +15,9 @@
  *   deshabilitadas con el motivo.
  * - **Exportar CSV**: exporta exactamente las filas que pasan los
  *   filtros, con los datos de la factura electrónica.
+ * - **KuDE y XML oficiales**: si la factura es real (no simulada), el PDF
+ *   es el KuDE que genera Factura Segura y se ofrece también el XML
+ *   firmado. Las simuladas siguen con el PDF propio.
  *
  * @module Invoices
  */
@@ -22,6 +25,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { listarComprobantes, type Comprobante } from '@/services/comprobantes'
 import { listarOperaciones, type Operacion } from '@/services/operaciones'
 import {
+  descargarDocumentoOficial,
   descargarFacturaPdf,
   descargarFacturasCsv,
   elegirFactura,
@@ -194,12 +198,37 @@ export default function Invoices() {
     descargarFacturasCsv(filasFiltradas, { estado: filtroEstado, desde, hasta })
   }
 
-  const descargarPdf = (fila: Fila) => {
+  const [descargando, setDescargando] = useState<string | null>(null)
+
+  /** Real: KuDE oficial de Factura Segura. Simulada: PDF propio (PI-86). */
+  const descargarPdf = async (fila: Fila) => {
     if (!fila.factura) return
+    setError('')
     try {
-      descargarFacturaPdf(fila.factura, fila.operacion)
+      if (fila.factura.simulada) {
+        descargarFacturaPdf(fila.factura, fila.operacion)
+        return
+      }
+      setDescargando(`kude-${fila.factura.id}`)
+      await descargarDocumentoOficial(fila.factura, 'kude')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'No se pudo generar el PDF.')
+      setError(err instanceof Error ? err.message : 'No se pudo descargar el PDF.')
+    } finally {
+      setDescargando(null)
+    }
+  }
+
+  /** XML firmado de una factura real aprobada. */
+  const descargarXml = async (fila: Fila) => {
+    if (!fila.factura) return
+    setError('')
+    setDescargando(`xml-${fila.factura.id}`)
+    try {
+      await descargarDocumentoOficial(fila.factura, 'xml')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'No se pudo descargar el XML.')
+    } finally {
+      setDescargando(null)
     }
   }
 
@@ -334,8 +363,9 @@ export default function Invoices() {
                   <td className="px-5 py-4">
                     <button
                       type="button"
-                      onClick={() => descargarPdf(inv)}
-                      disabled={!inv.factura || inv.factura.estado !== 'APROBADA'}
+                      onClick={() => void descargarPdf(inv)}
+                      disabled={!inv.factura || inv.factura.estado !== 'APROBADA'
+                        || descargando === `kude-${inv.factura.id}`}
                       title={motivoPdf(inv.factura)}
                       aria-label={inv.factura && inv.factura.estado === 'APROBADA'
                         ? `Descargar factura ${inv.factura.numero_completo}`
@@ -346,8 +376,19 @@ export default function Invoices() {
                           : 'text-[12px] font-semibold text-slate-400 px-2 py-1 rounded opacity-50 cursor-not-allowed'
                       }
                     >
-                      📄 PDF
+                      {inv.factura && descargando === `kude-${inv.factura.id}` ? '⏳ PDF' : '📄 PDF'}
                     </button>
+                    {inv.factura && inv.factura.estado === 'APROBADA' && !inv.factura.simulada && (
+                      <button
+                        type="button"
+                        onClick={() => void descargarXml(inv)}
+                        disabled={descargando === `xml-${inv.factura.id}`}
+                        aria-label={`Descargar XML ${inv.factura.numero_completo}`}
+                        className="text-[12px] font-semibold text-slate-500 hover:text-blue-600 px-2 py-1 rounded hover:bg-blue-50 transition-colors disabled:opacity-50"
+                      >
+                        {descargando === `xml-${inv.factura.id}` ? '⏳ XML' : '🧾 XML'}
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
