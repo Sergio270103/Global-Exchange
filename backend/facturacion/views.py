@@ -8,11 +8,15 @@
 - ``GET /api/facturas/`` y ``GET /api/facturas/<id>/``: listado y detalle.
 - ``POST /api/facturas/<id>/estado/``: consulta ``get_estado_sifen`` y
   actualiza (aprobada → registra el envío al correo del cliente).
+- ``GET /api/facturas/<id>/kude/`` y ``GET /api/facturas/<id>/xml/``: el
+  PDF oficial (KuDE) y el XML firmado de una factura real aprobada,
+  descargados de Factura Segura (PI-86). El token nunca llega al navegador.
 - ``GET /api/facturas/uso/?operacion=<id>``: "emisiones usadas X de N",
   el correo del cliente para precargar y la última factura de la operación.
 """
 
 from django.db.models import Q
+from django.http import HttpResponse
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -114,6 +118,37 @@ class FacturaElectronicaViewSet(viewsets.ModelViewSet):
             return Response({'detail': str(exc)},
                             status=status.HTTP_400_BAD_REQUEST)
         return Response(FacturaElectronicaSerializer(factura).data)
+
+    def _descargar(self, operation: str, extension: str):
+        factura = self.get_object()
+        if factura.estado != FacturaElectronica.ESTADO_APROBADA:
+            return Response(
+                {'detail': 'Solo se descargan facturas aprobadas por SIFEN.'},
+                status=status.HTTP_400_BAD_REQUEST)
+        if factura.simulada or not factura.cdc:
+            return Response(
+                {'detail': 'Es una factura simulada: no tiene documento oficial.'},
+                status=status.HTTP_400_BAD_REQUEST)
+        ruc = cliente_fs.config()['EMISOR'].get('dRucEm', '')
+        try:
+            contenido = cliente_fs.descargar(operation, ruc, factura.cdc)
+        except cliente_fs.ErrorFacturaSegura as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except cliente_fs.SinRespuesta as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+        tipo, _ = cliente_fs.DESCARGAS[operation]
+        nombre = (factura.numero_completo or factura.cdc) + extension
+        resp = HttpResponse(contenido, content_type=tipo)
+        resp['Content-Disposition'] = f'attachment; filename="{nombre}"'
+        return resp
+
+    @action(detail=True, methods=['get'], url_path='kude')
+    def kude(self, request, pk=None):
+        return self._descargar('dwn_kude', '.pdf')
+
+    @action(detail=True, methods=['get'], url_path='xml')
+    def xml(self, request, pk=None):
+        return self._descargar('dwn_xml', '.xml')
 
     @action(detail=False, methods=['get'], url_path='uso')
     def uso(self, request):

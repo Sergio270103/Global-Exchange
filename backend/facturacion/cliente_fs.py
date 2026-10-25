@@ -169,3 +169,52 @@ def get_estado_sifen(cdc: str, ruc_emisor: str) -> tuple[dict, dict]:
     datos = _llamar('get_estado_sifen', {'CDC': cdc, 'dRucEm': ruc_emisor})
     resultados = datos.get('results') or []
     return (resultados[0] if resultados else {}), datos
+
+
+#: Descargas de un DE aprobado (manual: "operation dwn_kude / dwn_xml").
+DESCARGAS = {
+    'dwn_kude': ('application/pdf', b'%PDF'),
+    'dwn_xml': ('application/xml', b'<'),
+}
+
+
+def descargar(operation: str, ruc_emisor: str, cdc: str) -> bytes:
+    """``dwn_kude`` / ``dwn_xml``: archivo oficial del DE. Solo descarga.
+
+    ``GET {URL}/{operation}/{dRucEm}/{CDC}`` con el ``Authentication-Token``
+    del ESI. No genera ni consume ningún número.
+    """
+    if operation not in DESCARGAS:
+        raise ValueError(f'Operación de descarga desconocida: {operation}')
+    if modo_simulado():
+        raise ErrorFacturaSegura(
+            'En modo simulado no hay documento oficial para descargar.')
+    cfg = config()
+    if not cfg.get('TOKEN'):
+        raise ErrorFacturaSegura(
+            'Falta FACTURASEGURA_TOKEN en el .env del backend.')
+    url = f"{cfg['URL'].rstrip('/')}/{operation}/{ruc_emisor}/{cdc}"
+    try:
+        resp = requests.get(
+            url, headers={'Authentication-Token': cfg['TOKEN']},
+            timeout=cfg.get('TIMEOUT', 40))
+    except (requests.Timeout, requests.ConnectionError) as exc:
+        raise SinRespuesta(f'Sin respuesta de Factura Segura: {exc}') from exc
+    if resp.status_code in (401, 403):
+        raise ErrorFacturaSegura(
+            'Factura Segura rechazó el token (sin autorización).')
+    if resp.status_code >= 500:
+        raise SinRespuesta(f'Factura Segura respondió HTTP {resp.status_code}.')
+    _, firma = DESCARGAS[operation]
+    contenido = resp.content or b''
+    if resp.status_code != 200 or not contenido.lstrip().startswith(firma):
+        # Ante un error la API responde JSON con "code" y "description".
+        mensaje = 'Factura Segura no devolvió el archivo.'
+        try:
+            datos = resp.json()
+            if isinstance(datos, dict) and datos.get('description'):
+                mensaje = str(datos['description'])
+        except ValueError:
+            pass
+        raise ErrorFacturaSegura(mensaje)
+    return contenido

@@ -12,6 +12,9 @@
  * - `descargarFacturaPdf()`: PDF por fila, solo si SIFEN la aprobó; el
  *   archivo se llama `001-003-0000100.pdf`, con el número real que
  *   devolvió el servicio de facturación.
+ * - `descargarDocumentoOficial()`: el KuDE (PDF) o el XML firmado de una
+ *   factura **real** aprobada, tal como lo genera Factura Segura
+ *   (`GET /api/facturas/{id}/kude|xml/`). Las simuladas usan el PDF propio.
  * - `descargarFacturasCsv()`: exporta el listado filtrado a CSV
  *   compatible con Excel en español (`;`, coma decimal y BOM UTF-8).
  *
@@ -21,7 +24,7 @@
  * @module services/facturasDescarga
  */
 import { jsPDF } from 'jspdf'
-import { apiFetch } from '@/services/api'
+import { apiDescargar, apiFetch } from '@/services/api'
 import {
   ETIQUETA_ESTADO_FACTURA,
   type EstadoFactura,
@@ -217,6 +220,43 @@ export function descargarFacturaPdf(
   }
 
   doc.save(nombreArchivoFactura(factura))
+}
+
+/** Documentos oficiales que guarda Factura Segura para cada DE aprobado. */
+export type DocumentoOficial = 'kude' | 'xml'
+
+/** Guarda un `Blob` como archivo en la carpeta de descargas del navegador. */
+export function guardarArchivo(contenido: Blob, nombre: string): void {
+  const url = URL.createObjectURL(contenido)
+  const enlace = document.createElement('a')
+  enlace.href = url
+  enlace.download = nombre
+  document.body.appendChild(enlace)
+  enlace.click()
+  enlace.remove()
+  URL.revokeObjectURL(url)
+}
+
+/**
+ * Descarga el KuDE (PDF oficial) o el XML firmado de una factura real
+ * aprobada. El backend lo pide a Factura Segura con el token del ESI.
+ *
+ * @throws Error si la factura no está aprobada o es simulada, o el error
+ *   del backend (`ApiError`) si Factura Segura no devolvió el archivo.
+ */
+export async function descargarDocumentoOficial(
+  factura: FacturaElectronicaCompleta,
+  documento: DocumentoOficial = 'kude',
+): Promise<void> {
+  if (factura.estado !== 'APROBADA') {
+    throw new Error('Solo se descargan facturas aprobadas por SIFEN.')
+  }
+  if (factura.simulada) {
+    throw new Error('Es una factura simulada: no tiene documento oficial.')
+  }
+  const contenido = await apiDescargar(`/facturas/${factura.id}/${documento}/`)
+  const base = nombreArchivoFactura(factura).replace(/\.pdf$/, '')
+  guardarArchivo(contenido, `${base}.${documento === 'kude' ? 'pdf' : 'xml'}`)
 }
 
 // ----------------------------------------------------------------------
