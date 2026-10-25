@@ -27,6 +27,18 @@ El proyecto se puede levantar con un solo comando gracias a
 - **Producción**: todo corre en contenedores Docker listos para un servidor
   (VPS, Render, Railway, etc.).
 
+Comandos disponibles:
+
+| Comando | Descripción |
+|---|---|
+| `./scripts/deploy.sh dev` / `.\scripts\deploy.ps1 dev` | Levanta todo en localhost |
+| `./scripts/deploy.sh prod` / `.\scripts\deploy.ps1 prod` | Levanta los contenedores de producción |
+| `./scripts/deploy.sh check` / `.\scripts\deploy.ps1 check` | Verifica herramientas y archivos |
+| `./scripts/deploy.sh stop` / `.\scripts\deploy.ps1 stop` | Detiene procesos y contenedores |
+
+En PowerShell también podés usar `-DryRun` para ver qué haría sin ejecutar nada:
+`.\scripts\deploy.ps1 prod -DryRun`.
+
 No se paga nada específico para desarrollo. Para producción puedes usar
 servicios gratuitos o de bajo costo (Render, Railway, etc.).
 
@@ -67,12 +79,31 @@ En Windows (PowerShell):
 
 Esto hará lo siguiente:
 
-1. Levantará PostgreSQL y Keycloak en contenedores Docker.
-2. Aplicará las migraciones de Django.
-3. Arrancará el backend en `http://localhost:8000`.
-4. Arrancará el frontend en `http://localhost:5173`.
+1. Levantará PostgreSQL y Keycloak en contenedores Docker y esperará a que
+   PostgreSQL esté listo.
+2. Verificará las dependencias de Python (usando `backend/venv` si existe) y
+   de Node, instalándolas si faltan.
+3. Aplicará las migraciones de Django.
+4. Arrancará el backend en `http://localhost:8000`.
+5. Arrancará el frontend en `http://localhost:5173` y verificará que ambos
+   respondan.
 
 Ya puedes acceder a la aplicación.
+
+Los logs de los procesos en segundo plano quedan en `.run/`
+(`backend.out.log`, `frontend.out.log`, etc.).
+
+Para detener todo:
+
+```bash
+./scripts/deploy.sh stop
+```
+
+En Windows:
+
+```powershell
+.\scripts\deploy.ps1 stop
+```
 
 ---
 
@@ -98,11 +129,12 @@ Copia la plantilla de variables de entorno:
 
 ```bash
 cp backend/.env.prod.example backend/.env
-cp frontend/.env.example frontend/.env
+cp frontend/.env.prod.example frontend/.env
 ```
 
 Edita `backend/.env` y `frontend/.env` con tus valores reales
-(contraseñas, URLs de producción, etc.).
+(contraseñas, URLs de producción, etc.). En el frontend, `VITE_API_URL=/api`
+hace que nginx reenvíe las llamadas al backend dentro de la misma red Docker.
 
 ### Paso 4: Ejecuta el despliegue
 
@@ -112,9 +144,18 @@ Edita `backend/.env` y `frontend/.env` con tus valores reales
 
 Esto hará lo siguiente:
 
-1. Construirá e iniciará los contenedores de producción (backend + base de datos + frontend con nginx).
+1. Construirá e iniciará los contenedores de producción: base de datos,
+   backend (gunicorn) y frontend (nginx).
 2. Aplicará las migraciones de Django.
 3. Verificará que el backend responde en `/api/health/`.
+
+Al terminar:
+
+- Frontend: `http://localhost:8081`
+- Backend: `http://localhost:8000`
+- PostgreSQL: `localhost:5433`
+
+Para detener los contenedores: `./scripts/deploy.sh stop`.
 
 ### Paso 5: Configura el acceso público
 
@@ -146,10 +187,13 @@ comandos de build y start que aparecen en los Dockerfile.
 
 | Variable | Descripción | Ejemplo |
 |---|---|---|
-| `VITE_API_URL` | URL del backend | `https://tu-backend.onrender.com/api` |
+| `VITE_API_URL` | URL del backend (o `/api` en producción con nginx) | `https://tu-backend.onrender.com/api` |
 | `VITE_KEYCLOAK_URL` | URL de Keycloak | `http://localhost:8080` |
 | `VITE_KEYCLOAK_REALM` | Realm de Keycloak | `Global-Exchange` |
 | `VITE_KEYCLOAK_CLIENT_ID` | Client ID | `global-exchange-frontend` |
+
+En producción usá `frontend/.env.prod.example` como plantilla
+(`VITE_API_URL=/api`).
 
 ---
 
@@ -178,13 +222,23 @@ Para usar el modo real:
 
 | Problema | Posible causa | Solución |
 |---|---|---|
-| El backend no levanta | Puerto 8000 ocupado | Cambia el puerto o libera el proceso |
-| Migraciones fallan | Base de datos no accesible | Verifica que Postgres esté corriendo |
+| El backend no levanta | Puerto 8000 ocupado | El script lo omite si ya está en uso; revisá `.run/backend.out.log` |
+| El frontend no levanta | Puerto 5173 ocupado | El script lo omite si ya está en uso; revisá `.run/frontend.out.log` |
+| Migraciones fallan | Base de datos no accesible | Verifica que Postgres esté corriendo (`docker ps`) |
 | El frontend no carga la API | `VITE_API_URL` incorrecto | Revisa `frontend/.env` |
-| Health check falla | Backend no respondió | Revisa los logs: `docker logs global-exchange-backend-prod` |
+| Health check falla | Backend no respondió | Revisa `.run/backend.out.log` o `docker logs global-exchange-backend-prod` |
 | Docker no encontrado | Docker no instalado | Instala Docker y Docker Compose |
+| Quedó algo corriendo | Proceso o contenedor previo | Ejecutá `./scripts/deploy.sh stop` |
 
-Ver logs del backend:
+Ver logs en desarrollo:
+
+```bash
+# Windows PowerShell
+Get-Content .run\backend.out.log -Tail 50
+Get-Content .run\frontend.out.log -Tail 50
+```
+
+Ver logs del backend en producción:
 
 ```bash
 docker logs global-exchange-backend-prod
@@ -225,7 +279,15 @@ cambios mínimos (no modifican la lógica de negocio):
    y `whitenoise` (servicio de archivos estáticos).
 3. **`backend/core/views.py`** y **`backend/core/urls.py`**: se agregó el
    endpoint `GET /api/health/` para el health check de Docker.
-4. Archivos nuevos de despliegue (Dockerfiles, docker-compose, scripts,
+4. **`backend/Dockerfile`**: se usa `python:3.13-slim` (Django 6.1 requiere
+   Python 3.12 o superior).
+5. **`backend/docker-compose.prod.yml`**: se agregó el servicio `frontend`
+   (nginx) a la misma red que el backend, en el puerto `8081`.
+6. **`frontend/nginx.conf`**: el proxy `/api/` apunta al servicio `web`
+   del compose de producción.
+7. **`frontend/.env.prod.example`** y archivos `.dockerignore`: plantilla de
+   entorno de producción y contexto de build más liviano.
+8. Archivos nuevos de despliegue (Dockerfiles, docker-compose, scripts,
    documentación). No afectan el funcionamiento diario de la aplicación.
 
 ---

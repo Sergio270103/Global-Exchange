@@ -80,6 +80,16 @@ services:
     volumes:
       - staticfiles:/app/staticfiles
 
+  frontend:
+    build:
+      context: ../frontend
+    container_name: global-exchange-frontend-prod
+    restart: unless-stopped
+    depends_on:
+      - web
+    ports:
+      - "8081:80"
+
 volumes:
   pgdata_prod:
   staticfiles:

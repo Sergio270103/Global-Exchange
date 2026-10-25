@@ -4,6 +4,7 @@ build/
 .cache/
 .env*
 !.env.example
+!.env.prod.example
 .vite/
 vite.config.*.timestamp-*
 *.tsbuildinfo
@@ -12,6 +13,7 @@ logs/
 *.log
 .claude-replay.*
 .tmp-*
+.run/
 
 coverage/
 
