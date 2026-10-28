@@ -291,9 +291,9 @@ class EmisionRealMockeadaTest(FacturacionTestBase):
         self.assertEqual(resp.data['estado'], 'VERIFICAR')
         self.assertEqual(resp.data['numero'], '0000100')
         self.assertIn('NO reintentar', resp.data['detalle'])
-        # Bloquea otra emisión de la misma operación y el número cuenta.
+        # PI-85: reserva el número para evitar duplicados, pero no suma al consumo.
         self.assertEqual(self.emitir(op).status_code, 400)
-        self.assertEqual(self.ver_uso(op).data['usadas'], 1)
+        self.assertEqual(self.ver_uso(op).data['usadas'], 0)
         self.assertEqual(red.call_count, 2)
 
     def test_rechazo_sifen_permite_reemitir(self, red):
