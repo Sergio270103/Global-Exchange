@@ -111,3 +111,10 @@ export async function consultarEstadoFactura(id: number): Promise<FacturaElectro
 }
 
 export { ApiError }
+
+
+export async function gestionarFactura(id: number, accion: 'reintentar' | 'reenviar', email: string): Promise<FacturaElectronica> {
+  return mapear(await apiFetch<Record<string, unknown>>(`/facturas/${id}/${accion}/`, {
+    method: 'POST', body: JSON.stringify({ email }),
+  }))
+}

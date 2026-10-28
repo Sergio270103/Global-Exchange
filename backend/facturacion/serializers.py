@@ -2,16 +2,23 @@
 
 from rest_framework import serializers
 
-from .models import FacturaElectronica
+from .models import FacturaElectronica, IntentoFactura
+
+
+class IntentoFacturaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = IntentoFactura
+        fields = ['accion', 'usuario_sub', 'usuario_nombre', 'fecha', 'email', 'resultado']
 
 
 class FacturaElectronicaSerializer(serializers.ModelSerializer):
+    intentos = IntentoFacturaSerializer(many=True, read_only=True)
     cliente_nombre = serializers.SerializerMethodField()
 
     class Meta:
         model = FacturaElectronica
         fields = [
-            'id', 'operacion', 'cliente_nombre', 'simulada', 'numero',
+            'intentos', 'consume_emision', 'id', 'operacion', 'cliente_nombre', 'simulada', 'numero',
             'numero_completo', 'cdc', 'estado', 'total', 'email_destino',
             'detalle', 'respuesta_servicio', 'envio_fecha',
             'envio_destinatario', 'envio_resultado', 'emitida_por_nombre',
