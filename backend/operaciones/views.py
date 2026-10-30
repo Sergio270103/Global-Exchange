@@ -355,6 +355,26 @@ class OperacionViewSet(viewsets.ModelViewSet):
     # ------------------------------------------------------------------
     # Resumen agregado para el dashboard del administrador.
     # ------------------------------------------------------------------
+    @action(detail=False, methods=['get'], url_path='evolucion')
+    def evolucion(self, request):
+        """Histórico completo y secuencial de montos de compra/venta en PYG."""
+        qs = self.get_queryset().filter(estado=Operacion.ESTADO_PAGADA).order_by('fecha_creacion', 'pk')
+        puntos = []
+        for op in qs:
+            monto = op.monto_recibido
+            if op.moneda_destino.codigo != 'PYG':
+                tasa = op.tasa_destino
+                if not tasa:
+                    continue
+                monto *= tasa
+            puntos.append({
+                'secuencia': len(puntos) + 1,
+                'compra': float(round(monto)) if op.tipo_operacion == 'COMPRA' else None,
+                'venta': float(round(monto)) if op.tipo_operacion == 'VENTA' else None,
+                'fecha': op.fecha_creacion.isoformat(),
+            })
+        return Response(puntos)
+
     @action(detail=False, methods=['get'], url_path='resumen')
     def resumen(self, request):
         """Agregado de operaciones PAGADA para el dashboard admin.

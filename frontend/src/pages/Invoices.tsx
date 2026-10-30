@@ -19,6 +19,10 @@
  *   es el KuDE que genera Factura Segura y se ofrece también el XML
  *   firmado. Las simuladas siguen con el PDF propio.
  *
+ * La gestión SIFEN (PI-28/PI-30) se abre con **Gestionar** solo para
+ * administradores y cajeros: anulación, inutilización y nota de crédito.
+ * El backend valida además que el cajero sea el emisor de la factura.
+ *
  * @module Invoices
  */
 import { useCallback, useEffect, useState } from 'react'
@@ -34,8 +38,10 @@ import {
   type FacturaElectronicaCompleta,
 } from '@/services/facturasDescarga'
 import { ETIQUETA_MOTIVO } from '@/services/historial'
+import OperacionesFactura from '@/components/OperacionesFactura'
+import type { AuthUser } from '@/types'
 
-type EstadoFactura = 'Emitida' | 'Aprobada' | 'Rechazada'
+type EstadoFactura = 'Emitida' | 'Aprobada' | 'Rechazada' | 'Anulada' | 'Devuelta'
 
 /** Estados visibles en el filtro de facturas. */
 type FiltroEstadoFactura = 'TODAS' | EstadoFactura
@@ -57,15 +63,24 @@ interface Fila {
 }
 
 const statusStyle: Record<EstadoFactura, string> = {
+  Anulada: 'Anulada', Devuelta: 'Devuelta',
   Emitida: 'bg-amber-50 text-amber-700 border-amber-100',
   Aprobada: 'bg-emerald-50 text-emerald-700 border-emerald-100',
   Rechazada: 'bg-red-50 text-red-600 border-red-100',
 }
 
-const ESTADOS_FILTRO: FiltroEstadoFactura[] = ['TODAS', 'Emitida', 'Aprobada', 'Rechazada']
+const estadoEventoStyle: Record<string, string> = {
+  PENDIENTE: 'bg-amber-50 text-amber-700 border-amber-200',
+  APROBADA: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+  RECHAZADA: 'bg-rose-50 text-rose-700 border-rose-200',
+  ERROR: 'bg-rose-50 text-rose-700 border-rose-200',
+}
+
+const ESTADOS_FILTRO: FiltroEstadoFactura[] = ['TODAS', 'Emitida', 'Aprobada', 'Rechazada', 'Anulada', 'Devuelta']
 
 const LABEL_ESTADO: Record<FiltroEstadoFactura, string> = {
   TODAS: 'Todas',
+  Anulada: 'Anulada', Devuelta: 'Devuelta',
   Emitida: 'Emitida',
   Aprobada: 'Aprobada',
   Rechazada: 'Rechazada',
@@ -118,7 +133,7 @@ function aFila(
   factura: FacturaElectronicaCompleta | null,
 ): Fila {
   const fecha = new Date(o.fecha_creacion)
-  const estado = estadoFactura(o, comp)
+  const estado: EstadoFactura = factura?.estado === 'ANULADA' ? 'Anulada' : factura?.estado === 'DEVUELTA' ? 'Devuelta' : factura?.estado === 'APROBADA' ? 'Aprobada' : factura ? (factura.estado === 'RECHAZADA' || factura.estado === 'ERROR' ? 'Rechazada' : 'Emitida') : estadoFactura(o, comp)
   return {
     numero: `F001-${String(o.id).padStart(4, '0')}`,
     fecha: Number.isNaN(fecha.getTime())
@@ -135,7 +150,7 @@ function aFila(
   }
 }
 
-export default function Invoices() {
+export default function Invoices({ auth }: { auth?: AuthUser | null }) {
   const [filas, setFilas] = useState<Fila[]>([])
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState('')
@@ -143,6 +158,8 @@ export default function Invoices() {
   const [filtroEstado, setFiltroEstado] = useState<FiltroEstadoFactura>('TODAS')
   const [desde, setDesde] = useState('')
   const [hasta, setHasta] = useState('')
+  // El backend valida además que el cajero sea quien emitió la factura.
+  const puedeGestionar = auth?.role === 'admin' || auth?.role === 'cashier'
 
   const cargar = useCallback(async () => {
     setError('')
@@ -153,7 +170,7 @@ export default function Invoices() {
         listarComprobantes().catch(() => [] as Comprobante[]),
         // Lo mismo con las facturas de PI-30: si fallan, los PDF quedan
         // deshabilitados pero la pantalla sigue funcionando.
-        listarFacturasElectronicas().catch(() => [] as FacturaElectronicaCompleta[]),
+        listarFacturasElectronicas(),
       ])
       const comprobantePorOperacion = new Map<number, Comprobante>()
       for (const c of comps) comprobantePorOperacion.set(c.operacion, c)
@@ -174,6 +191,12 @@ export default function Invoices() {
       setCargando(false)
     })()
   }, [cargar])
+
+  useEffect(() => {
+    if (!filas.some(f => f.factura && (f.factura.pdf_pendiente || f.factura.estado_cancelacion === 'PENDIENTE' || f.factura.notas_credito?.some(n => ['EMITIDA', 'VERIFICAR'].includes(n.estado))))) return
+    const timer = window.setTimeout(() => { void cargar().finally(() => setFilas(prev => [...prev])) }, 10000)
+    return () => window.clearTimeout(timer)
+  }, [filas, cargar])
 
   /** Refresca sin recargar la página ni vaciar la tabla (PI-28). */
   const refrescar = async () => {
@@ -330,7 +353,7 @@ export default function Invoices() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-slate-100 bg-slate-50/60">
-                {['Número', 'Fecha', 'Cliente', 'Monto (PYG)', 'Transacción', 'Estado', 'Nº Factura FE', 'Acciones'].map(h => (
+                {['Número', 'Fecha', 'Cliente', 'Monto (PYG)', 'Transacción', 'Estado', 'Nº Factura FE', 'Operaciones', 'Acciones'].map(h => (
                   <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -352,6 +375,23 @@ export default function Invoices() {
                     {inv.estado === 'Rechazada' && inv.motivo && (
                       <div className="mt-1.5 text-[11px] text-slate-400 font-medium">{inv.motivo}</div>
                     )}
+                    {inv.factura?.estado_cancelacion && (
+                      <div className={`mt-1.5 inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded border ${estadoEventoStyle[inv.factura.estado_cancelacion] ?? 'bg-slate-50 text-slate-500 border-slate-200'}`}>
+                        Cancelación: {inv.factura.estado_cancelacion.toLowerCase()}
+                      </div>
+                    )}
+                    {inv.factura?.estado_inutilizacion && (
+                      <div className={`mt-1.5 inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded border ${estadoEventoStyle[inv.factura.estado_inutilizacion] ?? 'bg-slate-50 text-slate-500 border-slate-200'}`}>
+                        Inutilización: {inv.factura.estado_inutilizacion.toLowerCase()}
+                      </div>
+                    )}
+                    {inv.factura?.notas_credito && inv.factura.notas_credito.length > 0 && (
+                      <div className="mt-1.5 text-[10px] text-slate-500">
+                        {inv.factura.notas_credito.length === 1
+                          ? `NC ${inv.factura.notas_credito[0].numero_completo}: ${inv.factura.notas_credito[0].estado.toLowerCase()}`
+                          : `${inv.factura.notas_credito.length} notas de crédito`}
+                      </div>
+                    )}
                   </td>
                   <td className="px-5 py-4">
                     {inv.factura ? (
@@ -361,10 +401,16 @@ export default function Invoices() {
                     )}
                   </td>
                   <td className="px-5 py-4">
+                    <span>{inv.factura?.tipo_operacion_display ?? (inv.operacion.tipo_operacion === 'COMPRA' ? 'Compra' : 'Venta')}</span>
+                    {puedeGestionar && inv.factura && inv.factura.estado === 'APROBADA' && (
+                      <OperacionesFactura factura={inv.factura} onActualizada={refrescar} />
+                    )}
+                  </td>
+                  <td className="px-5 py-4">
                     <button
                       type="button"
                       onClick={() => void descargarPdf(inv)}
-                      disabled={!inv.factura || inv.factura.estado !== 'APROBADA'
+                      disabled={!inv.factura || (!['APROBADA', 'ANULADA', 'DEVUELTA'].includes(inv.factura.estado) || inv.factura.pdf_pendiente)
                         || descargando === `kude-${inv.factura.id}`}
                       title={motivoPdf(inv.factura)}
                       aria-label={inv.factura && inv.factura.estado === 'APROBADA'
@@ -389,6 +435,8 @@ export default function Invoices() {
                         {descargando === `xml-${inv.factura.id}` ? '⏳ XML' : '🧾 XML'}
                       </button>
                     )}
+                  </td>
+                  <td className="px-5 py-4">
                   </td>
                 </tr>
               ))}

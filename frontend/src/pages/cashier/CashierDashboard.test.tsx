@@ -636,15 +636,9 @@ describe('CashierDashboard historial (top 10, Ver todo y anulación)', () => {
     expect(navigate).toHaveBeenCalledWith('transactions')
   })
 
-  it('la anulación usa el endpoint y marca Anulada desde el servidor', async () => {
-    const user = userEvent.setup()
+  it('ofrece únicamente reimprimir en el historial', async () => {
     render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
-    await user.click((await screen.findAllByRole('button', { name: /Anulación/ }))[0])
-    expect(await screen.findByText(/anulado y revertido en caja/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Anulada' })).toBeDisabled()
-    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>
-    const anular = fetchMock.mock.calls.filter(([llamada, datos]) =>
-      String(llamada).includes('/anular/') && (datos as RequestInit).method === 'POST')
-    expect(anular).toHaveLength(1)
+    expect((await screen.findAllByRole('button', { name: /Reimprimir/ })).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: /Anulación/ })).not.toBeInTheDocument()
   })
 })

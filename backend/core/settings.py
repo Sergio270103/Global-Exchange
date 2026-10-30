@@ -192,9 +192,17 @@ FACTURASEGURA = {
         'https://apitest.facturasegura.com.py/misife00/v1/esi'),
     'TOKEN': os.getenv('FACTURASEGURA_TOKEN', ''),
     'TIMEOUT': int(os.getenv('FACTURASEGURA_TIMEOUT', '40')),
+    # URL opcional del login para renovar el token del ESI.
+    'LOGIN_URL': os.getenv('FACTURASEGURA_LOGIN_URL', ''),
     # Rango de dNumDoc asignado por Factura Segura (inclusive).
     'NUMERO_DESDE': int(os.getenv('FACTURASEGURA_NUMERO_DESDE', '100')),
     'NUMERO_HASTA': int(os.getenv('FACTURASEGURA_NUMERO_HASTA', '111')),
+    # Rango propio para notas de crédito (iTiDE=5).
+    'NC_NUMERO_DESDE': int(os.getenv('FACTURASEGURA_NC_NUMERO_DESDE', '13')),
+    'NC_NUMERO_HASTA': int(os.getenv('FACTURASEGURA_NC_NUMERO_HASTA', '24')),
+    # Horas desde la emisión en que SIFEN admite cancelar (0 = sin límite).
+    'CANCELACION_VENTANA_HORAS': int(
+        os.getenv('FACTURASEGURA_CANCELACION_VENTANA_HORAS', '48')),
     # Tratamiento de IVA del ítem facturado: 10, 5 o 0 (exento).
     'IVA_TASA': int(os.getenv('FACTURASEGURA_IVA_TASA', '10')),
     'EMISOR': {
@@ -222,3 +230,4 @@ FACTURASEGURA = {
         'dDesActEco': os.getenv('FACTURASEGURA_ACT_ECO', ''),
     },
 }
+MEDIA_ROOT = os.getenv('DJANGO_MEDIA_ROOT', str(BASE_DIR / 'media'))

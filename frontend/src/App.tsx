@@ -169,7 +169,7 @@ export default function App() {
       case 'simulator':
         return <Simulator navigate={navigate} currentClient={currentClient} />
       case 'invoices':
-        return <Invoices />
+        return <Invoices auth={auth} />
       case 'payments':
       case 'admin-payments':
         return <Payments />

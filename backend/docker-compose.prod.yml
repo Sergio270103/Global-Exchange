@@ -79,6 +79,7 @@ services:
       retries: 5
     volumes:
       - staticfiles:/app/staticfiles
+      - media:/app/media
 
   frontend:
     build:
@@ -92,4 +93,5 @@ services:
 
 volumes:
   pgdata_prod:
+  media:
   staticfiles:

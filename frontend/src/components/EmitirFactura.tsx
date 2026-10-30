@@ -27,6 +27,7 @@ interface Props {
 }
 
 const ESTILO_ESTADO: Record<EstadoFactura, string> = {
+  ANULADA: 'bg-slate-100 text-slate-600', DEVUELTA: 'bg-blue-100 text-blue-600',
   ERROR: 'bg-rose-50 text-rose-700 border-rose-200',
   VERIFICAR: 'bg-amber-50 text-amber-700 border-amber-200',
   EMITIDA: 'bg-sky-50 text-sky-700 border-sky-200',
