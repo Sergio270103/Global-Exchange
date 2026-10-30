@@ -214,6 +214,37 @@ Para usar el modo real:
 3. Completa los datos del emisor (`FACTURASEGURA_RUC`, `FACTURASEGURA_NOMBRE`, etc.).
 4. Confirma con la cátedra que los datos del emisor están correctos antes de emitir facturas reales.
 
+### Anulación, inutilización y notas de crédito
+
+Además de emitir, el backend permite gestionar un comprobante desde
+`POST /api/facturas/{id}/...`:
+
+| Acción | Endpoint | Cuándo |
+|---|---|---|
+| Anular | `cancelar/` y `cancelacion/estado/` | Factura `APROBADA`, dentro de la ventana de cancelación |
+| Inutilizar | `inutilizar/` e `inutilizacion/estado/` | Número consumido por un DE `RECHAZADA`, `ERROR` o `VERIFICAR` |
+| Nota de crédito | `nota-credito/` | Factura `APROBADA`, sin cancelación aprobada ni NC activa |
+
+Las notas de crédito se consultan en `GET /api/notas-credito/` y tienen su
+propio estado en `POST /api/notas-credito/{id}/estado/`. El KuDE y el XML
+oficiales se descargan con `GET /api/notas-credito/{id}/kude|xml/`.
+
+Variables nuevas:
+
+- `FACTURASEGURA_NC_NUMERO_DESDE` / `FACTURASEGURA_NC_NUMERO_HASTA`: rango
+  propio de NC (por defecto `13`–`24`).
+- `FACTURASEGURA_CANCELACION_VENTANA_HORAS`: horas desde la emisión en que
+  se permite cancelar (por defecto `48`; `0` desactiva el control local).
+- `FACTURASEGURA_LOGIN_URL`: opcional; si no se define se deriva de
+  `FACTURASEGURA_URL` para `/login?include_auth_token`.
+
+El estado fiscal de la factura pasa a `ANULADA` después de una
+cancelación; el resultado se guarda en `estado_cancelacion` y en el
+historial de `EventoSIFEN`. La anulación fiscal **no** revierte la caja ni
+la operación interna: para eso se usa el flujo administrativo de
+cancelación de la operación. Una NC tampoco revierte la caja
+automáticamente.
+
 **No se commiteen tokens ni claves reales en el repositorio.**
 
 ---
@@ -299,3 +330,24 @@ y verifica que todas las variables de entorno estén configuradas
 correctamente. Para dudas sobre el dominio del negocio (facturación,
 operaciones, clientes), consulta la documentación CHIA en
 `docs/CHIA/`.
+
+## Gestión de facturas: estados finales y PDF
+
+Aplicar las migraciones de facturación antes de iniciar el backend:
+`python manage.py migrate`.
+La cancelación aprobada cambia la factura a ANULADA; una NC total aprobada
+la cambia a DEVUELTA. Estas acciones no revierten caja ni billeteras.
+El cajero solo gestiona facturas emitidas por él; el administrador, todas.
+La NC utiliza el motivo fijo 5 y el correo de la factura original.
+
+El listado autenticado reconcilia las gestiones pendientes visibles al usuario.
+La interfaz vuelve a consultar cada diez segundos mientras haya pendientes;
+al cerrar la página no queda un trabajador en segundo plano.
+El endpoint GET /api/facturas/{id}/gestion/estado/ permite consultar una sola.
+Un rechazo conserva la factura aprobada y muestra el resultado del evento.
+
+Los PDF actualizados se guardan atómicamente en MEDIA_ROOT/facturas/{id}.pdf.
+DJANGO_MEDIA_ROOT permite cambiar la ubicación; Docker usa el volumen media.
+Si falla la descarga, se conserva el estado fiscal y se bloquea el PDF anterior
+hasta que una consulta posterior complete la descarga. Incluir este volumen
+en los backups. Los archivos se sirven por el endpoint autenticado de KuDE.

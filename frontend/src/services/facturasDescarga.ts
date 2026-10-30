@@ -15,6 +15,8 @@
  * - `descargarDocumentoOficial()`: el KuDE (PDF) o el XML firmado de una
  *   factura **real** aprobada, tal como lo genera Factura Segura
  *   (`GET /api/facturas/{id}/kude|xml/`). Las simuladas usan el PDF propio.
+ * - `descargarNotaCreditoOficial()`: KuDE/XML de una nota de crédito real
+ *   aprobada (`GET /api/notas-credito/{id}/kude|xml/`).
  * - `descargarFacturasCsv()`: exporta el listado filtrado a CSV
  *   compatible con Excel en español (`;`, coma decimal y BOM UTF-8).
  *
@@ -27,14 +29,52 @@ import { jsPDF } from 'jspdf'
 import { apiDescargar, apiFetch } from '@/services/api'
 import {
   ETIQUETA_ESTADO_FACTURA,
+  type EstadoEvento,
   type EstadoFactura,
+  type EventoSIFEN,
   type FacturaElectronica,
+  type NotaCreditoResumen,
 } from '@/services/facturas'
 import type { Operacion } from '@/services/operaciones'
 
 /** Factura electrónica con el emisor (el serializer de PI-30 lo incluye). */
 export interface FacturaElectronicaCompleta extends FacturaElectronica {
   emitida_por_nombre: string
+}
+
+function normalizarEvento(e: Record<string, unknown>): EventoSIFEN {
+  return {
+    id: Number(e.id),
+    factura: Number(e.factura),
+    tipo: String(e.tipo) as EventoSIFEN['tipo'],
+    tipo_display: String(e.tipo_display ?? ''),
+    estado: String(e.estado ?? 'PENDIENTE') as EventoSIFEN['estado'],
+    estado_display: String(e.estado_display ?? ''),
+    cdc_evento: String(e.cdc_evento ?? ''),
+    motivo: String(e.motivo ?? ''),
+    solicitado_por_nombre: String(e.solicitado_por_nombre ?? ''),
+    solicitado: String(e.solicitado ?? ''),
+    consultado: e.consultado == null ? null : String(e.consultado),
+    detalle: String(e.detalle ?? ''),
+    respuesta_solicitud: (e.respuesta_solicitud as Record<string, unknown>) ?? {},
+    respuesta_consulta: (e.respuesta_consulta as Record<string, unknown>) ?? {},
+  }
+}
+
+function normalizarResumenNc(n: Record<string, unknown>): NotaCreditoResumen {
+  return {
+    id: Number(n.id),
+    numero: n.numero == null ? null : String(n.numero),
+    numero_completo: String(n.numero_completo ?? ''),
+    cdc: String(n.cdc ?? ''),
+    estado: String(n.estado ?? 'ERROR') as EstadoFactura,
+    total: Number(n.total ?? 0),
+    motivo: String(n.motivo ?? ''),
+    motivo_display: String(n.motivo_display ?? ''),
+    detalle: String(n.detalle ?? ''),
+    creada: String(n.creada ?? ''),
+    simulada: Boolean(n.simulada),
+  }
 }
 
 function normalizar(f: Record<string, unknown>): FacturaElectronicaCompleta {
@@ -46,6 +86,8 @@ function normalizar(f: Record<string, unknown>): FacturaElectronicaCompleta {
     numero: f.numero == null ? null : String(f.numero),
     numero_completo: String(f.numero_completo ?? ''),
     cdc: String(f.cdc ?? ''),
+    pdf_pendiente: Boolean(f.pdf_pendiente),
+    puede_gestionar: Boolean(f.puede_gestionar),
     estado: String(f.estado ?? 'ERROR') as EstadoFactura,
     total: Number(f.total ?? 0),
     email_destino: String(f.email_destino ?? ''),
@@ -56,6 +98,21 @@ function normalizar(f: Record<string, unknown>): FacturaElectronicaCompleta {
     creada: String(f.creada ?? ''),
     estado_consultado: f.estado_consultado == null ? null : String(f.estado_consultado),
     emitida_por_nombre: String(f.emitida_por_nombre ?? ''),
+    estado_cancelacion: String(f.estado_cancelacion ?? '') as EstadoEvento,
+    estado_inutilizacion: String(f.estado_inutilizacion ?? '') as EstadoEvento,
+    cancelacion_solicitada: f.cancelacion_solicitada == null ? null : String(f.cancelacion_solicitada),
+    cancelacion_consultada: f.cancelacion_consultada == null ? null : String(f.cancelacion_consultada),
+    cancelacion_detalle: String(f.cancelacion_detalle ?? ''),
+    inutilizacion_solicitada: f.inutilizacion_solicitada == null ? null : String(f.inutilizacion_solicitada),
+    inutilizacion_consultada: f.inutilizacion_consultada == null ? null : String(f.inutilizacion_consultada),
+    inutilizacion_detalle: String(f.inutilizacion_detalle ?? ''),
+    cancelada_por_nombre: String(f.cancelada_por_nombre ?? ''),
+    inutilizada_por_nombre: String(f.inutilizada_por_nombre ?? ''),
+    puede_cancelar: Boolean(f.puede_cancelar),
+    puede_inutilizar: Boolean(f.puede_inutilizar),
+    puede_nota_credito: Boolean(f.puede_nota_credito),
+    eventos: ((f.eventos as Record<string, unknown>[] | undefined) ?? []).map(normalizarEvento),
+    notas_credito: ((f.notas_credito as Record<string, unknown>[] | undefined) ?? []).map(normalizarResumenNc),
   }
 }
 
@@ -67,6 +124,7 @@ export async function listarFacturasElectronicas(): Promise<FacturaElectronicaCo
 
 /** Prioridad de la factura que manda para una operación. */
 const PRIORIDAD: Record<EstadoFactura, number> = {
+  ANULADA: 6, DEVUELTA: 6,
   APROBADA: 4,
   EMITIDA: 3,
   VERIFICAR: 3,
@@ -96,7 +154,8 @@ export function motivoPdf(factura: FacturaElectronicaCompleta | null): string {
   if (factura === null) {
     return 'Todavía no se emitió la factura electrónica de esta operación.'
   }
-  if (factura.estado === 'APROBADA') {
+  if (factura.pdf_pendiente) return 'PDF pendiente de actualización'
+  if (['APROBADA', 'ANULADA', 'DEVUELTA'].includes(factura.estado)) {
     return `Descargar factura ${factura.numero_completo}`
   }
   if (factura.estado === 'RECHAZADA') {
@@ -191,7 +250,7 @@ export function descargarFacturaPdf(
   factura: FacturaElectronicaCompleta,
   operacion: Operacion,
 ): void {
-  if (factura.estado !== 'APROBADA') {
+  if ((!['APROBADA', 'ANULADA', 'DEVUELTA'].includes(factura.estado) || factura.pdf_pendiente)) {
     throw new Error('Solo se descargan facturas aprobadas por SIFEN.')
   }
 
@@ -248,7 +307,7 @@ export async function descargarDocumentoOficial(
   factura: FacturaElectronicaCompleta,
   documento: DocumentoOficial = 'kude',
 ): Promise<void> {
-  if (factura.estado !== 'APROBADA') {
+  if ((!['APROBADA', 'ANULADA', 'DEVUELTA'].includes(factura.estado) || factura.pdf_pendiente)) {
     throw new Error('Solo se descargan facturas aprobadas por SIFEN.')
   }
   if (factura.simulada) {
@@ -256,6 +315,35 @@ export async function descargarDocumentoOficial(
   }
   const contenido = await apiDescargar(`/facturas/${factura.id}/${documento}/`)
   const base = nombreArchivoFactura(factura).replace(/\.pdf$/, '')
+  guardarArchivo(contenido, `${base}.${documento === 'kude' ? 'pdf' : 'xml'}`)
+}
+
+/** Nombre del archivo oficial de una nota de crédito. */
+export function nombreArchivoNotaCredito(nota: NotaCreditoResumen): string {
+  const base = (nota.numero_completo || nota.cdc || `nota-credito-${nota.id}`)
+    .replace(/[^\w.-]+/g, '-')
+  return `${base || 'nota-credito'}.pdf`
+}
+
+/**
+ * Descarga el KuDE (PDF oficial) o el XML firmado de una nota de crédito
+ * real aprobada.
+ *
+ * @throws Error si la NC no está aprobada o es simulada, o el error del
+ *   backend si Factura Segura no devolvió el archivo.
+ */
+export async function descargarNotaCreditoOficial(
+  nota: NotaCreditoResumen,
+  documento: DocumentoOficial = 'kude',
+): Promise<void> {
+  if (nota.estado !== 'APROBADA') {
+    throw new Error('Solo se descargan notas de crédito aprobadas por SIFEN.')
+  }
+  if (nota.simulada) {
+    throw new Error('Es una nota de crédito simulada: no tiene documento oficial.')
+  }
+  const contenido = await apiDescargar(`/notas-credito/${nota.id}/${documento}/`)
+  const base = nombreArchivoNotaCredito(nota).replace(/\.pdf$/, '')
   guardarArchivo(contenido, `${base}.${documento === 'kude' ? 'pdf' : 'xml'}`)
 }
 

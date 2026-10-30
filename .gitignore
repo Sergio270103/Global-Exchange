@@ -31,3 +31,4 @@ __pycache__/
 *.sqlite3
 .env
 .vercel
+backend/media/

@@ -24,6 +24,7 @@ from django.utils import timezone
 from operaciones.models import Operacion
 
 from .cliente_fs import config, modo_simulado
+from .models import MOTIVOS_NC
 
 
 class DatosIncompletos(Exception):
@@ -216,4 +217,144 @@ def armar_de_resumido(op: Operacion, numero: str, email: str) -> dict:
         'dDVId': '0',
         'dSisFact': '1',
         'dInfAdic': f'Operación OP-{op.pk}',
+    }
+
+
+#: Campos del ítem que forman parte del JSON resumido de una NC.
+CAMPOS_ITEM_NC = (
+    'dCodInt', 'dDesProSer', 'cUniMed', 'dCantProSer', 'dPUniProSer',
+    'dDescItem', 'dDescGloItem', 'dAntPreUniIt', 'dAntGloPreUniIt',
+    'iAfecIVA', 'dPropIVA', 'dTasaIVA',
+)
+
+
+def _item_nc(item: dict, total: str, posicion: int) -> dict:
+    """Copia solo los campos del resumido, sin los montos calculados."""
+    limpio = {campo: item.get(campo) for campo in CAMPOS_ITEM_NC}
+    limpio['dCodInt'] = str(limpio.get('dCodInt') or f'NC-{posicion}')
+    limpio['dDesProSer'] = str(
+        limpio.get('dDesProSer') or 'Nota de crédito')
+    limpio['cUniMed'] = str(limpio.get('cUniMed') or '77')
+    limpio['dCantProSer'] = str(limpio.get('dCantProSer') or '1')
+    limpio['dPUniProSer'] = str(limpio.get('dPUniProSer') or total)
+    for campo in ('dDescItem', 'dDescGloItem', 'dAntPreUniIt', 'dAntGloPreUniIt'):
+        limpio[campo] = str(limpio.get(campo) or '0')
+    limpio['iAfecIVA'] = str(limpio.get('iAfecIVA') or '1')
+    limpio['dPropIVA'] = str(limpio.get('dPropIVA') or '100')
+    limpio['dTasaIVA'] = str(limpio.get('dTasaIVA') or '10')
+    return limpio
+
+
+def armar_nc_resumido(
+    factura, numero: str, email: str, motivo: str,
+) -> dict:
+    """JSON resumido de una nota de crédito total (iTiDE=5).
+
+    Replica el emisor, el receptor, el tipo de transacción y los ítems de la
+    factura original, y referencia su CDC en ``gCamDEAsoc``. Factura Segura
+    solo admite un documento asociado y una NC total en este MVP.
+    """
+    if motivo not in dict(MOTIVOS_NC):
+        raise DatosIncompletos(
+            f'El motivo de la nota de crédito "{motivo}" no es válido.')
+    original = dict(factura.de_enviado or {})
+    op = factura.operacion
+    if not original:
+        # Respaldo para datos históricos sin DE guardado: se arma igual que
+        # una factura y se transforma en NC.
+        original = armar_de_resumido(op, numero, email)
+
+    emisor = datos_emisor()
+    total = str(factura.total)
+    receptor = datos_receptor(op, email)
+    for campo in (
+        'iNatRec', 'iTiOpe', 'cPaisRec', 'iTiContRec', 'dRucRec', 'dDVRec',
+        'iTipIDRec', 'dNumIDRec', 'dNomRec',
+    ):
+        if str(original.get(campo, '')).strip():
+            receptor[campo] = original[campo]
+    receptor['dEmailRec'] = email
+
+    items = original.get('gCamItem') or []
+    if not items:
+        items = [{
+            'dCodInt': f'OP-{op.pk}',
+            'dDesProSer': f'Operación OP-{op.pk}',
+            'cUniMed': '77',
+            'dCantProSer': '1',
+            'dPUniProSer': total,
+            'iAfecIVA': '1' if int(config().get('IVA_TASA', 10)) else '3',
+            'dPropIVA': '100' if int(config().get('IVA_TASA', 10)) else '0',
+            'dTasaIVA': str(int(config().get('IVA_TASA', 10))),
+        }]
+    g_cam_item = [_item_nc(item, total, i + 1) for i, item in enumerate(items)]
+
+    fecha_original = str(original.get('dFeEmiDE') or '')[:10]
+    if not fecha_original:
+        fecha_original = factura.creada.date().isoformat()
+    motivo_texto = dict(MOTIVOS_NC)[motivo]
+
+    return {
+        'iTipEmi': str(original.get('iTipEmi') or '1'),
+        'iTiDE': '5',
+        'dNumTim': str(original.get('dNumTim') or emisor['dNumTim']),
+        'dFeIniT': str(original.get('dFeIniT') or emisor['dFeIniT']),
+        'dEst': str(original.get('dEst') or emisor['dEst']),
+        'dPunExp': str(original.get('dPunExp') or emisor['dPunExp']),
+        'dNumDoc': numero,
+        'dFeEmiDE': timezone.localtime().strftime('%Y-%m-%dT%H:%M:%S'),
+        'iTipTra': str(original.get('iTipTra') or '2'),
+        'iTImp': str(original.get('iTImp') or '1'),
+        'cMoneOpe': str(original.get('cMoneOpe') or 'PYG'),
+        'dCondTiCam': str(original.get('dCondTiCam') or '1'),
+        'dTiCam': str(original.get('dTiCam') or '1'),
+        'dRucEm': str(original.get('dRucEm') or emisor['dRucEm']),
+        'dDVEmi': str(original.get('dDVEmi') or emisor['dDVEmi']),
+        'iTipCont': str(original.get('iTipCont') or emisor['iTipCont']),
+        'dNomEmi': str(original.get('dNomEmi') or emisor['dNomEmi']),
+        'dDirEmi': str(original.get('dDirEmi') or emisor['dDirEmi']),
+        'dNumCas': str(original.get('dNumCas') or emisor['dNumCas']),
+        'cDepEmi': str(original.get('cDepEmi') or emisor['cDepEmi']),
+        'dDesDepEmi': str(original.get('dDesDepEmi') or emisor['dDesDepEmi']),
+        **(
+            {
+                'cDisEmi': str(original.get('cDisEmi') or emisor.get('cDisEmi', '')),
+                'dDesDisEmi': str(
+                    original.get('dDesDisEmi') or emisor.get('dDesDisEmi', '')),
+            }
+            if str(emisor.get('cDisEmi', '')).strip()
+            or str(original.get('cDisEmi', '')).strip()
+            else {}
+        ),
+        'cCiuEmi': str(original.get('cCiuEmi') or emisor['cCiuEmi']),
+        'dDesCiuEmi': str(original.get('dDesCiuEmi') or emisor['dDesCiuEmi']),
+        'dTelEmi': str(original.get('dTelEmi') or emisor['dTelEmi']),
+        'dEmailE': str(original.get('dEmailE') or emisor['dEmailE']),
+        'gActEco': original.get('gActEco') or actividades_economicas(emisor),
+        **receptor,
+        'iMotEmi': motivo,
+        'gCamDEAsoc': [{
+            'iTipDocAso': '1',
+            'dCdCDERef': factura.cdc,
+            'dNTimDI': '0',
+            'dEstDocAso': '0',
+            'dPExpDocAso': '0',
+            'dNumDocAso': '0',
+            'iTipoDocAso': '1',
+            'dFecEmiDI': fecha_original,
+            'dNumComRet': '0',
+            'dNumResCF': '0',
+            'iTipCons': '0',
+            'dNumCons': '0',
+            'dNumControl': '0',
+        }],
+        'gCamItem': g_cam_item,
+        'CDC': '0',
+        'dCodSeg': '0',
+        'dDVId': '0',
+        'dSisFact': '1',
+        'dInfAdic': (
+            f'Nota de crédito de {factura.numero_completo or factura.cdc}. '
+            f'{motivo_texto}. Operación OP-{op.pk}.'
+        )[:500],
     }

@@ -167,7 +167,14 @@ STATIC_ROOT = os.getenv('DJANGO_STATIC_ROOT', str(BASE_DIR / 'staticfiles'))
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')
+EMAIL_HOST = os.getenv('EMAIL_HOST', '')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True').lower() == 'true'
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'facturas@localhost')
+EMAIL_TIMEOUT = 20
 # Segundos en que se respeta la tasa congelada al confirmar
 OPERACION_TOLERANCIA_SEGUNDOS = 30
 
@@ -192,9 +199,17 @@ FACTURASEGURA = {
         'https://apitest.facturasegura.com.py/misife00/v1/esi'),
     'TOKEN': os.getenv('FACTURASEGURA_TOKEN', ''),
     'TIMEOUT': int(os.getenv('FACTURASEGURA_TIMEOUT', '40')),
+    # URL opcional del login para renovar el token del ESI.
+    'LOGIN_URL': os.getenv('FACTURASEGURA_LOGIN_URL', ''),
     # Rango de dNumDoc asignado por Factura Segura (inclusive).
     'NUMERO_DESDE': int(os.getenv('FACTURASEGURA_NUMERO_DESDE', '100')),
     'NUMERO_HASTA': int(os.getenv('FACTURASEGURA_NUMERO_HASTA', '111')),
+    # Rango propio para notas de crédito (iTiDE=5).
+    'NC_NUMERO_DESDE': int(os.getenv('FACTURASEGURA_NC_NUMERO_DESDE', '13')),
+    'NC_NUMERO_HASTA': int(os.getenv('FACTURASEGURA_NC_NUMERO_HASTA', '24')),
+    # Horas desde la emisión en que SIFEN admite cancelar (0 = sin límite).
+    'CANCELACION_VENTANA_HORAS': int(
+        os.getenv('FACTURASEGURA_CANCELACION_VENTANA_HORAS', '48')),
     # Tratamiento de IVA del ítem facturado: 10, 5 o 0 (exento).
     'IVA_TASA': int(os.getenv('FACTURASEGURA_IVA_TASA', '10')),
     'EMISOR': {
@@ -222,3 +237,4 @@ FACTURASEGURA = {
         'dDesActEco': os.getenv('FACTURASEGURA_ACT_ECO', ''),
     },
 }
+MEDIA_ROOT = os.getenv('DJANGO_MEDIA_ROOT', str(BASE_DIR / 'media'))

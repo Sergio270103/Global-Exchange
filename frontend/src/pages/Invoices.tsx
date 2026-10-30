@@ -33,9 +33,13 @@ import {
   motivoPdf,
   type FacturaElectronicaCompleta,
 } from '@/services/facturasDescarga'
+import { gestionarFactura, usoFacturas, type UsoFacturas } from '@/services/facturas'
+import { apiFetch } from '@/services/api'
+import OperacionesFactura from '@/components/OperacionesFactura'
+import type { AuthUser } from '@/types'
 import { ETIQUETA_MOTIVO } from '@/services/historial'
 
-type EstadoFactura = 'Emitida' | 'Aprobada' | 'Rechazada'
+type EstadoFactura = 'Emitida' | 'Aprobada' | 'Rechazada' | 'Anulada' | 'Devuelta'
 
 /** Estados visibles en el filtro de facturas. */
 type FiltroEstadoFactura = 'TODAS' | EstadoFactura
@@ -57,15 +61,18 @@ interface Fila {
 }
 
 const statusStyle: Record<EstadoFactura, string> = {
+  Anulada: 'bg-slate-100 text-slate-600 border-slate-200',
+  Devuelta: 'bg-blue-50 text-blue-700 border-blue-200',
   Emitida: 'bg-amber-50 text-amber-700 border-amber-100',
   Aprobada: 'bg-emerald-50 text-emerald-700 border-emerald-100',
   Rechazada: 'bg-red-50 text-red-600 border-red-100',
 }
 
-const ESTADOS_FILTRO: FiltroEstadoFactura[] = ['TODAS', 'Emitida', 'Aprobada', 'Rechazada']
+const ESTADOS_FILTRO: FiltroEstadoFactura[] = ['TODAS', 'Emitida', 'Aprobada', 'Rechazada', 'Anulada', 'Devuelta']
 
 const LABEL_ESTADO: Record<FiltroEstadoFactura, string> = {
   TODAS: 'Todas',
+  Anulada: 'Anulada', Devuelta: 'Devuelta',
   Emitida: 'Emitida',
   Aprobada: 'Aprobada',
   Rechazada: 'Rechazada',
@@ -118,7 +125,7 @@ function aFila(
   factura: FacturaElectronicaCompleta | null,
 ): Fila {
   const fecha = new Date(o.fecha_creacion)
-  const estado = estadoFactura(o, comp)
+  const estado: EstadoFactura = factura?.estado === 'ANULADA' ? 'Anulada' : factura?.estado === 'DEVUELTA' ? 'Devuelta' : factura?.estado === 'APROBADA' ? 'Aprobada' : factura ? (['RECHAZADA', 'ERROR'].includes(factura.estado) ? 'Rechazada' : 'Emitida') : estadoFactura(o, comp)
   return {
     numero: `F001-${String(o.id).padStart(4, '0')}`,
     fecha: Number.isNaN(fecha.getTime())
@@ -128,14 +135,22 @@ function aFila(
     montoPyg: montoPyg(o),
     trx: `OP-${o.id}`,
     estado,
-    motivo: estado === 'Rechazada' ? motivoDe(o, comp) : '',
+    motivo: estado === 'Rechazada' ? (factura?.detalle || motivoDe(o, comp)) : '',
     fechaIso: o.fecha_creacion,
     operacion: o,
     factura,
   }
 }
 
-export default function Invoices() {
+export default function Invoices({ auth }: { auth?: AuthUser | null }) {
+  const puedeGestionar = auth?.role === 'admin' || auth?.role === 'cashier'
+  const [seleccion, setSeleccion] = useState<Fila | null>(null)
+  const [correo, setCorreo] = useState('')
+  const [enviando, setEnviando] = useState(false)
+  const [mensaje, setMensaje] = useState('')
+  const [errorAccion, setErrorAccion] = useState('')
+  const [uso, setUso] = useState<UsoFacturas | null>(null)
+  const [historial, setHistorial] = useState<Array<{accion: string; usuario_nombre: string; fecha: string; resultado: string; email: string}>>([])
   const [filas, setFilas] = useState<Fila[]>([])
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState('')
@@ -180,6 +195,41 @@ export default function Invoices() {
     setRefrescando(true)
     await cargar()
     setRefrescando(false)
+  }
+
+  const abrirAccion = async (fila: Fila) => {
+    setSeleccion(fila)
+    setCorreo(fila.factura?.envio_destinatario || fila.factura?.email_destino || '')
+    setErrorAccion('')
+    setMensaje('')
+    setUso(null)
+    setHistorial([])
+    try {
+      const info = await usoFacturas(fila.operacion.id)
+      setUso(info)
+      const facturas = await apiFetch<Array<{intentos?: typeof historial}>>(`/facturas/?operacion=${fila.operacion.id}`)
+      setHistorial(facturas.flatMap(f => f.intentos || []).sort((a, b) => b.fecha.localeCompare(a.fecha)))
+    } catch (err) {
+      setErrorAccion(err instanceof Error ? err.message : 'No se pudo consultar el cupo.')
+    }
+  }
+
+  const confirmarAccion = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!seleccion?.factura || enviando) return
+    setEnviando(true)
+    setErrorAccion('')
+    const accion = seleccion.factura.estado === 'APROBADA' ? 'reenviar' : 'reintentar'
+    try {
+      const resultado = await gestionarFactura(seleccion.factura.id, accion, correo)
+      setMensaje(accion === 'reenviar' ? resultado.envio_resultado : resultado.detalle)
+      setSeleccion(null)
+      await cargar()
+    } catch (err) {
+      setErrorAccion(err instanceof Error ? err.message : 'No se pudo completar la acción.')
+      await cargar()
+      try { setUso(await usoFacturas(seleccion.operacion.id)) } catch { /* mantiene el error original */ }
+    } finally { setEnviando(false) }
   }
 
   const filasFiltradas = filas.filter(f => {
@@ -234,6 +284,25 @@ export default function Invoices() {
 
   return (
     <div className="space-y-5 animate-fadein">
+      {mensaje && <p role="status" className="p-3 bg-emerald-50 text-emerald-800 rounded-lg">{mensaje}</p>}
+      {seleccion && <div role="dialog" aria-modal="true" aria-labelledby="titulo-accion" className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+        <form onSubmit={confirmarAccion} className="bg-white rounded-xl p-6 max-w-xl w-full space-y-4 max-h-[90vh] overflow-y-auto">
+          <h3 id="titulo-accion" className="font-semibold">{seleccion.factura?.estado === 'APROBADA' ? 'Reenviar por correo' : 'Reintentar emisión'}</h3>
+          <label className="block">Correo del cliente
+            <input type="email" required maxLength={160} value={correo} onChange={e => setCorreo(e.target.value)} className="block w-full border rounded p-2" />
+          </label>
+          {uso && <p>Emisiones usadas: {uso.usadas} de {uso.limite}. Disponibles: {uso.disponibles}. {uso.modo === 'simulado' && 'Modo simulado: no envía correos ni consume emisiones reales.'}</p>}
+          {seleccion.factura?.estado !== 'APROBADA' && uso && (!uso.disponibles || !uso.siguiente_numero) && <p role="alert">Límite de emisiones alcanzado o cupo reservado pendiente de verificar.</p>}
+          {errorAccion && <p role="alert" className="text-red-700">{errorAccion}</p>}
+          <div className="flex gap-3">
+            <button type="submit" disabled={enviando || !uso || (seleccion.factura?.estado !== 'APROBADA' && (!uso.disponibles || !uso.siguiente_numero))} className="bg-blue-700 text-white rounded px-4 py-2 disabled:opacity-50">{enviando ? 'Procesando…' : 'Confirmar'}</button>
+            <button type="button" disabled={enviando} onClick={() => setSeleccion(null)}>Cerrar</button>
+          </div>
+          <h4 className="font-semibold">Historial de intentos</h4>
+          {historial.map((intento, i) => <p key={i} className="text-sm border-t pt-2">{new Date(intento.fecha).toLocaleString('es-PY')} · {intento.usuario_nombre || 'Usuario'} · {intento.accion} · {intento.email} · {intento.resultado}</p>)}
+          {!historial.length && <p className="text-sm">Sin intentos registrados.</p>}
+        </form>
+      </div>}
       {/* Summary */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
@@ -330,7 +399,7 @@ export default function Invoices() {
           <table className="w-full">
             <thead>
               <tr className="border-b border-slate-100 bg-slate-50/60">
-                {['Número', 'Fecha', 'Cliente', 'Monto (PYG)', 'Transacción', 'Estado', 'Nº Factura FE', 'Acciones'].map(h => (
+                {['Número', 'Fecha', 'Cliente', 'Monto (PYG)', 'Transacción', 'Estado', 'Nº Factura FE', 'Operaciones', 'Acciones'].map(h => (
                   <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -361,17 +430,22 @@ export default function Invoices() {
                     )}
                   </td>
                   <td className="px-5 py-4">
+                    <span>{inv.factura?.tipo_operacion_display ?? (inv.operacion.tipo_operacion === 'COMPRA' ? 'Compra' : 'Venta')}</span>
+                    {puedeGestionar && inv.factura?.estado === 'APROBADA' && <OperacionesFactura factura={inv.factura} onActualizada={async () => { await cargar() }} />}
+                  </td>
+                  <td className="px-5 py-4">
+                    {inv.factura && ['APROBADA', 'RECHAZADA', 'ERROR'].includes(inv.factura.estado) && <button type="button" onClick={() => void abrirAccion(inv)} className="text-blue-700 text-[12px] font-semibold px-2 py-1">{inv.factura.estado === 'APROBADA' ? 'Reenviar por correo' : 'Reintentar emisión'}</button>}
                     <button
                       type="button"
                       onClick={() => void descargarPdf(inv)}
-                      disabled={!inv.factura || inv.factura.estado !== 'APROBADA'
+                      disabled={!inv.factura || !['APROBADA', 'ANULADA', 'DEVUELTA'].includes(inv.factura.estado) || inv.factura.pdf_pendiente
                         || descargando === `kude-${inv.factura.id}`}
                       title={motivoPdf(inv.factura)}
-                      aria-label={inv.factura && inv.factura.estado === 'APROBADA'
+                      aria-label={inv.factura && ['APROBADA', 'ANULADA', 'DEVUELTA'].includes(inv.factura.estado) && !inv.factura.pdf_pendiente
                         ? `Descargar factura ${inv.factura.numero_completo}`
                         : `PDF no disponible: ${motivoPdf(inv.factura)}`}
                       className={
-                        inv.factura && inv.factura.estado === 'APROBADA'
+                        inv.factura && ['APROBADA', 'ANULADA', 'DEVUELTA'].includes(inv.factura.estado) && !inv.factura.pdf_pendiente
                           ? 'text-[12px] font-semibold text-slate-500 hover:text-blue-600 px-2 py-1 rounded hover:bg-blue-50 transition-colors'
                           : 'text-[12px] font-semibold text-slate-400 px-2 py-1 rounded opacity-50 cursor-not-allowed'
                       }

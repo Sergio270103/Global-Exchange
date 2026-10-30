@@ -25,6 +25,7 @@ import uuid
 
 import requests
 from django.conf import settings
+from django.utils import timezone
 
 
 class ErrorFacturaSegura(Exception):
@@ -48,6 +49,51 @@ def modo_simulado() -> bool:
     return config().get('MODO', 'simulado') != 'real'
 
 
+def url_login() -> str:
+    """URL del login de Factura Segura (``/login?include_auth_token``).
+
+    Se puede sobrescribir con ``FACTURASEGURA_LOGIN_URL``. Por defecto se
+    deriva de la URL de la API para no duplicar configuración.
+    """
+    cfg = config()
+    if cfg.get('LOGIN_URL'):
+        return str(cfg['LOGIN_URL'])
+    base = str(cfg.get('URL', '')).split('/misife00/')[0].rstrip('/')
+    return f'{base}/login?include_auth_token'
+
+
+def obtener_token(email: str, password: str) -> str:
+    """Pide un token nuevo a Factura Segura (helper aislado, no se usa solo).
+
+    Devuelve el ``authentication_token`` para que un operador actualice
+    ``FACTURASEGURA_TOKEN``. No se invoca automáticamente en cada emisión
+    para no exponer credenciales ni multiplicar logins.
+    """
+    if modo_simulado():
+        return 'token-simulado'
+    try:
+        resp = requests.post(
+            url_login(), json={'email': email, 'password': password},
+            headers={'accept': 'application/json'},
+            timeout=config().get('TIMEOUT', 40),
+        )
+    except requests.RequestException as exc:
+        raise SinRespuesta(f'Sin respuesta del login de Factura Segura: {exc}') from exc
+    if resp.status_code in (401, 403):
+        raise ErrorFacturaSegura(
+            'Factura Segura rechazó las credenciales del ESI.')
+    if resp.status_code >= 500:
+        raise SinRespuesta(f'El login de Factura Segura respondió HTTP {resp.status_code}.')
+    try:
+        datos = resp.json()
+        token = datos['response']['user']['authentication_token']
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ErrorFacturaSegura(
+            'El login de Factura Segura no devolvió authentication_token.'
+        ) from exc
+    return str(token)
+
+
 # ---------------------------------------------------------------- real --
 
 def _llamar(operation: str, params: dict) -> dict:
@@ -65,7 +111,7 @@ def _llamar(operation: str, params: dict) -> dict:
             },
             timeout=cfg.get('TIMEOUT', 40),
         )
-    except (requests.Timeout, requests.ConnectionError) as exc:
+    except requests.RequestException as exc:
         raise SinRespuesta(f'Sin respuesta de Factura Segura: {exc}') from exc
 
     if resp.status_code in (401, 403):
@@ -152,11 +198,53 @@ def generar_de(de: dict) -> tuple[str, dict]:
     return cdc, datos
 
 
-def get_estado_sifen(cdc: str, ruc_emisor: str) -> tuple[dict, dict]:
+def solicitar_cancelacion(cdc: str, ruc_emisor: str) -> dict:
+    """``sol_cancelacion``: pide cancelar un DE aprobado.
+
+    SIFEN procesa el evento de forma asíncrona: ``code: 0`` y ``results: []``
+    solo confirman la recepción. Hay que consultar ``get_estado_sifen``
+    (campos ``estado_can``/``desc_can``) después de ~1 minuto.
+    """
+    if modo_simulado():
+        return _respuesta_simulada([])
+    return _llamar('sol_cancelacion', {'CDC': cdc, 'dRucEm': ruc_emisor})
+
+
+def solicitar_inutilizacion(
+    ruc_emisor: str, itide: str, num_tim: str, est: str, pun_exp: str,
+    num_doc: str,
+) -> dict:
+    """``sol_inutilizacion``: inutiliza el número de un DE no aprobado.
+
+    Si el documento ya existe en Factura Segura, ``results`` viene vacío y
+    se debe consultar con el CDC conocido. Si no existe, devuelve un CDC
+    ficticio que hay que guardar para consultar ``estado_inu``.
+    """
+    params = {
+        'dRucEm': ruc_emisor,
+        'iTiDE': str(itide),
+        'dNumTim': str(num_tim),
+        'dEst': str(est),
+        'dPunExp': str(pun_exp),
+        'dNumDoc': str(num_doc),
+    }
+    if modo_simulado():
+        # En simulación el documento "existe": imita el caso results=[].
+        return _respuesta_simulada([])
+    return _llamar('sol_inutilizacion', params)
+
+
+def get_estado_sifen(
+    cdc: str, ruc_emisor: str, eventos: tuple[str, ...] = (),
+) -> tuple[dict, dict]:
     """``get_estado_sifen``: estado del DE en SIFEN. Solo consulta.
 
     Devuelve ``(resultado, respuesta)`` donde ``resultado`` es el primer
     elemento de ``results`` (``estado_sifen``, ``desc_sifen``, ...).
+
+    ``eventos`` solo se usa en modo simulado: permite que una consulta de
+    cancelación/inutilización devuelva el evento aprobado de forma
+    determinista, sin marcar como canceladas todas las facturas.
     """
     if modo_simulado():
         resultado = {
@@ -165,6 +253,18 @@ def get_estado_sifen(cdc: str, ruc_emisor: str) -> tuple[dict, dict]:
             'estado_can': '', 'desc_can': '', 'error_can': '', 'fch_can': '',
             'estado_inu': '', 'desc_inu': '', 'error_inu': '', 'fch_inu': '',
         }
+        if 'CANCELACION' in eventos:
+            resultado.update({
+                'estado_can': 'Aprobado',
+                'desc_can': 'Cancelación aprobada (simulado)',
+                'fch_can': timezone.localtime().strftime('%Y-%m-%d %H:%M:%S'),
+            })
+        if 'INUTILIZACION' in eventos:
+            resultado.update({
+                'estado_inu': 'Aprobado',
+                'desc_inu': 'Inutilización aprobada (simulado)',
+                'fch_inu': timezone.localtime().strftime('%Y-%m-%d %H:%M:%S'),
+            })
         return resultado, _respuesta_simulada([resultado])
     datos = _llamar('get_estado_sifen', {'CDC': cdc, 'dRucEm': ruc_emisor})
     resultados = datos.get('results') or []
@@ -198,7 +298,7 @@ def descargar(operation: str, ruc_emisor: str, cdc: str) -> bytes:
         resp = requests.get(
             url, headers={'Authentication-Token': cfg['TOKEN']},
             timeout=cfg.get('TIMEOUT', 40))
-    except (requests.Timeout, requests.ConnectionError) as exc:
+    except requests.RequestException as exc:
         raise SinRespuesta(f'Sin respuesta de Factura Segura: {exc}') from exc
     if resp.status_code in (401, 403):
         raise ErrorFacturaSegura(

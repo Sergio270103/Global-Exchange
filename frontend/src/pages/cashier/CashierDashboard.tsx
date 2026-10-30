@@ -792,17 +792,7 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
                       <button onClick={() => handleReimprimir(comp.id)} className="px-2 py-1 bg-slate-900 text-white rounded font-semibold text-[11px]">
                         🖨️ Reimprimir
                       </button>
-                      <button
-                        onClick={() => handleAnular(comp)}
-                        disabled={anulandoId === comp.id || comp.estado === 'anulado'}
-                        className="px-2 py-1 bg-rose-50 border border-rose-200 text-rose-600 rounded font-semibold text-[11px] disabled:opacity-60"
-                      >
-                        {anulandoId === comp.id
-                          ? 'Anulando…'
-                          : comp.estado === 'anulado'
-                            ? 'Anulada'
-                            : 'Solicitar NC / Anulación'}
-                      </button>
+
                     </div>
                   </td>
                 </tr>

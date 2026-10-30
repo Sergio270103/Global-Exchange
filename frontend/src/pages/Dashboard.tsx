@@ -15,7 +15,7 @@
  */
 import { useEffect, useState } from 'react'
 import { type AuthUser, type Page, type ClienteActivo } from '@/types'
-import { ComposedChart, Line, Scatter, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
+import { ComposedChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import CashierDashboard from './cashier/CashierDashboard'
 import AdminDashboard from './admin/AdminDashboard'
 import OperacionesRecientes from '@/components/OperacionesRecientes'
@@ -24,6 +24,7 @@ import { ETIQUETA_ESTADO, ETIQUETA_TIPO, listarHistorial } from '@/services/hist
 import { listarMonedas } from '@/services/monedas'
 import { vigentes } from '@/services/cotizaciones'
 import { type Operacion } from '@/services/operaciones'
+import { obtenerEvolucion, type PuntoEvolucion } from '@/services/evolucion'
 import { useTasasDestacadas } from '@/hooks/useTasasDestacadas'
 import ModalAlerta from '@/components/ModalAlerta'
 
@@ -33,8 +34,6 @@ export interface DashboardProps {
   navigate: (p: Page) => void
 }
 
-/** Rango del gráfico en meses. */
-type RangoMeses = '7' | '3' | '1'
 
 /** Monto en la divisa operada (lo comprado o lo vendido). */
 function montoDivisa(o: Operacion): { texto: string; codigo: string } {
@@ -55,62 +54,6 @@ function fechaCorta(iso: string): string {
     : d.toLocaleDateString('es-PY', { day: '2-digit', month: 'short', year: 'numeric' })
 }
 
-/** Punto del gráfico: una operación PAGADA en el rango. */
-export interface PuntoOperacion {
-  /** Secuencia cronológica (la más antigua es 1). */
-  seq: number
-  /** Monto neto convertido a PYG. */
-  pyg: number
-  tipo: 'COMPRA' | 'VENTA'
-  fecha: string
-}
-
-/**
- * Construye los puntos del gráfico de dispersión por operación.
- *
- * Filtra por fecha, ordena cronológicamente y numera 1..N; convierte
- * cada monto a PYG (tasa congelada con respaldo a la vigente) y omite
- * las operaciones sin tasa disponible.
- */
-export function puntosPorOperacion(
-  pagadas: Operacion[],
-  desde: Date,
-  ventas: Map<string, number>,
-): PuntoOperacion[] {
-  return pagadas
-    .filter(o => {
-      const d = new Date(o.fecha_creacion)
-      return !Number.isNaN(d.getTime()) && d >= desde
-    })
-    .sort((a, b) => new Date(a.fecha_creacion).getTime() - new Date(b.fecha_creacion).getTime())
-    .reduce<PuntoOperacion[]>((acc, o) => {
-      const pyg = pygNeto(o, ventas)
-      if (pyg == null) return acc
-      acc.push({ seq: acc.length + 1, pyg: Math.round(pyg), tipo: o.tipo_operacion, fecha: o.fecha_creacion })
-      return acc
-    }, [])
-}
-
-/** Inicio del rango (primer día del mes actual menos N-1 meses). */
-function inicioRango(meses: number): Date {
-  const ahora = new Date()
-  return new Date(ahora.getFullYear(), ahora.getMonth() - (meses - 1), 1)
-}
-
-/**
- * Equivalente en PYG del monto recibido (neto de comisión).
- *
- * Usa la tasa destino congelada en la operación y respalda a la última
- * venta vigente. Sin tasa disponible devuelve `null` (no suma).
- */
-function pygNeto(o: Operacion, ventas: Map<string, number>): number | null {
-  const dest = o.moneda_destino_codigo
-  if (dest === 'PYG') return o.monto_recibido
-  const tasa = o.tasa_destino ?? ventas.get(dest) ?? null
-  if (!tasa) return null
-  return o.monto_recibido * tasa
-}
-
 function UserDashboard({ auth, currentClient, navigate }: DashboardProps) {
   const clienteId = currentClient?.id ?? null
   const [billeteras, setBilleteras] = useState<Billetera[]>([])
@@ -119,7 +62,7 @@ function UserDashboard({ auth, currentClient, navigate }: DashboardProps) {
   const [simbolos, setSimbolos] = useState<Record<string, { simbolo: string; decimales: number }>>({})
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState('')
-  const [rango, setRango] = useState<RangoMeses>('7')
+  const [puntos, setPuntos] = useState<PuntoEvolucion[]>([])
   const tasas = useTasasDestacadas()
 
   useEffect(() => {
@@ -135,12 +78,14 @@ function UserDashboard({ auth, currentClient, navigate }: DashboardProps) {
     Promise.all([
       listarBilleteras(clienteId).catch(() => [] as Billetera[]),
       listarHistorial({ clienteId }).catch(() => [] as Operacion[]),
+      obtenerEvolucion(clienteId).catch(() => [] as PuntoEvolucion[]),
       vigentes().catch(() => []),
       listarMonedas().catch(() => []),
-    ]).then(([bs, historialOps, cotizaciones, monedas]) => {
+    ]).then(([bs, historialOps, evolucion, cotizaciones, monedas]) => {
       if (!vivo) return
       setBilleteras(bs)
       setOps(historialOps)
+      setPuntos(evolucion)
       setVentas(new Map(cotizaciones.map(c => [c.moneda, c.venta])))
       const mapa: Record<string, { simbolo: string; decimales: number }> = {}
       for (const m of monedas) mapa[m.code] = { simbolo: m.symbol, decimales: m.decimals }
@@ -166,10 +111,8 @@ function UserDashboard({ auth, currentClient, navigate }: DashboardProps) {
   }, 0)
 
   const ultimas = ops.slice(0, 2)
-  const desde = inicioRango(Number(rango))
-  const puntos = puntosPorOperacion(pagadas, desde, ventas)
-  const comprasPts = puntos.filter(p => p.tipo === 'COMPRA')
-  const ventasPts = puntos.filter(p => p.tipo === 'VENTA')
+  const comprasPts = puntos.filter(p => p.compra !== null)
+  const ventasPts = puntos.filter(p => p.venta !== null)
 
   const greeting = (() => {
     const h = new Date().getHours()
@@ -230,40 +173,6 @@ function UserDashboard({ auth, currentClient, navigate }: DashboardProps) {
         <p role="alert" className="bg-red-50 border border-red-100 text-red-600 text-[13px] rounded-xl px-4 py-3">{error}</p>
       )}
 
-      {/* Stat cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5 hover:shadow-md transition-shadow">
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-[22px]">◈</span>
-          </div>
-          <div className="font-mono font-bold text-slate-900 text-lg leading-tight">
-            {cargando ? '…' : `₲ ${Math.round(totalPYG).toLocaleString('es-PY')}`}
-          </div>
-          <div className="text-[11px] text-slate-400 font-medium mt-1">Saldo total</div>
-          <div className="text-[11px] text-slate-300 mt-0.5">Equivalente en PYG</div>
-        </div>
-        <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5 hover:shadow-md transition-shadow">
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-[22px]">↑↓</span>
-          </div>
-          <div className="font-mono font-bold text-slate-900 text-lg leading-tight">
-            {cargando ? '…' : pagadas.length.toLocaleString('es-PY')}
-          </div>
-          <div className="text-[11px] text-slate-400 font-medium mt-1">Operaciones</div>
-          <div className="text-[11px] text-slate-300 mt-0.5">{compras} compras · {ventasCount} ventas</div>
-        </div>
-        {tarjetasUltimas.map(card => (
-          <div key={card.key} className="bg-white rounded-xl border border-slate-100 shadow-sm p-5 hover:shadow-md transition-shadow">
-            <div className="flex items-center justify-between mb-4">
-              <span className="text-[22px]">{card.icon}</span>
-            </div>
-            <div className="font-mono font-bold text-slate-900 text-lg leading-tight">{cargando ? '…' : card.value}</div>
-            <div className="text-[11px] text-slate-400 font-medium mt-1">{card.label}</div>
-            <div className="text-[11px] text-slate-300 mt-0.5">{card.sub}</div>
-          </div>
-        ))}
-      </div>
-
       {/* Chart + Quick actions */}
       <div className="grid lg:grid-cols-3 gap-6">
         {/* Operations chart */}
@@ -273,16 +182,7 @@ function UserDashboard({ auth, currentClient, navigate }: DashboardProps) {
               <h3 className="font-semibold text-slate-800 text-[15px]" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Evolución de operaciones</h3>
               <p className="text-slate-400 text-[12px] mt-0.5">Monto en PYG por operación</p>
             </div>
-            <select
-              aria-label="Rango del gráfico"
-              value={rango}
-              onChange={e => setRango(e.target.value as RangoMeses)}
-              className="text-[12px] border border-slate-200 rounded-lg px-2.5 py-1.5 text-slate-600 bg-white focus:outline-none"
-            >
-              <option value="7">7 meses</option>
-              <option value="3">3 meses</option>
-              <option value="1">1 mes</option>
-            </select>
+
           </div>
           <div className="flex items-center gap-4 mb-4 text-[12px] text-slate-500">
             <span className="flex items-center gap-1.5"><span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: '#10b981' }} />Compra</span>
@@ -291,13 +191,13 @@ function UserDashboard({ auth, currentClient, navigate }: DashboardProps) {
           {cargando ? (
             <p className="py-6 text-center text-[13px] text-slate-400">Cargando operaciones…</p>
           ) : puntos.length === 0 ? (
-            <p className="py-6 text-center text-[13px] text-slate-400">Todavía no hay operaciones en este rango.</p>
+            <p className="py-6 text-center text-[13px] text-slate-400">Todavía no hay operaciones registradas.</p>
           ) : (
             <ResponsiveContainer width="100%" height={220}>
               <ComposedChart margin={{ top: 8, right: 12, bottom: 0, left: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
                 <XAxis
-                  dataKey="seq"
+                  dataKey="secuencia"
                   type="number"
                   allowDecimals={false}
                   tick={{ fontSize: 11, fill: '#94a3b8' }}
@@ -307,7 +207,7 @@ function UserDashboard({ auth, currentClient, navigate }: DashboardProps) {
                   label={{ value: 'Nº operación', position: 'insideBottomRight', offset: -2, fontSize: 11, fill: '#94a3b8' }}
                 />
                 <YAxis
-                  dataKey="pyg"
+                  dataKey="compra"
                   type="number"
                   tick={{ fontSize: 11, fill: '#94a3b8' }}
                   axisLine={false}
@@ -317,16 +217,14 @@ function UserDashboard({ auth, currentClient, navigate }: DashboardProps) {
                 />
                 <Tooltip
                   contentStyle={{ borderRadius: 10, border: '1px solid #e2e8f0', boxShadow: '0 4px 20px rgba(0,0,0,0.08)', fontSize: 12 }}
-                  formatter={(v: unknown) => [`₲ ${(v as number).toLocaleString('es-PY')}`, 'Monto']}
+                  formatter={(v: unknown) => `₲ ${(v as number).toLocaleString('es-PY')}`}
                   labelFormatter={(_, payload) => {
-                    const p = payload?.[0]?.payload as PuntoOperacion | undefined
-                    return p ? `Operación #${p.seq} · ${p.tipo === 'COMPRA' ? 'Compra' : 'Venta'} · ${fechaCorta(p.fecha)}` : ''
+                    const p = payload?.[0]?.payload as PuntoEvolucion | undefined
+                    return p ? `Operación #${p.secuencia} · ${fechaCorta(p.fecha)}` : ''
                   }}
                 />
-                <Line dataKey="pyg" data={comprasPts} stroke="#10b981" strokeWidth={2} dot={false} legendType="none" />
-                <Line dataKey="pyg" data={ventasPts} stroke="#3b82f6" strokeWidth={2} dot={false} legendType="none" />
-                <Scatter name="Compra" data={comprasPts} fill="#10b981" />
-                <Scatter name="Venta" data={ventasPts} fill="#3b82f6" />
+                <Line name="Compras" dataKey="compra" data={puntos} stroke="#10b981" strokeWidth={2} dot={false} connectNulls={false} />
+                <Line name="Ventas" dataKey="venta" data={puntos} stroke="#3b82f6" strokeWidth={2} dot={false} connectNulls={false} />
               </ComposedChart>
             </ResponsiveContainer>
           )}

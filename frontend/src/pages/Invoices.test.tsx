@@ -265,7 +265,7 @@ describe('Invoices (PI-28 + PI-86)', () => {
         return respuesta([operacion(9, 'PAGADA'), operacion(7, 'PENDIENTE')])
       }
       if (String(url).includes('/facturas/')) {
-        return respuesta([facturaApi(9, 'APROBADA')])
+        return respuesta([{ ...facturaApi(9, 'APROBADA'), puede_gestionar: true }])
       }
       return respuesta([], 200)
     }))
@@ -282,7 +282,7 @@ describe('Invoices (PI-28 + PI-86)', () => {
         return respuesta([operacion(9, 'PAGADA')])
       }
       if (String(url).includes('/facturas/')) {
-        return respuesta([facturaApi(9, 'APROBADA')])
+        return respuesta([{ ...facturaApi(9, 'APROBADA'), puede_gestionar: true }])
       }
       return respuesta([], 200)
     }))
@@ -360,7 +360,7 @@ describe('Invoices (PI-28 + PI-86)', () => {
         ])
       }
       if (String(url).includes('/facturas/')) {
-        return respuesta([facturaApi(9, 'APROBADA')])
+        return respuesta([{ ...facturaApi(9, 'APROBADA'), puede_gestionar: true }])
       }
       return respuesta([], 200)
     }))
@@ -389,5 +389,32 @@ describe('Invoices (PI-28 + PI-86)', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /exportar csv/i })).toBeDisabled()
     })
+  })
+
+  it('solo ofrece Gestionar a un administrador o cajero', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (String(url).includes('/operaciones/')) {
+        return respuesta([operacion(9, 'PAGADA')])
+      }
+      if (String(url).includes('/facturas/')) {
+        return respuesta([{ ...facturaApi(9, 'APROBADA'), puede_gestionar: true }])
+      }
+      return respuesta([], 200)
+    }))
+    const { rerender } = render(
+      <Invoices auth={{ name: 'Ana', email: 'ana@test.com', role: 'user', avatar: '' }} />,
+    )
+
+    expect(await screen.findByText('F001-0009')).toBeInTheDocument()
+    expect(screen.queryByRole('combobox', {
+      name: 'Operación de factura',
+    })).not.toBeInTheDocument()
+
+    rerender(
+      <Invoices auth={{ name: 'Caja', email: 'caja@test.com', role: 'cashier', avatar: '' }} />,
+    )
+    expect(await screen.findByRole('combobox', {
+      name: 'Operación de factura',
+    })).toBeInTheDocument()
   })
 })
