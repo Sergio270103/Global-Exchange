@@ -79,7 +79,7 @@ class FacturaElectronicaViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         qs = FacturaElectronica.objects.select_related(
             'operacion', 'operacion__cliente').prefetch_related(
-            'eventos', 'notas_credito').all()
+            'eventos', 'notas_credito', 'intentos').all()
         usuario = self.request.user
         sub = _sub(usuario)
         operacion = self.request.query_params.get('operacion')
@@ -134,6 +134,28 @@ class FacturaElectronicaViewSet(viewsets.ModelViewSet):
                  'factura': datos},
                 status=status.HTTP_400_BAD_REQUEST)
         return Response(datos, status=status.HTTP_201_CREATED)
+
+    def _accion_cajero(self, request, funcion):
+        if not (es_cajero(request.user) or es_admin(request.user) or getattr(request.user, 'is_superuser', False)):
+            return Response({'detail': 'Solo cajeros y administradores pueden realizar esta acción.'}, status=403)
+        factura = self.get_object()
+        try:
+            resultado = funcion(factura, request.data.get('email', factura.email_destino),
+                _sub(request.user), _nombre(request.user))
+        except servicios.EmisionRechazada as exc:
+            return Response({'detail': str(exc)}, status=400)
+        datos = FacturaElectronicaSerializer(resultado).data
+        if resultado.estado == 'ERROR':
+            return Response({'detail': resultado.detalle, 'factura': datos}, status=400)
+        return Response(datos)
+
+    @action(detail=True, methods=['post'], url_path='reintentar')
+    def reintentar(self, request, pk=None):
+        return self._accion_cajero(request, servicios.reintentar_factura)
+
+    @action(detail=True, methods=['post'], url_path='reenviar')
+    def reenviar(self, request, pk=None):
+        return self._accion_cajero(request, servicios.reenviar_factura)
 
     @action(detail=True, methods=['post'], url_path='estado')
     def estado(self, request, pk=None):
@@ -306,8 +328,8 @@ class FacturaElectronicaViewSet(viewsets.ModelViewSet):
                     'operacion': op.pk,
                     'operacion_estado': op.estado,
                     'email_cliente': op.cliente.email,
-                    'factura': (FacturaElectronicaSerializer(ultima).data
-                                if ultima else None),
+                    'factura': (FacturaElectronicaSerializer(ultima).data if ultima else None),
+                    'intentos': (list(ultima.intentos.values('accion','usuario_sub','usuario_nombre','fecha','email','resultado')) if ultima else []),
                 })
         return Response(datos)
 

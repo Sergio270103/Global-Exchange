@@ -19,10 +19,6 @@
  *   es el KuDE que genera Factura Segura y se ofrece también el XML
  *   firmado. Las simuladas siguen con el PDF propio.
  *
- * La gestión SIFEN (PI-28/PI-30) se abre con **Gestionar** solo para
- * administradores y cajeros: anulación, inutilización y nota de crédito.
- * El backend valida además que el cajero sea el emisor de la factura.
- *
  * @module Invoices
  */
 import { useCallback, useEffect, useState } from 'react'
@@ -37,9 +33,11 @@ import {
   motivoPdf,
   type FacturaElectronicaCompleta,
 } from '@/services/facturasDescarga'
-import { ETIQUETA_MOTIVO } from '@/services/historial'
+import { gestionarFactura, usoFacturas, type UsoFacturas } from '@/services/facturas'
+import { apiFetch } from '@/services/api'
 import OperacionesFactura from '@/components/OperacionesFactura'
 import type { AuthUser } from '@/types'
+import { ETIQUETA_MOTIVO } from '@/services/historial'
 
 type EstadoFactura = 'Emitida' | 'Aprobada' | 'Rechazada' | 'Anulada' | 'Devuelta'
 
@@ -63,17 +61,11 @@ interface Fila {
 }
 
 const statusStyle: Record<EstadoFactura, string> = {
-  Anulada: 'Anulada', Devuelta: 'Devuelta',
+  Anulada: 'bg-slate-100 text-slate-600 border-slate-200',
+  Devuelta: 'bg-blue-50 text-blue-700 border-blue-200',
   Emitida: 'bg-amber-50 text-amber-700 border-amber-100',
   Aprobada: 'bg-emerald-50 text-emerald-700 border-emerald-100',
   Rechazada: 'bg-red-50 text-red-600 border-red-100',
-}
-
-const estadoEventoStyle: Record<string, string> = {
-  PENDIENTE: 'bg-amber-50 text-amber-700 border-amber-200',
-  APROBADA: 'bg-emerald-50 text-emerald-700 border-emerald-200',
-  RECHAZADA: 'bg-rose-50 text-rose-700 border-rose-200',
-  ERROR: 'bg-rose-50 text-rose-700 border-rose-200',
 }
 
 const ESTADOS_FILTRO: FiltroEstadoFactura[] = ['TODAS', 'Emitida', 'Aprobada', 'Rechazada', 'Anulada', 'Devuelta']
@@ -133,7 +125,7 @@ function aFila(
   factura: FacturaElectronicaCompleta | null,
 ): Fila {
   const fecha = new Date(o.fecha_creacion)
-  const estado: EstadoFactura = factura?.estado === 'ANULADA' ? 'Anulada' : factura?.estado === 'DEVUELTA' ? 'Devuelta' : factura?.estado === 'APROBADA' ? 'Aprobada' : factura ? (factura.estado === 'RECHAZADA' || factura.estado === 'ERROR' ? 'Rechazada' : 'Emitida') : estadoFactura(o, comp)
+  const estado: EstadoFactura = factura?.estado === 'ANULADA' ? 'Anulada' : factura?.estado === 'DEVUELTA' ? 'Devuelta' : factura?.estado === 'APROBADA' ? 'Aprobada' : factura ? (['RECHAZADA', 'ERROR'].includes(factura.estado) ? 'Rechazada' : 'Emitida') : estadoFactura(o, comp)
   return {
     numero: `F001-${String(o.id).padStart(4, '0')}`,
     fecha: Number.isNaN(fecha.getTime())
@@ -143,7 +135,7 @@ function aFila(
     montoPyg: montoPyg(o),
     trx: `OP-${o.id}`,
     estado,
-    motivo: estado === 'Rechazada' ? motivoDe(o, comp) : '',
+    motivo: estado === 'Rechazada' ? (factura?.detalle || motivoDe(o, comp)) : '',
     fechaIso: o.fecha_creacion,
     operacion: o,
     factura,
@@ -151,6 +143,14 @@ function aFila(
 }
 
 export default function Invoices({ auth }: { auth?: AuthUser | null }) {
+  const puedeGestionar = auth?.role === 'admin' || auth?.role === 'cashier'
+  const [seleccion, setSeleccion] = useState<Fila | null>(null)
+  const [correo, setCorreo] = useState('')
+  const [enviando, setEnviando] = useState(false)
+  const [mensaje, setMensaje] = useState('')
+  const [errorAccion, setErrorAccion] = useState('')
+  const [uso, setUso] = useState<UsoFacturas | null>(null)
+  const [historial, setHistorial] = useState<Array<{accion: string; usuario_nombre: string; fecha: string; resultado: string; email: string}>>([])
   const [filas, setFilas] = useState<Fila[]>([])
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState('')
@@ -158,8 +158,6 @@ export default function Invoices({ auth }: { auth?: AuthUser | null }) {
   const [filtroEstado, setFiltroEstado] = useState<FiltroEstadoFactura>('TODAS')
   const [desde, setDesde] = useState('')
   const [hasta, setHasta] = useState('')
-  // El backend valida además que el cajero sea quien emitió la factura.
-  const puedeGestionar = auth?.role === 'admin' || auth?.role === 'cashier'
 
   const cargar = useCallback(async () => {
     setError('')
@@ -170,7 +168,7 @@ export default function Invoices({ auth }: { auth?: AuthUser | null }) {
         listarComprobantes().catch(() => [] as Comprobante[]),
         // Lo mismo con las facturas de PI-30: si fallan, los PDF quedan
         // deshabilitados pero la pantalla sigue funcionando.
-        listarFacturasElectronicas(),
+        listarFacturasElectronicas().catch(() => [] as FacturaElectronicaCompleta[]),
       ])
       const comprobantePorOperacion = new Map<number, Comprobante>()
       for (const c of comps) comprobantePorOperacion.set(c.operacion, c)
@@ -192,17 +190,46 @@ export default function Invoices({ auth }: { auth?: AuthUser | null }) {
     })()
   }, [cargar])
 
-  useEffect(() => {
-    if (!filas.some(f => f.factura && (f.factura.pdf_pendiente || f.factura.estado_cancelacion === 'PENDIENTE' || f.factura.notas_credito?.some(n => ['EMITIDA', 'VERIFICAR'].includes(n.estado))))) return
-    const timer = window.setTimeout(() => { void cargar().finally(() => setFilas(prev => [...prev])) }, 10000)
-    return () => window.clearTimeout(timer)
-  }, [filas, cargar])
-
   /** Refresca sin recargar la página ni vaciar la tabla (PI-28). */
   const refrescar = async () => {
     setRefrescando(true)
     await cargar()
     setRefrescando(false)
+  }
+
+  const abrirAccion = async (fila: Fila) => {
+    setSeleccion(fila)
+    setCorreo(fila.factura?.envio_destinatario || fila.factura?.email_destino || '')
+    setErrorAccion('')
+    setMensaje('')
+    setUso(null)
+    setHistorial([])
+    try {
+      const info = await usoFacturas(fila.operacion.id)
+      setUso(info)
+      const facturas = await apiFetch<Array<{intentos?: typeof historial}>>(`/facturas/?operacion=${fila.operacion.id}`)
+      setHistorial(facturas.flatMap(f => f.intentos || []).sort((a, b) => b.fecha.localeCompare(a.fecha)))
+    } catch (err) {
+      setErrorAccion(err instanceof Error ? err.message : 'No se pudo consultar el cupo.')
+    }
+  }
+
+  const confirmarAccion = async (event: React.FormEvent) => {
+    event.preventDefault()
+    if (!seleccion?.factura || enviando) return
+    setEnviando(true)
+    setErrorAccion('')
+    const accion = seleccion.factura.estado === 'APROBADA' ? 'reenviar' : 'reintentar'
+    try {
+      const resultado = await gestionarFactura(seleccion.factura.id, accion, correo)
+      setMensaje(accion === 'reenviar' ? resultado.envio_resultado : resultado.detalle)
+      setSeleccion(null)
+      await cargar()
+    } catch (err) {
+      setErrorAccion(err instanceof Error ? err.message : 'No se pudo completar la acción.')
+      await cargar()
+      try { setUso(await usoFacturas(seleccion.operacion.id)) } catch { /* mantiene el error original */ }
+    } finally { setEnviando(false) }
   }
 
   const filasFiltradas = filas.filter(f => {
@@ -257,6 +284,25 @@ export default function Invoices({ auth }: { auth?: AuthUser | null }) {
 
   return (
     <div className="space-y-5 animate-fadein">
+      {mensaje && <p role="status" className="p-3 bg-emerald-50 text-emerald-800 rounded-lg">{mensaje}</p>}
+      {seleccion && <div role="dialog" aria-modal="true" aria-labelledby="titulo-accion" className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
+        <form onSubmit={confirmarAccion} className="bg-white rounded-xl p-6 max-w-xl w-full space-y-4 max-h-[90vh] overflow-y-auto">
+          <h3 id="titulo-accion" className="font-semibold">{seleccion.factura?.estado === 'APROBADA' ? 'Reenviar por correo' : 'Reintentar emisión'}</h3>
+          <label className="block">Correo del cliente
+            <input type="email" required maxLength={160} value={correo} onChange={e => setCorreo(e.target.value)} className="block w-full border rounded p-2" />
+          </label>
+          {uso && <p>Emisiones usadas: {uso.usadas} de {uso.limite}. Disponibles: {uso.disponibles}. {uso.modo === 'simulado' && 'Modo simulado: no envía correos ni consume emisiones reales.'}</p>}
+          {seleccion.factura?.estado !== 'APROBADA' && uso && (!uso.disponibles || !uso.siguiente_numero) && <p role="alert">Límite de emisiones alcanzado o cupo reservado pendiente de verificar.</p>}
+          {errorAccion && <p role="alert" className="text-red-700">{errorAccion}</p>}
+          <div className="flex gap-3">
+            <button type="submit" disabled={enviando || !uso || (seleccion.factura?.estado !== 'APROBADA' && (!uso.disponibles || !uso.siguiente_numero))} className="bg-blue-700 text-white rounded px-4 py-2 disabled:opacity-50">{enviando ? 'Procesando…' : 'Confirmar'}</button>
+            <button type="button" disabled={enviando} onClick={() => setSeleccion(null)}>Cerrar</button>
+          </div>
+          <h4 className="font-semibold">Historial de intentos</h4>
+          {historial.map((intento, i) => <p key={i} className="text-sm border-t pt-2">{new Date(intento.fecha).toLocaleString('es-PY')} · {intento.usuario_nombre || 'Usuario'} · {intento.accion} · {intento.email} · {intento.resultado}</p>)}
+          {!historial.length && <p className="text-sm">Sin intentos registrados.</p>}
+        </form>
+      </div>}
       {/* Summary */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
@@ -375,23 +421,6 @@ export default function Invoices({ auth }: { auth?: AuthUser | null }) {
                     {inv.estado === 'Rechazada' && inv.motivo && (
                       <div className="mt-1.5 text-[11px] text-slate-400 font-medium">{inv.motivo}</div>
                     )}
-                    {inv.factura?.estado_cancelacion && (
-                      <div className={`mt-1.5 inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded border ${estadoEventoStyle[inv.factura.estado_cancelacion] ?? 'bg-slate-50 text-slate-500 border-slate-200'}`}>
-                        Cancelación: {inv.factura.estado_cancelacion.toLowerCase()}
-                      </div>
-                    )}
-                    {inv.factura?.estado_inutilizacion && (
-                      <div className={`mt-1.5 inline-block text-[10px] font-semibold px-1.5 py-0.5 rounded border ${estadoEventoStyle[inv.factura.estado_inutilizacion] ?? 'bg-slate-50 text-slate-500 border-slate-200'}`}>
-                        Inutilización: {inv.factura.estado_inutilizacion.toLowerCase()}
-                      </div>
-                    )}
-                    {inv.factura?.notas_credito && inv.factura.notas_credito.length > 0 && (
-                      <div className="mt-1.5 text-[10px] text-slate-500">
-                        {inv.factura.notas_credito.length === 1
-                          ? `NC ${inv.factura.notas_credito[0].numero_completo}: ${inv.factura.notas_credito[0].estado.toLowerCase()}`
-                          : `${inv.factura.notas_credito.length} notas de crédito`}
-                      </div>
-                    )}
                   </td>
                   <td className="px-5 py-4">
                     {inv.factura ? (
@@ -402,22 +431,21 @@ export default function Invoices({ auth }: { auth?: AuthUser | null }) {
                   </td>
                   <td className="px-5 py-4">
                     <span>{inv.factura?.tipo_operacion_display ?? (inv.operacion.tipo_operacion === 'COMPRA' ? 'Compra' : 'Venta')}</span>
-                    {puedeGestionar && inv.factura && inv.factura.estado === 'APROBADA' && (
-                      <OperacionesFactura factura={inv.factura} onActualizada={refrescar} />
-                    )}
+                    {puedeGestionar && inv.factura?.estado === 'APROBADA' && <OperacionesFactura factura={inv.factura} onActualizada={async () => { await cargar() }} />}
                   </td>
                   <td className="px-5 py-4">
+                    {inv.factura && ['APROBADA', 'RECHAZADA', 'ERROR'].includes(inv.factura.estado) && <button type="button" onClick={() => void abrirAccion(inv)} className="text-blue-700 text-[12px] font-semibold px-2 py-1">{inv.factura.estado === 'APROBADA' ? 'Reenviar por correo' : 'Reintentar emisión'}</button>}
                     <button
                       type="button"
                       onClick={() => void descargarPdf(inv)}
-                      disabled={!inv.factura || (!['APROBADA', 'ANULADA', 'DEVUELTA'].includes(inv.factura.estado) || inv.factura.pdf_pendiente)
+                      disabled={!inv.factura || !['APROBADA', 'ANULADA', 'DEVUELTA'].includes(inv.factura.estado) || inv.factura.pdf_pendiente
                         || descargando === `kude-${inv.factura.id}`}
                       title={motivoPdf(inv.factura)}
-                      aria-label={inv.factura && inv.factura.estado === 'APROBADA'
+                      aria-label={inv.factura && ['APROBADA', 'ANULADA', 'DEVUELTA'].includes(inv.factura.estado) && !inv.factura.pdf_pendiente
                         ? `Descargar factura ${inv.factura.numero_completo}`
                         : `PDF no disponible: ${motivoPdf(inv.factura)}`}
                       className={
-                        inv.factura && inv.factura.estado === 'APROBADA'
+                        inv.factura && ['APROBADA', 'ANULADA', 'DEVUELTA'].includes(inv.factura.estado) && !inv.factura.pdf_pendiente
                           ? 'text-[12px] font-semibold text-slate-500 hover:text-blue-600 px-2 py-1 rounded hover:bg-blue-50 transition-colors'
                           : 'text-[12px] font-semibold text-slate-400 px-2 py-1 rounded opacity-50 cursor-not-allowed'
                       }
@@ -435,8 +463,6 @@ export default function Invoices({ auth }: { auth?: AuthUser | null }) {
                         {descargando === `xml-${inv.factura.id}` ? '⏳ XML' : '🧾 XML'}
                       </button>
                     )}
-                  </td>
-                  <td className="px-5 py-4">
                   </td>
                 </tr>
               ))}

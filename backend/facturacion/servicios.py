@@ -42,6 +42,7 @@ from .models import (
     EventoSIFEN,
     FacturaElectronica,
     NotaCreditoElectronica,
+    IntentoFactura,
 )
 
 
@@ -106,17 +107,16 @@ def uso(simulada: bool | None = None) -> dict:
     if simulada is None:
         simulada = cliente_fs.modo_simulado()
     desde, hasta = rango()
-    limite = hasta - desde + 1
-    usadas = len([n for n in numeros_usados(simulada) if desde <= n <= hasta])
+    limite = min(hasta - desde + 1, 49)
     nc_desde, nc_hasta = rango_nc()
     nc_limite = nc_hasta - nc_desde + 1
-    nc_usadas = len(
-        [n for n in numeros_nc_usados(simulada) if nc_desde <= n <= nc_hasta])
+    usadas = FacturaElectronica.objects.filter(simulada=simulada, consume_emision=True).count()
+    nc_usadas = len([n for n in numeros_nc_usados(simulada) if nc_desde <= n <= nc_hasta])
     return {
         'modo': 'simulado' if simulada else 'real',
         'usadas': usadas,
         'limite': limite,
-        'disponibles': max(limite - usadas, 0),
+        'disponibles': max(limite - usadas - FacturaElectronica.objects.filter(simulada=simulada, estado='VERIFICAR', consume_emision=False, numero__isnull=False).count(), 0),
         'siguiente_numero': siguiente_numero(simulada),
         'nc_usadas': nc_usadas,
         'nc_limite': nc_limite,
@@ -131,7 +131,7 @@ def _numero_completo(de: dict, numero: str) -> str:
 
 # ------------------------------------------------------------ emisión --
 
-def emitir_factura(operacion_id: int, email: str, usuario_sub: str = '',
+def _emitir_factura(operacion_id: int, email: str, usuario_sub: str = '',
                    usuario_nombre: str = '') -> FacturaElectronica:
     """Emite la factura electrónica de una operación PAGADA."""
     simulada = cliente_fs.modo_simulado()
@@ -155,6 +155,13 @@ def emitir_factura(operacion_id: int, email: str, usuario_sub: str = '',
             estado__in=FacturaElectronica.ESTADOS_ACTIVOS).exists():
         raise EmisionRechazada(
             'La operación ya tiene una factura emitida o aprobada.')
+    # Verificar el cupo antes de preparar o consultar el DE. `siguiente_numero`
+    # por sí solo no aplica el límite operativo de 49 emisiones.
+    if uso(simulada)['disponibles'] <= 0:
+        info = uso(simulada)
+        raise EmisionRechazada(
+            f"Se alcanzó el límite de emisiones ({info['usadas']} de "
+            f"{info['limite']}). No se pueden emitir más facturas.")
     numero = siguiente_numero(simulada)
     if numero is None:
         info = uso(simulada)
@@ -182,8 +189,11 @@ def emitir_factura(operacion_id: int, email: str, usuario_sub: str = '',
         )
     except cliente_fs.SinRespuesta as exc:
         # calcular_de no genera nada: se puede reintentar sin riesgo.
-        raise EmisionRechazada(
-            f'No se pudo contactar a Factura Segura: {exc}') from exc
+        return FacturaElectronica.objects.create(
+            **comunes, estado=FacturaElectronica.ESTADO_ERROR,
+            consume_emision=False,
+            detalle=f'Sin conexión: {exc}'[:500],
+        )
 
     total = de_resumido['gCamItem'][0]['dPUniProSer']
 
@@ -205,7 +215,7 @@ def emitir_factura(operacion_id: int, email: str, usuario_sub: str = '',
                 numero_completo=_numero_completo(de, numero),
                 estado=FacturaElectronica.ESTADO_VERIFICAR,
                 total=total, de_enviado=de,
-                detalle='Enviando a Factura Segura…',
+                detalle='Enviando a Factura Segura…', consume_emision=False,
             )
     except IntegrityError as exc:
         raise EmisionRechazada(
@@ -217,6 +227,7 @@ def emitir_factura(operacion_id: int, email: str, usuario_sub: str = '',
         cdc, respuesta = cliente_fs.generar_de(de)
     except cliente_fs.ErrorFacturaSegura as exc:
         factura.estado = FacturaElectronica.ESTADO_ERROR
+        factura.consume_emision = bool(exc.code is not None and exc.code < 0)
         factura.numero = None  # no se generó: el número queda libre
         factura.detalle = f'generar_de: {exc}'[:500]
         factura.respuesta_servicio = exc.respuesta
@@ -230,6 +241,7 @@ def emitir_factura(operacion_id: int, email: str, usuario_sub: str = '',
         factura.save(update_fields=['detalle', 'actualizada'])
         return factura
 
+    factura.consume_emision = True
     factura.estado = FacturaElectronica.ESTADO_EMITIDA
     factura.cdc = cdc
     factura.respuesta_servicio = respuesta
@@ -354,6 +366,7 @@ def _aplicar_resultado(
                 'Simulado: no se envió ningún correo.' if factura.simulada
                 else 'Enviada por Factura Segura (XML y KuDE) al aprobarse.')
     elif estado_sifen in ('Rechazado', 'Reingresado'):
+        factura.consume_emision = True
         factura.estado = FacturaElectronica.ESTADO_RECHAZADA
         factura.detalle = descripcion or estado_sifen
     elif estado_sifen in ERRORES_SIFEN:
@@ -800,3 +813,88 @@ def sincronizar_gestion(factura):
     except GestionRechazada:
         pass
     return factura
+
+
+@transaction.atomic
+def emitir_factura(operacion_id, email, usuario_sub='', usuario_nombre=''):
+    from monedas.models import Moneda
+    Moneda.objects.select_for_update().get(codigo='PYG')
+    factura = _emitir_factura(operacion_id, email, usuario_sub, usuario_nombre)
+    IntentoFactura.objects.create(factura=factura, accion='EMISION',
+        usuario_sub=usuario_sub[:160], usuario_nombre=usuario_nombre[:160],
+        email=factura.email_destino, resultado=f'{factura.estado}: {factura.detalle}'[:500])
+    return factura
+
+def reintentar_factura(factura, email, usuario_sub='', usuario_nombre=''):
+    try:
+        if factura.simulada != cliente_fs.modo_simulado():
+            raise EmisionRechazada('La factura pertenece a otro modo de emisión.')
+        if factura.estado not in ('RECHAZADA', 'ERROR'):
+            raise EmisionRechazada('Solo se reintentan facturas rechazadas o con error.')
+        nueva = emitir_factura(factura.operacion_id, email, usuario_sub, usuario_nombre)
+        nueva.intentos.update(accion='REINTENTO')
+        return nueva
+    except EmisionRechazada as exc:
+        IntentoFactura.objects.create(factura=factura, accion='REINTENTO',
+            usuario_sub=usuario_sub[:160], usuario_nombre=usuario_nombre[:160],
+            email=factura.email_destino, resultado=str(exc)[:500])
+        raise
+
+
+def _reenviar_factura(factura, email, usuario_sub='', usuario_nombre=''):
+    from django.core.mail import EmailMessage
+    from django.conf import settings
+    email = (email or '').strip()
+    try:
+        validate_email(email)
+        if len(email) > 160:
+            raise ValidationError('Correo demasiado largo.')
+    except ValidationError as exc:
+        raise EmisionRechazada('Ingresá un correo válido para el cliente.') from exc
+    if factura.estado != 'APROBADA':
+        raise EmisionRechazada('Solo se reenvían facturas aprobadas.')
+    if factura.simulada != cliente_fs.modo_simulado():
+        raise EmisionRechazada('La factura pertenece a otro modo de emisión.')
+    resultado = 'Simulado: no se envió ningún correo.'
+    fallo = None
+    try:
+        if not factura.simulada:
+            if settings.EMAIL_BACKEND.endswith(('console.EmailBackend', 'dummy.EmailBackend')):
+                raise EmisionRechazada('Configurá el servidor de correo para reenviar facturas reales.')
+            ruc = cliente_fs.config()['EMISOR'].get('dRucEm', '')
+            mensaje = EmailMessage(f'Factura {factura.numero_completo}',
+                'Adjuntamos su factura electrónica (KuDE y XML).', to=[email])
+            for operacion, extension, tipo in [('dwn_kude', '.pdf', 'application/pdf'), ('dwn_xml', '.xml', 'application/xml')]:
+                mensaje.attach(factura.numero_completo + extension,
+                    cliente_fs.descargar(operacion, ruc, factura.cdc), tipo)
+            if mensaje.send(fail_silently=False) != 1:
+                raise EmisionRechazada('El servidor no confirmó el envío.')
+            resultado = 'Correo enviado con KuDE y XML.'
+    except Exception as exc:
+        resultado = 'No se pudo reenviar el correo.'
+        fallo = exc
+    IntentoFactura.objects.create(factura=factura, accion='REENVIO',
+        usuario_sub=usuario_sub[:160], usuario_nombre=usuario_nombre[:160],
+        email=email, resultado=resultado)
+    factura.envio_fecha = timezone.now()
+    factura.envio_destinatario = email
+    factura.envio_resultado = resultado
+    factura.save(update_fields=['envio_fecha', 'envio_destinatario', 'envio_resultado', 'actualizada'])
+    if fallo:
+        error = EmisionRechazada(str(fallo) if isinstance(fallo, EmisionRechazada) else resultado)
+        error.intento_registrado = True
+        raise error from fallo
+    return factura
+
+
+def reenviar_factura(factura, email, usuario_sub='', usuario_nombre=''):
+    # Validaciones fallidas también forman parte del historial; los errores de
+    # entrega ya fueron registrados por _reenviar_factura.
+    try:
+        return _reenviar_factura(factura, email, usuario_sub, usuario_nombre)
+    except EmisionRechazada as exc:
+        if not getattr(exc, 'intento_registrado', False):
+            IntentoFactura.objects.create(factura=factura, accion='REENVIO',
+                usuario_sub=usuario_sub[:160], usuario_nombre=usuario_nombre[:160],
+                email=factura.email_destino, resultado=str(exc)[:500])
+        raise

@@ -8,6 +8,7 @@ from .models import (
     EventoSIFEN,
     FacturaElectronica,
     NotaCreditoElectronica,
+    IntentoFactura,
 )
 
 
@@ -62,7 +63,14 @@ class NotaCreditoElectronicaSerializer(serializers.ModelSerializer):
         return getattr(cliente, 'nombre_completo', '') or str(cliente)
 
 
+class IntentoFacturaSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = IntentoFactura
+        fields = ['accion', 'usuario_sub', 'usuario_nombre', 'fecha', 'email', 'resultado']
+
+
 class FacturaElectronicaSerializer(serializers.ModelSerializer):
+    intentos = IntentoFacturaSerializer(many=True, read_only=True)
     cliente_nombre = serializers.SerializerMethodField()
     tipo_operacion = serializers.CharField(source='operacion.tipo_operacion', read_only=True)
     tipo_operacion_display = serializers.SerializerMethodField()
@@ -76,7 +84,7 @@ class FacturaElectronicaSerializer(serializers.ModelSerializer):
     class Meta:
         model = FacturaElectronica
         fields = [
-            'id', 'operacion', 'cliente_nombre', 'tipo_operacion', 'tipo_operacion_display', 'simulada', 'numero',
+            'intentos', 'consume_emision', 'id', 'operacion', 'cliente_nombre', 'tipo_operacion', 'tipo_operacion_display', 'simulada', 'numero',
             'numero_completo', 'cdc', 'estado', 'total', 'email_destino',
             'detalle', 'respuesta_servicio', 'envio_fecha',
             'envio_destinatario', 'envio_resultado', 'emitida_por_nombre',

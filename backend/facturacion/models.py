@@ -83,6 +83,8 @@ class FacturaElectronica(models.Model):
     ESTADOS_CON_NUMERO = (
         ESTADO_VERIFICAR, ESTADO_EMITIDA, ESTADO_APROBADA, ESTADO_RECHAZADA, ESTADO_ANULADA, ESTADO_DEVUELTA)
 
+    consume_emision = models.BooleanField(default=False)
+
     operacion = models.ForeignKey(
         'operaciones.Operacion', on_delete=models.PROTECT,
         related_name='facturas', verbose_name='operación',
@@ -361,3 +363,16 @@ class NotaCreditoElectronica(models.Model):
 
     def __str__(self) -> str:
         return self.numero_completo or f'sin número (factura {self.factura_id})'
+
+
+class IntentoFactura(models.Model):
+    factura = models.ForeignKey(FacturaElectronica, on_delete=models.PROTECT, related_name='intentos')
+    accion = models.CharField(max_length=16)
+    usuario_sub = models.CharField(max_length=160, blank=True)
+    usuario_nombre = models.CharField(max_length=160, blank=True)
+    fecha = models.DateTimeField(auto_now_add=True)
+    email = models.EmailField(max_length=160, blank=True)
+    resultado = models.CharField(max_length=500)
+
+    class Meta:
+        ordering = ['-fecha']
