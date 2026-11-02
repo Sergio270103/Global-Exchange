@@ -396,6 +396,21 @@ describe('CashierDashboard PI-75 (operación unificada)', () => {
     expect(screen.getByText(/Venta de divisas · El cliente vende GBP/)).toBeInTheDocument()
   })
 
+  it('elegir en origen la divisa del destino intercambia las dos', async () => {
+    const user = userEvent.setup()
+    render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
+    await esperarCatalogo()
+    // Arranca en PYG -> USD; elegir USD en origen deja USD -> PYG (venta).
+    await user.selectOptions(screen.getByLabelText('Divisa origen'), 'USD')
+    expect(screen.getByLabelText('Divisa origen')).toHaveValue('USD')
+    expect(screen.getByLabelText('Divisa destino')).toHaveValue('PYG')
+    await waitFor(() => expect(screen.getByLabelText('Tipo de operación')).toHaveValue('VENTA'))
+    // Y al revés desde el destino.
+    await user.selectOptions(screen.getByLabelText('Divisa destino'), 'USD')
+    expect(screen.getByLabelText('Divisa origen')).toHaveValue('PYG')
+    expect(screen.getByLabelText('Divisa destino')).toHaveValue('USD')
+  })
+
   it('avisa si el cajero se aparta del tipo deducido', async () => {
     const user = userEvent.setup()
     render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
@@ -621,15 +636,9 @@ describe('CashierDashboard historial (top 10, Ver todo y anulación)', () => {
     expect(navigate).toHaveBeenCalledWith('transactions')
   })
 
-  it('la anulación usa el endpoint y marca Anulada desde el servidor', async () => {
-    const user = userEvent.setup()
+  it('ofrece únicamente reimprimir en el historial', async () => {
     render(<CashierDashboard auth={auth} currentClient={null} navigate={() => {}} />)
-    await user.click((await screen.findAllByRole('button', { name: /Anulación/ }))[0])
-    expect(await screen.findByText(/anulado y revertido en caja/i)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Anulada' })).toBeDisabled()
-    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>
-    const anular = fetchMock.mock.calls.filter(([llamada, datos]) =>
-      String(llamada).includes('/anular/') && (datos as RequestInit).method === 'POST')
-    expect(anular).toHaveLength(1)
+    expect((await screen.findAllByRole('button', { name: /Reimprimir/ })).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: /Anulación/ })).not.toBeInTheDocument()
   })
 })

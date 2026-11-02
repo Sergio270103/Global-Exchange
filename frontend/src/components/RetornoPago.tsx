@@ -10,6 +10,7 @@
  */
 import { useEffect, useState } from 'react'
 import { iniciarPago, obtenerOperacion, type Operacion } from '@/services/operaciones'
+import EmitirFactura from '@/components/EmitirFactura'
 
 export interface RetornoPagoProps {
   opId: number
@@ -111,6 +112,10 @@ export default function RetornoPago({ opId, resultado, onVerHistorial, onReinten
             </div>
             <h2 className="text-xl font-bold text-slate-900 mb-2" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>¡Pago acreditado!</h2>
             <p className="text-slate-500 text-[14px] mb-6">La operación #{opId} quedó confirmada.</p>
+            {/* PI-30: emitir la factura electrónica del pago acreditado. */}
+            <div className="text-left mb-6">
+              <EmitirFactura operacionId={opId} />
+            </div>
             <button onClick={onVerHistorial} className="w-full py-3 rounded-xl text-white text-[14px] font-semibold" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
               Ver en historial
             </button>

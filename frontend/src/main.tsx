@@ -10,6 +10,10 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import './index.css'
+import { evitarCambiosConRueda } from './utils/inputNumero'
+
+// La rueda del mouse no debe cambiar los montos (ver utils/inputNumero).
+evitarCambiosConRueda()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

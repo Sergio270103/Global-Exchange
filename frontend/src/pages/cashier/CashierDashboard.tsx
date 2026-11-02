@@ -209,6 +209,19 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
   }, [])
 
   /** Operación deducida de las divisas, o `null` si el par no es válido. */
+  /**
+   * Elegir en un lado la divisa que ya está en el otro intercambia las dos
+   * (ej. PYG → USD pasa a USD → PYG), en vez de ocultarla de la lista.
+   */
+  const elegirOrigen = (codigo: DivisaCodigo) => {
+    if (codigo === destinationCurrency) setDestinationCurrency(originCurrency)
+    setOriginCurrency(codigo)
+  }
+  const elegirDestino = (codigo: DivisaCodigo) => {
+    if (codigo === originCurrency) setOriginCurrency(destinationCurrency)
+    setDestinationCurrency(codigo)
+  }
+
   const operacion = derivarOperacion(originCurrency, destinationCurrency)
   /** Divisa que el cliente compra o vende (la que opera el backend). */
   const divisaOperada = operacion?.operada ?? ''
@@ -516,11 +529,11 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
               <select
                 id="divisa-origen"
                 value={originCurrency}
-                onChange={(e) => setOriginCurrency(e.target.value as DivisaCodigo)}
+                onChange={(e) => elegirOrigen(e.target.value as DivisaCodigo)}
                 className="w-full mt-1 p-2 border rounded-lg text-sm"
               >
                 {monedas
-                  .filter((currency) => currency.active && currency.code !== destinationCurrency)
+                  .filter((currency) => currency.active)
                   .map((currency) => (
                     <option key={currency.code} value={currency.code}>
                       {currency.code} - {currency.name}
@@ -534,11 +547,11 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
               <select
                 id="divisa-destino"
                 value={destinationCurrency}
-                onChange={(e) => setDestinationCurrency(e.target.value as DivisaCodigo)}
+                onChange={(e) => elegirDestino(e.target.value as DivisaCodigo)}
                 className="w-full mt-1 p-2 border rounded-lg text-sm"
               >
                 {monedas
-                  .filter((currency) => currency.active && currency.code !== originCurrency)
+                  .filter((currency) => currency.active)
                   .map((currency) => (
                     <option key={currency.code} value={currency.code}>
                       {currency.code} - {currency.name}
@@ -648,7 +661,6 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
               >
                 <option value="Comprobante">Comprobante</option>
               </select>
-              <p className="text-[11px] text-slate-400 mt-1">Comprobante interno de la operación (no es factura electrónica).</p>
             </div>
           </div>
 
@@ -779,17 +791,7 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
                       <button onClick={() => handleReimprimir(comp.id)} className="px-2 py-1 bg-slate-900 text-white rounded font-semibold text-[11px]">
                         🖨️ Reimprimir
                       </button>
-                      <button
-                        onClick={() => handleAnular(comp)}
-                        disabled={anulandoId === comp.id || comp.estado === 'anulado'}
-                        className="px-2 py-1 bg-rose-50 border border-rose-200 text-rose-600 rounded font-semibold text-[11px] disabled:opacity-60"
-                      >
-                        {anulandoId === comp.id
-                          ? 'Anulando…'
-                          : comp.estado === 'anulado'
-                            ? 'Anulada'
-                            : 'Solicitar NC / Anulación'}
-                      </button>
+
                     </div>
                   </td>
                 </tr>

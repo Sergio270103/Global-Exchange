@@ -38,6 +38,7 @@ import { listarMetodos, type MetodoPago } from '@/services/metodos'
 import { listarBilleteras, listarMedios, type Billetera, type MedioAcreditacion } from '@/services/billeteras'
 import { listarCuentas } from '@/services/cuentas'
 import type { BankAccount } from '@/types'
+import EmitirFactura from '@/components/EmitirFactura'
 import { type AuthUser, type ClienteActivo, type Currency } from '@/types'
 
 export interface BuySellProps {
@@ -440,6 +441,13 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
               </div>
             ))}
           </div>
+
+          {/* PI-30: el usuario también puede emitir su factura electrónica. */}
+          {operacion.estado === 'PAGADA' && (
+            <div className="text-left mb-6">
+              <EmitirFactura operacionId={operacion.id} />
+            </div>
+          )}
 
           <div className="flex gap-3">
             <button className="flex-1 py-2.5 rounded-xl border border-slate-200 text-[13px] font-semibold text-slate-700 hover:bg-slate-50 transition-colors">

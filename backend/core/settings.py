@@ -36,7 +36,6 @@ ALLOWED_HOSTS = [h.strip() for h in os.getenv('DJANGO_ALLOWED_HOSTS', 'localhost
 # Application definition
 
 INSTALLED_APPS = [
-    'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
     'django.contrib.sessions',
@@ -55,11 +54,13 @@ INSTALLED_APPS = [
     'cajas',
     'alertas',
     'comprobantes',
+    'facturacion',
 ]
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -160,12 +161,20 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = os.getenv('DJANGO_STATIC_ROOT', str(BASE_DIR / 'staticfiles'))
 
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
 
-EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+EMAIL_BACKEND = os.getenv('EMAIL_BACKEND', 'django.core.mail.backends.console.EmailBackend')
+EMAIL_HOST = os.getenv('EMAIL_HOST', '')
+EMAIL_PORT = int(os.getenv('EMAIL_PORT', '587'))
+EMAIL_HOST_USER = os.getenv('EMAIL_HOST_USER', '')
+EMAIL_HOST_PASSWORD = os.getenv('EMAIL_HOST_PASSWORD', '')
+EMAIL_USE_TLS = os.getenv('EMAIL_USE_TLS', 'True').lower() == 'true'
+DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'facturas@localhost')
+EMAIL_TIMEOUT = 20
 # Segundos en que se respeta la tasa congelada al confirmar
 OPERACION_TOLERANCIA_SEGUNDOS = 30
 
@@ -179,3 +188,53 @@ FRONTEND_URL = os.getenv('FRONTEND_URL', 'http://localhost:5173')
 # Métodos que se cobran por pasarela; 'transfer' es confirmación directa
 # (sin verificación de saldo) y 'wallet' es saldo interno.
 STRIPE_METODOS = ('card',)
+
+# Facturación electrónica con Factura Segura (PI-30).
+# Token y datos del emisor solo en backend/.env (nunca se commitean).
+# FACTURASEGURA_MODO: 'simulado' (por defecto, no llama a la API) o 'real'.
+FACTURASEGURA = {
+    'MODO': os.getenv('FACTURASEGURA_MODO', 'simulado').strip().lower(),
+    'URL': os.getenv(
+        'FACTURASEGURA_URL',
+        'https://apitest.facturasegura.com.py/misife00/v1/esi'),
+    'TOKEN': os.getenv('FACTURASEGURA_TOKEN', ''),
+    'TIMEOUT': int(os.getenv('FACTURASEGURA_TIMEOUT', '40')),
+    # URL opcional del login para renovar el token del ESI.
+    'LOGIN_URL': os.getenv('FACTURASEGURA_LOGIN_URL', ''),
+    # Rango de dNumDoc asignado por Factura Segura (inclusive).
+    'NUMERO_DESDE': int(os.getenv('FACTURASEGURA_NUMERO_DESDE', '100')),
+    'NUMERO_HASTA': int(os.getenv('FACTURASEGURA_NUMERO_HASTA', '111')),
+    # Rango propio para notas de crédito (iTiDE=5).
+    'NC_NUMERO_DESDE': int(os.getenv('FACTURASEGURA_NC_NUMERO_DESDE', '13')),
+    'NC_NUMERO_HASTA': int(os.getenv('FACTURASEGURA_NC_NUMERO_HASTA', '24')),
+    # Horas desde la emisión en que SIFEN admite cancelar (0 = sin límite).
+    'CANCELACION_VENTANA_HORAS': int(
+        os.getenv('FACTURASEGURA_CANCELACION_VENTANA_HORAS', '48')),
+    # Tratamiento de IVA del ítem facturado: 10, 5 o 0 (exento).
+    'IVA_TASA': int(os.getenv('FACTURASEGURA_IVA_TASA', '10')),
+    'EMISOR': {
+        'dRucEm': os.getenv('FACTURASEGURA_RUC', ''),
+        'dDVEmi': os.getenv('FACTURASEGURA_DV', ''),
+        'iTipCont': os.getenv('FACTURASEGURA_TIPO_CONTRIBUYENTE', ''),
+        'dNumTim': os.getenv('FACTURASEGURA_TIMBRADO', ''),
+        'dFeIniT': os.getenv('FACTURASEGURA_TIMBRADO_INICIO', ''),
+        'dEst': os.getenv('FACTURASEGURA_ESTABLECIMIENTO', '001'),
+        'dPunExp': os.getenv('FACTURASEGURA_PUNTO_EXPEDICION', '003'),
+        'dNomEmi': os.getenv('FACTURASEGURA_NOMBRE', ''),
+        'dDirEmi': os.getenv('FACTURASEGURA_DIRECCION', ''),
+        'dNumCas': os.getenv('FACTURASEGURA_NUMERO_CASA', ''),
+        'cDepEmi': os.getenv('FACTURASEGURA_DEPARTAMENTO_COD', ''),
+        'dDesDepEmi': os.getenv('FACTURASEGURA_DEPARTAMENTO', ''),
+        'cDisEmi': os.getenv('FACTURASEGURA_DISTRITO_COD', ''),
+        'dDesDisEmi': os.getenv('FACTURASEGURA_DISTRITO', ''),
+        'cCiuEmi': os.getenv('FACTURASEGURA_CIUDAD_COD', ''),
+        'dDesCiuEmi': os.getenv('FACTURASEGURA_CIUDAD', ''),
+        'dTelEmi': os.getenv('FACTURASEGURA_TELEFONO', ''),
+        'dEmailE': os.getenv('FACTURASEGURA_EMAIL', ''),
+        # Una o más actividades económicas, separadas con "|" en el mismo
+        # orden en los dos campos (las descripciones pueden tener comas).
+        'cActEco': os.getenv('FACTURASEGURA_ACT_ECO_COD', ''),
+        'dDesActEco': os.getenv('FACTURASEGURA_ACT_ECO', ''),
+    },
+}
+MEDIA_ROOT = os.getenv('DJANGO_MEDIA_ROOT', str(BASE_DIR / 'media'))

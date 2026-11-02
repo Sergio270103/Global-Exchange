@@ -17,8 +17,16 @@ operaciones de compra/venta de divisas, emitir comprobantes legales y
 gestionar el arqueo de caja de la sucursal.</p>
 <p>PI-45: la identificación de clientes ya consulta la API real. El cajero
 busca por documento y, si no existe, lo registra desde el modal; el
-cliente nuevo queda seleccionado para la transacción. La emisión de
-comprobantes y DNIT sigue siendo local (corresponde a otro PI).</p>
+cliente nuevo queda seleccionado para la transacción.
+PI-42: la emisión es real — crea y confirma la operación en efectivo
+en nombre del cliente y emite el comprobante interno (único, guardado
+y reimprimible). La factura electrónica/DNIT corresponde a otro PI.
+PI-75: la operación presencial se ejecuta en el servidor en una sola
+transacción (<code>POST /api/cajas/{id}/operacion/</code>): crea la operación
+PAGADA, mueve el efectivo (siempre el RETIRO de lo entregado; el
+INGRESO solo si paga en efectivo) y emite el comprobante. El panel
+muestra el desglose previo, el historial limitado a 10 con &quot;Ver todo&quot;
+hacia Transacciones, y anula por endpoint con reversa atómica.</p>
 </div></section>
 <details class="tsd-panel-group tsd-member-group tsd-accordion" open><summary class="tsd-accordion-summary" data-key="section-Interfaces"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"><use href="../assets/icons.svg#icon-chevronDown"></use></svg>
 <h2 class="tsd-anchor-link" id="interfaces">Interfaces<a href="#interfaces" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></h2></summary><dl class="tsd-member-summaries"><dt class="tsd-member-summary" id="props"><span class="tsd-member-summary-name"><svg class="tsd-kind-icon" viewBox="0 0 24 24" aria-label="Interface"><use href="../assets/icons.svg#icon-256"></use></svg><a href="../interfaces/CashierDashboard.Props.html">Props</a><a href="#props" aria-label="Permalink" class="tsd-anchor-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="../assets/icons.svg#icon-anchor"></use></svg></a></span></dt><dd class="tsd-member-summary"></dd></dl></details>

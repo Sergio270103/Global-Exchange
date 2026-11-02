@@ -8,6 +8,16 @@ import { render, screen } from '@testing-library/react'
 import ComprobanteVista from '@/components/ComprobanteVista'
 import type { Comprobante } from '@/services/comprobantes'
 
+// El bloque de factura electrónica (PI-30) consulta la API: se simula.
+vi.mock('@/services/facturas', async (original) => ({
+  ...(await original<typeof import('@/services/facturas')>()),
+  usoFacturas: vi.fn().mockResolvedValue({
+    modo: 'simulado', usadas: 0, limite: 12, disponibles: 12,
+    siguiente_numero: '0000100', operacion_estado: 'PAGADA',
+    email_cliente: 'ana@test.com', factura: null,
+  }),
+}))
+
 const comprobante: Comprobante = {
   id: 1, numero: 'CPB-000001', operacion: 9,
   cliente_nombre: 'Ana Barrios', cliente_documento: '4589201',
@@ -29,7 +39,9 @@ describe('ComprobanteVista (recibo interno)', () => {
     expect(screen.getByText(/757[.,]?500/)).toBeInTheDocument()
     expect(screen.getByText(/100 USD/)).toBeInTheDocument()
     expect(screen.getByText('Cajero')).toBeInTheDocument()
-    expect(screen.getByText('Comprobante interno, no es factura electrónica.')).toBeInTheDocument()
+    // Solo se usa factura electrónica: ya no se aclara "comprobante interno".
+    expect(screen.getByText('Comprobante de operación')).toBeInTheDocument()
+    expect(screen.queryByText(/no es factura electrónica/)).not.toBeInTheDocument()
   })
 
   it('ofrece imprimir, descargar PDF y cerrar', async () => {

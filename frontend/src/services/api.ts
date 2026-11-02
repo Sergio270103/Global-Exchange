@@ -77,3 +77,20 @@ export async function apiFetch<T>(ruta: string, init: RequestInit = {}): Promise
   const texto = await res.text()
   return (texto ? JSON.parse(texto) : null) as T
 }
+
+/**
+ * Descarga un archivo (PDF, XML, ...) de la API con autenticación Keycloak.
+ *
+ * @param ruta - Ruta relativa a la API, ej. `/facturas/3/kude/`.
+ * @returns El contenido como `Blob`.
+ * @throws {ApiError} Si la respuesta no es 2xx (con el `detail` del backend).
+ */
+export async function apiDescargar(ruta: string): Promise<Blob> {
+  const token = await tokenVigente()
+  const headers: Record<string, string> = {}
+  if (token) headers.Authorization = `Bearer ${token}`
+  const res = await fetch(`${API_BASE}${ruta}`, { headers })
+  if (!res.ok) throw new ApiError(res.status, await mensajeDeError(res))
+  return res.blob()
+}
+
