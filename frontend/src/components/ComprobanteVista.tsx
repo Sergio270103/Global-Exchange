@@ -31,7 +31,7 @@ function generarPdf(c: Comprobante): void {
   const doc = new jsPDF()
   let y = 25
   doc.setFontSize(14)
-  y = linea(doc, 'GLOBAL EXCHANGE - COMPROBANTE INTERNO', y, true)
+  y = linea(doc, 'GLOBAL EXCHANGE - COMPROBANTE DE OPERACION', y, true)
   doc.setFontSize(11)
   y = linea(doc, `Numero: ${c.numero}    Fecha: ${new Date(c.fecha_operacion).toLocaleString()}`, y + 3)
   y = linea(doc, '--------------------------------------------------------', y)
@@ -48,8 +48,6 @@ function generarPdf(c: Comprobante): void {
   }
   y = linea(doc, `Metodo: ${c.metodo_pago || '-'}`, y)
   y = linea(doc, `Atendido por: ${c.cajero_nombre || '-'}`, y)
-  y = linea(doc, '--------------------------------------------------------', y)
-  y = linea(doc, 'Comprobante interno, no es factura electronica.', y)
   doc.save(`${c.numero}.pdf`)
 }
 
@@ -74,7 +72,7 @@ export default function ComprobanteVista({ comprobante: c, onClose }: Props) {
           {/* Zona imprimible */}
           <div id="comprobante-print" className="border border-slate-200 rounded-lg p-5 font-mono text-sm text-slate-900">
             <h3 className="font-bold text-center text-base">GLOBAL EXCHANGE</h3>
-            <p className="text-center text-xs text-slate-500">Comprobante interno de operación</p>
+            <p className="text-center text-xs text-slate-500">Comprobante de operación</p>
             <p className="text-center font-bold mt-1">{c.numero}</p>
             <p className="text-center text-xs">{new Date(c.fecha_operacion).toLocaleString()}</p>
             <hr className="my-3 border-dashed" />
@@ -93,8 +91,6 @@ export default function ComprobanteVista({ comprobante: c, onClose }: Props) {
               <div className="flex justify-between gap-2"><dt className="text-slate-500">Método</dt><dd className="text-right">{c.metodo_pago || '-'}</dd></div>
               <div className="flex justify-between gap-2"><dt className="text-slate-500">Atendido por</dt><dd className="text-right">{c.cajero_nombre || '-'}</dd></div>
             </dl>
-            <hr className="my-3 border-dashed" />
-            <p className="text-center text-[11px] text-slate-500">Comprobante interno, no es factura electrónica.</p>
           </div>
           {/* Factura electrónica (PI-30, no se imprime) */}
           {c.estado !== 'anulado' && <EmitirFactura operacionId={c.operacion} />}

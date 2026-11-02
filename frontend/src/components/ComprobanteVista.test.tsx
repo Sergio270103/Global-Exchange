@@ -39,7 +39,9 @@ describe('ComprobanteVista (recibo interno)', () => {
     expect(screen.getByText(/757[.,]?500/)).toBeInTheDocument()
     expect(screen.getByText(/100 USD/)).toBeInTheDocument()
     expect(screen.getByText('Cajero')).toBeInTheDocument()
-    expect(screen.getByText('Comprobante interno, no es factura electrónica.')).toBeInTheDocument()
+    // Solo se usa factura electrónica: ya no se aclara "comprobante interno".
+    expect(screen.getByText('Comprobante de operación')).toBeInTheDocument()
+    expect(screen.queryByText(/no es factura electrónica/)).not.toBeInTheDocument()
   })
 
   it('ofrece imprimir, descargar PDF y cerrar', async () => {

@@ -661,7 +661,6 @@ export default function CashierDashboard({ auth, currentClient, navigate }: Prop
               >
                 <option value="Comprobante">Comprobante</option>
               </select>
-              <p className="text-[11px] text-slate-400 mt-1">Comprobante interno de la operación (no es factura electrónica).</p>
             </div>
           </div>
 

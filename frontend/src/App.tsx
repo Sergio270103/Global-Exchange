@@ -11,6 +11,7 @@
 import { useState, useEffect } from 'react'
 import keycloak, { initKeycloak } from './keycloak'
 import { type AuthUser, type Page, type Role, type ClienteActivo } from './types'
+import { borrarPagina, guardarPagina, leerPagina } from './utils/paginaGuardada'
 
 import Layout from './components/Layout'
 import RetornoPago from './components/RetornoPago'
@@ -89,9 +90,14 @@ export default function App() {
   // Retorno desde Stripe Checkout (`?pago=exito|cancelado&op={id}`).
   const [retorno, setRetorno] = useState<{ resultado: 'exito' | 'cancelado'; opId: number } | null>(null)
 
-  const navigate = (p: Page) => setPage(p)
+  // Al recargar se vuelve a la pantalla donde estaba (ver utils/paginaGuardada).
+  const navigate = (p: Page) => {
+    setPage(p)
+    if (auth) guardarPagina(p, auth.role)
+  }
 
   const onLogout = () => {
+    borrarPagina()
     keycloak.logout({
       redirectUri: window.location.origin,
     })
@@ -101,8 +107,9 @@ export default function App() {
     initKeycloak()
       .then((authenticated) => {
         if (authenticated) {
-          setAuth(mapKeycloakUser(keycloak.tokenParsed))
-          setPage('dashboard')
+          const usuario = mapKeycloakUser(keycloak.tokenParsed)
+          setAuth(usuario)
+          setPage(leerPagina(usuario.role) ?? 'dashboard')
         }
       })
       .catch(err => console.error('Error inicializando Keycloak', err))

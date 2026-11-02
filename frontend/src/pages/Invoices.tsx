@@ -22,6 +22,7 @@
  * @module Invoices
  */
 import { useCallback, useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { listarComprobantes, type Comprobante } from '@/services/comprobantes'
 import { listarOperaciones, type Operacion } from '@/services/operaciones'
 import {
@@ -285,24 +286,26 @@ export default function Invoices({ auth }: { auth?: AuthUser | null }) {
   return (
     <div className="space-y-5 animate-fadein">
       {mensaje && <p role="status" className="p-3 bg-emerald-50 text-emerald-800 rounded-lg">{mensaje}</p>}
-      {seleccion && <div role="dialog" aria-modal="true" aria-labelledby="titulo-accion" className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4">
-        <form onSubmit={confirmarAccion} className="bg-white rounded-xl p-6 max-w-xl w-full space-y-4 max-h-[90vh] overflow-y-auto">
-          <h3 id="titulo-accion" className="font-semibold">{seleccion.factura?.estado === 'APROBADA' ? 'Reenviar por correo' : 'Reintentar emisión'}</h3>
-          <label className="block">Correo del cliente
-            <input type="email" required maxLength={160} value={correo} onChange={e => setCorreo(e.target.value)} className="block w-full border rounded p-2" />
+      {/* Portal a <body>: la página usa una animación con transform y, sin
+          portal, la ventana quedaba corrida y el botón Confirmar fuera de vista. */}
+      {seleccion && createPortal(<div role="dialog" aria-modal="true" aria-labelledby="titulo-accion" className="fixed inset-0 z-50 bg-slate-900/50 flex items-center justify-center p-4">
+        <form onSubmit={confirmarAccion} className="bg-white rounded-xl shadow-xl p-6 max-w-xl w-full space-y-4 max-h-[90vh] overflow-y-auto text-[13px] text-slate-700">
+          <h3 id="titulo-accion" className="font-semibold text-[15px] text-slate-900">{seleccion.factura?.estado === 'APROBADA' ? 'Reenviar por correo' : 'Reintentar emisión'}</h3>
+          <label className="block text-[12px] font-semibold text-slate-500">Correo del cliente
+            <input type="email" required maxLength={160} value={correo} onChange={e => setCorreo(e.target.value)} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-normal text-slate-800 focus:outline-none focus:border-emerald-400" />
           </label>
           {uso && <p>Emisiones usadas: {uso.usadas} de {uso.limite}. Disponibles: {uso.disponibles}. {uso.modo === 'simulado' && 'Modo simulado: no envía correos ni consume emisiones reales.'}</p>}
           {seleccion.factura?.estado !== 'APROBADA' && uso && (!uso.disponibles || !uso.siguiente_numero) && <p role="alert">Límite de emisiones alcanzado o cupo reservado pendiente de verificar.</p>}
           {errorAccion && <p role="alert" className="text-red-700">{errorAccion}</p>}
           <div className="flex gap-3">
-            <button type="submit" disabled={enviando || !uso || (seleccion.factura?.estado !== 'APROBADA' && (!uso.disponibles || !uso.siguiente_numero))} className="bg-blue-700 text-white rounded px-4 py-2 disabled:opacity-50">{enviando ? 'Procesando…' : 'Confirmar'}</button>
-            <button type="button" disabled={enviando} onClick={() => setSeleccion(null)}>Cerrar</button>
+            <button type="submit" disabled={enviando || !uso || (seleccion.factura?.estado !== 'APROBADA' && (!uso.disponibles || !uso.siguiente_numero))} className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg disabled:opacity-50">{enviando ? 'Procesando…' : 'Confirmar'}</button>
+            <button type="button" disabled={enviando} onClick={() => setSeleccion(null)} className="flex-1 py-2.5 border border-slate-300 rounded-lg bg-white text-slate-600 font-semibold hover:bg-slate-50 disabled:opacity-50">Cerrar</button>
           </div>
           <h4 className="font-semibold">Historial de intentos</h4>
           {historial.map((intento, i) => <p key={i} className="text-sm border-t pt-2">{new Date(intento.fecha).toLocaleString('es-PY')} · {intento.usuario_nombre || 'Usuario'} · {intento.accion} · {intento.email} · {intento.resultado}</p>)}
           {!historial.length && <p className="text-sm">Sin intentos registrados.</p>}
         </form>
-      </div>}
+      </div>, document.body)}
       {/* Summary */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
@@ -396,7 +399,10 @@ export default function Invoices({ auth }: { auth?: AuthUser | null }) {
               : 'No hay facturas para los filtros seleccionados.'}
           </p>
         ) : (
-          <table className="w-full">
+          // Scroll horizontal: con la barra lateral la tabla no entra entera
+          // y la columna Acciones quedaba cortada (pantalla del cajero).
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[1100px]">
             <thead>
               <tr className="border-b border-slate-100 bg-slate-50/60">
                 {['Número', 'Fecha', 'Cliente', 'Monto (PYG)', 'Transacción', 'Estado', 'Nº Factura FE', 'Operaciones', 'Acciones'].map(h => (
@@ -430,10 +436,13 @@ export default function Invoices({ auth }: { auth?: AuthUser | null }) {
                     )}
                   </td>
                   <td className="px-5 py-4">
-                    <span>{inv.factura?.tipo_operacion_display ?? (inv.operacion.tipo_operacion === 'COMPRA' ? 'Compra' : 'Venta')}</span>
-                    {puedeGestionar && inv.factura?.estado === 'APROBADA' && <OperacionesFactura factura={inv.factura} onActualizada={async () => { await cargar() }} />}
+                    <div className="flex flex-col items-start gap-2">
+                      <span className="text-[13px] text-slate-700">{inv.factura?.tipo_operacion_display ?? (inv.operacion.tipo_operacion === 'COMPRA' ? 'Compra' : 'Venta')}</span>
+                      {puedeGestionar && inv.factura?.estado === 'APROBADA' && <OperacionesFactura factura={inv.factura} onActualizada={async () => { await cargar() }} />}
+                    </div>
                   </td>
                   <td className="px-5 py-4">
+                    <div className="flex flex-wrap items-center gap-1">
                     {inv.factura && ['APROBADA', 'RECHAZADA', 'ERROR'].includes(inv.factura.estado) && <button type="button" onClick={() => void abrirAccion(inv)} className="text-blue-700 text-[12px] font-semibold px-2 py-1">{inv.factura.estado === 'APROBADA' ? 'Reenviar por correo' : 'Reintentar emisión'}</button>}
                     <button
                       type="button"
@@ -463,11 +472,13 @@ export default function Invoices({ auth }: { auth?: AuthUser | null }) {
                         {descargando === `xml-${inv.factura.id}` ? '⏳ XML' : '🧾 XML'}
                       </button>
                     )}
+                    </div>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         )}
       </div>
     </div>
