@@ -116,6 +116,10 @@ REST_FRAMEWORK = {
 # Keycloak (debe coincidir con frontend/src/keycloak.ts y realm-export.json).
 KEYCLOAK = {
     'SERVER_URL': os.getenv('KEYCLOAK_URL', 'http://localhost:8080'),
+    # Opcional (producción): URL interna de Keycloak dentro de la red Docker.
+    # De ahí se descargan las claves públicas (JWKS); el "issuer" del token
+    # se sigue validando contra SERVER_URL, que es la URL pública.
+    'INTERNAL_URL': os.getenv('KEYCLOAK_INTERNAL_URL', ''),
     'REALM': os.getenv('KEYCLOAK_REALM', 'Global-Exchange'),
     'CLIENT_ID': os.getenv('KEYCLOAK_CLIENT_ID', 'global-exchange-frontend'),
 }

@@ -6,3 +6,5 @@ coverage
 docs
 .figma
 *.log
+.env
+.env.*
