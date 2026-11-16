@@ -1,18 +1,28 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-  Script de despliegue automático - Global Exchange (PI-88).
+  Script de despliegue automático - Global Exchange (PI-88 / PI-92).
 
 .DESCRIPTION
   Modos disponibles:
     dev    Levanta TODO el proyecto en localhost:
            PostgreSQL + Keycloak (Docker), migraciones, backend y frontend.
-    prod   Construye y levanta los contenedores de producción (Docker Compose).
+    prod   Ambiente de producción completo, fuera de localhost: base de datos,
+           backend, Keycloak y frontend en Docker, publicados en internet con
+           ngrok (configuración en .env.prod).
     check  Verifica herramientas, archivos y configuración necesarios.
+    status Muestra el estado de los contenedores de producción.
+    logs   Muestra los logs de producción (opcional: nombre del servicio).
     stop   Detiene los procesos y contenedores levantados por este script.
 
 .EXAMPLE
   .\scripts\deploy.ps1 dev
+
+.EXAMPLE
+  .\scripts\deploy.ps1 prod
+
+.EXAMPLE
+  .\scripts\deploy.ps1 logs keycloak
 
 .EXAMPLE
   .\scripts\deploy.ps1 check
@@ -26,8 +36,12 @@
 [CmdletBinding()]
 param(
   [Parameter(Position = 0)]
-  [ValidateSet('dev', 'prod', 'check', 'stop')]
+  [ValidateSet('dev', 'prod', 'check', 'status', 'logs', 'stop')]
   [string]$Mode = 'dev',
+
+  # Solo para "logs": db, web, keycloak, gateway o ngrok.
+  [Parameter(Position = 1)]
+  [string]$Service = '',
 
   [switch]$DryRun
 )
@@ -39,6 +53,17 @@ $ProjectRoot = (Resolve-Path (Join-Path $ScriptDir '..')).Path
 $BackendDir  = Join-Path $ProjectRoot 'backend'
 $FrontendDir = Join-Path $ProjectRoot 'frontend'
 $RunDir      = Join-Path $ProjectRoot '.run'
+
+# Ambiente de produccion (PI-92): un solo compose en la raiz + .env.prod.
+$ProdComposeFile = Join-Path $ProjectRoot 'docker-compose.prod.yml'
+$ProdEnvFile     = Join-Path $ProjectRoot '.env.prod'
+$ProdEnvExample  = Join-Path $ProjectRoot '.env.prod.example'
+$ProdProject     = 'global-exchange-prod'
+$script:ProdDomain = ''
+$script:ProdPort   = '8081'
+$script:ProdRealm  = 'Global-Exchange'
+$script:ProdTunnel = $true
+$script:ProdFsModo = 'simulado'
 
 # Usar el Python del venv si existe (recomendado); si no, el del sistema.
 $VenvPython = Join-Path $BackendDir 'venv\Scripts\python.exe'
@@ -344,6 +369,233 @@ function Stop-Background {
 }
 
 # ---------------------------------------------------------------------------
+# Produccion (PI-92)
+# ---------------------------------------------------------------------------
+
+# Ejecuta un comando externo en silencio y devuelve su salida. Nunca lanza:
+# en Windows PowerShell 5.1 redirigir stderr con ErrorActionPreference=Stop
+# convierte cualquier aviso del programa en un error.
+function Invoke-Quiet {
+  param(
+    [Parameter(Mandatory = $true)][string]$FilePath,
+    [string[]]$Arguments = @()
+  )
+  $ErrorActionPreference = 'Continue'
+  try {
+    return (& $FilePath @Arguments 2>$null)
+  } catch {
+    return $null
+  }
+}
+
+# En produccion todo corre en contenedores: solo hace falta Docker.
+function Assert-Docker {
+  Write-Step 'Verificando Docker'
+  if (-not (Test-CommandExists 'docker')) {
+    throw 'docker no esta instalado o no esta en el PATH.'
+  }
+  Write-Ok ((& docker --version) -join ' ')
+  Resolve-ComposeCommand
+  Write-Ok "Docker Compose: $($script:ComposeExe) $($script:ComposePrefix -join ' ')".Trim()
+  if (-not $DryRun) {
+    Invoke-Quiet -FilePath 'docker' -Arguments @('info', '--format', '{{.ServerVersion}}') | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      throw 'Docker no esta corriendo. Abri Docker Desktop y volve a ejecutar el script.'
+    }
+  }
+}
+
+function Invoke-ComposeProd {
+  param([Parameter(Mandatory = $true)][string[]]$Arguments)
+  Invoke-Compose -Arguments (@('--env-file', $ProdEnvFile, '-f', $ProdComposeFile) + $Arguments)
+}
+
+# Lee una variable de .env.prod. Nunca se imprime el valor de un secreto.
+function Get-ProdEnv {
+  param([Parameter(Mandatory = $true)][string]$Key)
+  if (-not (Test-Path -LiteralPath $ProdEnvFile)) { return '' }
+  $value = ''
+  $pattern = '^\s*' + [regex]::Escape($Key) + '\s*=(.*)$'
+  foreach ($line in [System.IO.File]::ReadAllLines($ProdEnvFile, [System.Text.Encoding]::UTF8)) {
+    $match = [regex]::Match($line, $pattern)
+    if ($match.Success) { $value = $match.Groups[1].Value.Trim() }
+  }
+  if ($value.Length -ge 2) {
+    $first = $value.Substring(0, 1)
+    if (($first -eq '"' -or $first -eq "'") -and $value.EndsWith($first)) {
+      $value = $value.Substring(1, $value.Length - 2)
+    }
+  }
+  return $value
+}
+
+function New-RandomHex {
+  $bytes = New-Object byte[] 24
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+  return -join ($bytes | ForEach-Object { $_.ToString('x2') })
+}
+
+# Crea .env.prod desde la plantilla y genera las claves marcadas __GENERAR__.
+function Ensure-ProdEnv {
+  Write-Step 'Verificando .env.prod'
+  if (Test-Path -LiteralPath $ProdEnvFile) {
+    Write-Ok "Existe $ProdEnvFile"
+    return
+  }
+  if (-not (Test-Path -LiteralPath $ProdEnvExample)) {
+    throw "No existe la plantilla $ProdEnvExample"
+  }
+  if ($DryRun) {
+    Write-Host "[DRY-RUN] crear $ProdEnvFile desde la plantilla (con claves generadas)" -ForegroundColor DarkYellow
+    return
+  }
+  # UTF-8 sin BOM en la lectura y en la escritura (la plantilla tiene acentos).
+  $text = [System.IO.File]::ReadAllText($ProdEnvExample, [System.Text.Encoding]::UTF8)
+  $evaluator = [System.Text.RegularExpressions.MatchEvaluator] {
+    param($m)
+    $m.Groups[1].Value + '=' + (New-RandomHex) + $m.Groups[2].Value
+  }
+  $text = [regex]::Replace($text, '(?m)^([A-Z0-9_]+)=__GENERAR__(\r?)$', $evaluator)
+  [System.IO.File]::WriteAllText($ProdEnvFile, $text, (New-Object System.Text.UTF8Encoding($false)))
+  Write-Warn "Se creo $ProdEnvFile con claves internas nuevas. No se commitea."
+}
+
+# Revisa .env.prod antes de tocar nada. Corta si falta algo indispensable o
+# si la configuracion puede gastar plata o numeros de factura por error.
+function Test-ProdEnv {
+  if (-not (Test-Path -LiteralPath $ProdEnvFile)) { return }
+  Write-Step 'Revisando la configuracion de produccion'
+  $errors = $false
+
+  $script:ProdDomain = Get-ProdEnv 'NGROK_DOMAIN'
+  if (-not $script:ProdDomain -or $script:ProdDomain -eq 'tu-dominio.ngrok-free.dev') {
+    Write-Err 'Falta NGROK_DOMAIN: tu dominio fijo de ngrok (https://dashboard.ngrok.com/domains).'
+    $errors = $true
+  } elseif ($script:ProdDomain -match '[/\s]') {
+    Write-Err "NGROK_DOMAIN va sin 'https://' ni barras. Ejemplo: mi-dominio.ngrok-free.dev"
+    $errors = $true
+  } else {
+    Write-Ok "Direccion publica: https://$($script:ProdDomain)"
+  }
+
+  foreach ($key in @('DJANGO_SECRET_KEY', 'POSTGRES_PASSWORD', 'KEYCLOAK_ADMIN_PASSWORD')) {
+    $value = Get-ProdEnv $key
+    if (-not $value -or $value -eq '__GENERAR__') {
+      Write-Err "Falta $key en .env.prod (pone una clave larga, sin espacios)."
+      $errors = $true
+    }
+  }
+
+  $value = Get-ProdEnv 'GATEWAY_PORT'
+  if ($value) { $script:ProdPort = $value }
+  $value = Get-ProdEnv 'KEYCLOAK_REALM'
+  if ($value) { $script:ProdRealm = $value }
+
+  if (-not (Get-ProdEnv 'NGROK_AUTHTOKEN')) {
+    $script:ProdTunnel = $false
+    Write-Warn 'NGROK_AUTHTOKEN vacio: no se levanta el contenedor de ngrok (tunel manual).'
+  }
+
+  # Stripe: solo claves de prueba, para no mover plata real.
+  $value = Get-ProdEnv 'STRIPE_SECRET_KEY'
+  if ($value -like 'sk_live_*' -or $value -like 'rk_live_*') {
+    if ($env:PERMITIR_STRIPE_LIVE -eq 'si') {
+      Write-Warn 'STRIPE_SECRET_KEY es una clave REAL (live): los pagos van a cobrar de verdad.'
+    } else {
+      Write-Err 'STRIPE_SECRET_KEY es una clave REAL (sk_live_). Usa la de prueba (sk_test_).'
+      Write-Err 'Si de verdad queres cobrar, ejecuta con $env:PERMITIR_STRIPE_LIVE = "si".'
+      $errors = $true
+    }
+  } elseif (-not $value) {
+    Write-Warn 'STRIPE_SECRET_KEY vacio: el pago con tarjeta no va a funcionar.'
+  } else {
+    Write-Ok 'Stripe en modo prueba.'
+    if (-not (Get-ProdEnv 'STRIPE_WEBHOOK_SECRET')) {
+      Write-Warn 'STRIPE_WEBHOOK_SECRET vacio: los pagos no se van a confirmar solos.'
+    }
+  }
+
+  # Factura Segura: el despliegue nunca emite, pero se avisa en que modo queda.
+  $script:ProdFsModo = (Get-ProdEnv 'FACTURASEGURA_MODO').ToLowerInvariant()
+  if (-not $script:ProdFsModo) { $script:ProdFsModo = 'simulado' }
+  if ($script:ProdFsModo -eq 'real') {
+    Write-Warn 'Factura Segura en modo REAL: cada factura emitida desde la app gasta un numero.'
+    Write-Warn "  Rango configurado: $(Get-ProdEnv 'FACTURASEGURA_NUMERO_DESDE') a $(Get-ProdEnv 'FACTURASEGURA_NUMERO_HASTA'). La base de produccion no conoce"
+    Write-Warn '  los numeros usados en desarrollo: NUMERO_DESDE debe ser el primero sin usar.'
+    if (-not (Get-ProdEnv 'FACTURASEGURA_TOKEN')) {
+      Write-Warn '  FACTURASEGURA_TOKEN vacio: la emision va a fallar hasta que lo cargues.'
+    }
+    if ((Get-ProdEnv 'FACTURASEGURA_URL') -notlike '*apitest*') {
+      Write-Warn '  FACTURASEGURA_URL no es el ambiente de TEST (apitest). Revisalo antes de emitir.'
+    }
+  } else {
+    Write-Ok 'Factura Segura en modo simulado (no gasta numeros).'
+  }
+
+  if ($errors) {
+    throw "Completa $ProdEnvFile y volve a ejecutar el script."
+  }
+}
+
+# Contenedores del despliegue anterior (backend/docker-compose.prod.yml).
+# Ocupan los mismos puertos; sus volumenes de datos no se tocan.
+function Remove-LegacyProd {
+  foreach ($name in @('global-exchange-frontend-prod', 'global-exchange-backend-prod', 'global-exchange-db-prod')) {
+    $found = Invoke-Quiet -FilePath 'docker' -Arguments @('ps', '-a', '-q', '--filter', "name=^/$name`$")
+    if ($found) {
+      Write-Warn "Quitando el contenedor del despliegue anterior: $name"
+      if ($DryRun) {
+        Write-Host "[DRY-RUN] docker rm -f $name" -ForegroundColor DarkYellow
+      } else {
+        Invoke-Quiet -FilePath 'docker' -Arguments @('rm', '-f', $name) | Out-Null
+      }
+    }
+  }
+}
+
+# Como Wait-Http, pero devuelve $false si el servicio no responde a tiempo.
+function Wait-HttpStrict {
+  param(
+    [Parameter(Mandatory = $true)][string]$Url,
+    [Parameter(Mandatory = $true)][string]$Name,
+    [int]$TimeoutSeconds = 240
+  )
+  if ($DryRun) { return $true }
+  $ProgressPreference = 'SilentlyContinue'
+  Write-Host "  Esperando $Name en $Url ..." -ForegroundColor Cyan
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  while ((Get-Date) -lt $deadline) {
+    try {
+      # La cabecera evita la pagina de aviso que ngrok muestra a los navegadores.
+      $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 5 `
+        -Headers @{ 'ngrok-skip-browser-warning' = '1' }
+      if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) {
+        Write-Ok "$Name responde."
+        return $true
+      }
+    } catch {
+      # Seguimos esperando.
+    }
+    Start-Sleep -Seconds 3
+  }
+  Write-Err "$Name no respondio en $Url"
+  return $false
+}
+
+function Show-ProdLogs {
+  param([Parameter(Mandatory = $true)][string]$ServiceName)
+  Write-Host "  --- ultimas lineas del servicio $ServiceName ---" -ForegroundColor DarkGray
+  $ErrorActionPreference = 'Continue'
+  try {
+    $composeArgs = @($script:ComposePrefix) + @('-p', $ProdProject, 'logs', '--tail', '25', $ServiceName)
+    & $script:ComposeExe @composeArgs
+  } catch {
+    # Los logs son solo una ayuda: si fallan no se corta nada.
+  }
+}
+
+# ---------------------------------------------------------------------------
 # Modos
 # ---------------------------------------------------------------------------
 function Invoke-Dev {
@@ -403,38 +655,86 @@ function Invoke-Dev {
 }
 
 function Invoke-Prod {
-  Write-Step 'Modo PRODUCCION (Docker Compose)'
+  Write-Step 'Modo PRODUCCION (Docker + ngrok)'
 
-  Assert-Tools
-  Ensure-EnvFile -Target (Join-Path $BackendDir '.env') -Example (Join-Path $BackendDir '.env.prod.example')
-  Ensure-EnvFile -Target (Join-Path $FrontendDir '.env') -Example (Join-Path $FrontendDir '.env.prod.example')
+  Assert-Docker
+  Ensure-ProdEnv
+  Test-ProdEnv
 
-  $frontendEnvPath = Join-Path $FrontendDir '.env'
-  if (Test-Path -LiteralPath $frontendEnvPath) {
-    $frontendEnvContent = Get-Content -LiteralPath $frontendEnvPath -Raw
-    if ($frontendEnvContent -match 'VITE_API_URL\s*=\s*http://(127\.0\.0\.1|localhost)') {
-      Write-Warn 'frontend/.env apunta a localhost. Para produccion usa VITE_API_URL=/api (ver frontend/.env.prod.example).'
-    }
+  # ngrok exige TLS 1.2; Windows PowerShell 5.1 no siempre lo usa por defecto.
+  try {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+  } catch {
+    # Versiones nuevas de PowerShell ya lo negocian solas.
   }
 
-  $composeFile = Join-Path $BackendDir 'docker-compose.prod.yml'
+  if (-not $script:ProdDomain) { $script:ProdDomain = '<NGROK_DOMAIN>' }
+  $localUrl  = "http://127.0.0.1:$($script:ProdPort)"
+  $publicUrl = "https://$($script:ProdDomain)"
 
-  Write-Step '1/3 Construyendo e iniciando contenedores de produccion'
-  Invoke-Compose -Arguments @('-f', $composeFile, 'up', '-d', '--build') -WorkingDirectory $BackendDir
+  Write-Step '1/4 Construyendo y levantando los contenedores'
+  if (-not $DryRun) { Remove-LegacyProd }
+  $upArgs = @('up', '-d', '--build')
+  if (-not $script:ProdTunnel) { $upArgs += @('--scale', 'ngrok=0') }
+  Invoke-ComposeProd -Arguments $upArgs
 
-  Write-Step '2/3 Aplicando migraciones de Django'
-  Invoke-Compose -Arguments @('-f', $composeFile, 'exec', '-T', 'web', 'python', 'manage.py', 'migrate', '--noinput') -WorkingDirectory $BackendDir
+  Write-Step '2/4 Esperando al backend (aplica las migraciones al arrancar)'
+  if (-not (Wait-HttpStrict -Url "$localUrl/api/health/" -Name 'backend' -TimeoutSeconds 300)) {
+    Show-ProdLogs 'web'
+    Show-ProdLogs 'gateway'
+    throw 'El backend no quedo arriba.'
+  }
 
-  Write-Step '3/3 Verificando health check del backend'
-  Wait-Http -Url 'http://127.0.0.1:8000/api/health/' -Name 'backend'
+  Write-Step '3/4 Configurando Keycloak (URLs publicas, correo y usuarios iniciales)'
+  try {
+    Invoke-ComposeProd -Arguments @('run', '--rm', '-T', 'keycloak-init')
+  } catch {
+    Show-ProdLogs 'keycloak'
+    throw 'No se pudo configurar Keycloak (ver el detalle arriba).'
+  }
+
+  Write-Step '4/4 Verificando el acceso desde internet'
+  if ($script:ProdTunnel) {
+    if (-not (Wait-HttpStrict -Url "$publicUrl/api/health/" -Name 'la direccion publica' -TimeoutSeconds 120)) {
+      Show-ProdLogs 'ngrok'
+      Write-Err 'El tunel de ngrok no quedo arriba. Causas habituales:'
+      Write-Err '  - NGROK_AUTHTOKEN o NGROK_DOMAIN mal copiados en .env.prod.'
+      Write-Err '  - Otro ngrok abierto usando el mismo dominio (cerralo y volve a ejecutar).'
+      throw 'La direccion publica no responde.'
+    }
+    if (-not (Wait-HttpStrict -Url "$publicUrl/auth/realms/$($script:ProdRealm)" -Name 'Keycloak publico' -TimeoutSeconds 60)) {
+      throw 'Keycloak no responde por la direccion publica.'
+    }
+  } else {
+    Write-Warn 'Tunel manual: en otra terminal ejecuta'
+    Write-Host "      ngrok http --url=$publicUrl $($script:ProdPort)"
+  }
 
   Write-Host ''
-  Write-Host 'Contenedores de produccion levantados:' -ForegroundColor Green
-  Write-Host '  Frontend (nginx): http://localhost:8081' -ForegroundColor Green
-  Write-Host '  Backend:          http://localhost:8000' -ForegroundColor Green
-  Write-Host '  Postgres:         localhost:5433' -ForegroundColor Green
+  Write-Host 'Sistema en produccion:' -ForegroundColor Green
+  Write-Host "  Aplicacion:         $publicUrl" -ForegroundColor Green
+  Write-Host "  Consola Keycloak:   $publicUrl/auth/admin/   (KEYCLOAK_ADMIN_USER de .env.prod)" -ForegroundColor Green
+  Write-Host "  Webhook de Stripe:  $publicUrl/api/payments/webhook/" -ForegroundColor Green
+  Write-Host "  Acceso local:       http://localhost:$($script:ProdPort)   (solo para diagnostico)" -ForegroundColor Green
+  Write-Host "  Factura Segura:     modo $($script:ProdFsModo)" -ForegroundColor Green
   Write-Host ''
-  Write-Host 'Para detener todo: .\scripts\deploy.ps1 stop' -ForegroundColor DarkGray
+  Write-Host 'Estado:   .\scripts\deploy.ps1 status' -ForegroundColor DarkGray
+  Write-Host 'Logs:     .\scripts\deploy.ps1 logs [db|web|keycloak|gateway|ngrok]' -ForegroundColor DarkGray
+  Write-Host 'Detener:  .\scripts\deploy.ps1 stop   (los datos se conservan)' -ForegroundColor DarkGray
+}
+
+function Invoke-Status {
+  Resolve-ComposeCommand
+  Invoke-Compose -Arguments @('-p', $ProdProject, 'ps')
+}
+
+function Invoke-Logs {
+  Resolve-ComposeCommand
+  if ($Service) {
+    Invoke-Compose -Arguments @('-p', $ProdProject, 'logs', '--tail', '100', $Service)
+  } else {
+    Invoke-Compose -Arguments @('-p', $ProdProject, 'logs', '--tail', '40')
+  }
 }
 
 function Invoke-Check {
@@ -444,11 +744,15 @@ function Invoke-Check {
   Write-Step 'Verificando archivos de configuracion'
   $files = @(
     (Join-Path $BackendDir 'docker-compose.yml'),
-    (Join-Path $BackendDir 'docker-compose.prod.yml'),
     (Join-Path $BackendDir 'Dockerfile'),
     (Join-Path $FrontendDir 'docker-compose.yml'),
     (Join-Path $FrontendDir 'Dockerfile'),
-    (Join-Path $FrontendDir 'nginx.conf')
+    (Join-Path $FrontendDir 'nginx.conf'),
+    (Join-Path $FrontendDir 'realm-export.json'),
+    $ProdComposeFile,
+    $ProdEnvExample,
+    (Join-Path $ScriptDir 'keycloak_prod_init.py'),
+    (Join-Path $ProjectRoot 'deploy\postgres-init\01-crear-base-keycloak.sql')
   )
   $missing = $false
   foreach ($file in $files) {
@@ -460,7 +764,13 @@ function Invoke-Check {
   Write-Step 'Verificando archivos .env'
   foreach ($env in @((Join-Path $BackendDir '.env'), (Join-Path $FrontendDir '.env'))) {
     if (Test-Path -LiteralPath $env) { Write-Ok "Existe $env" }
-    else { Write-Warn "No existe $env (se creara automaticamente en dev/prod)." }
+    else { Write-Warn "No existe $env (se creara automaticamente en dev)." }
+  }
+  if (Test-Path -LiteralPath $ProdEnvFile) {
+    Write-Ok "Existe $ProdEnvFile"
+    Test-ProdEnv
+  } else {
+    Write-Warn "No existe $ProdEnvFile (se crea la primera vez que ejecutas prod)."
   }
 
   Write-Host ''
@@ -472,14 +782,12 @@ function Invoke-Stop {
   Stop-Background
   Invoke-Compose -Arguments @('-f', (Join-Path $BackendDir 'docker-compose.yml'), 'down') -WorkingDirectory $BackendDir -DisableEnvFile
   Invoke-Compose -Arguments @('-f', (Join-Path $FrontendDir 'docker-compose.yml'), 'down') -WorkingDirectory $FrontendDir -DisableEnvFile
-  $prodContainers = & docker ps -a `
-    --filter 'name=global-exchange-backend-prod' `
-    --filter 'name=global-exchange-frontend-prod' `
-    --filter 'name=global-exchange-db-prod' `
-    -q 2>$null
+  $prodContainers = Invoke-Quiet -FilePath 'docker' -Arguments @('ps', '-a', '-q', '--filter', "label=com.docker.compose.project=$ProdProject")
   if ($prodContainers) {
-    Invoke-Compose -Arguments @('-f', (Join-Path $BackendDir 'docker-compose.prod.yml'), 'down') -WorkingDirectory $BackendDir
+    # Baja los contenedores de produccion; los volumenes (datos) se conservan.
+    Invoke-Compose -Arguments @('-p', $ProdProject, 'down')
   }
+  Remove-LegacyProd
   Write-Host ''
   Write-Host 'Todo detenido.' -ForegroundColor Green
 }
@@ -489,10 +797,12 @@ function Invoke-Stop {
 # ---------------------------------------------------------------------------
 try {
   switch ($Mode) {
-    'dev'   { Invoke-Dev }
-    'prod'  { Invoke-Prod }
-    'check' { Invoke-Check }
-    'stop'  { Invoke-Stop }
+    'dev'    { Invoke-Dev }
+    'prod'   { Invoke-Prod }
+    'check'  { Invoke-Check }
+    'status' { Invoke-Status }
+    'logs'   { Invoke-Logs }
+    'stop'   { Invoke-Stop }
   }
 } catch {
   Write-Host ''
