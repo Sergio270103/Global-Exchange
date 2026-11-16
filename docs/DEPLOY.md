@@ -8,7 +8,7 @@ desarrollo y producción usando el script automático de despliegue.
 1. [Resumen](#resumen)
 2. [Requisitos previos](#requisitos-previos)
 3. [Despliegue en desarrollo (localhost)](#despliegue-en-desarrollo-localhost)
-4. [Despliegue en producción (servidor)](#despliegue-en-produccion-servidor)
+4. [Ambiente de producción (Docker + ngrok)](#ambiente-de-producción-docker--ngrok)
 5. [Variables de entorno](#variables-de-entorno)
 6. [Facturación electrónica (PI-30) en modo simulado y real](#facturacion-electronica-pi-30)
 7. [Troubleshooting](#troubleshooting)
@@ -24,8 +24,8 @@ El proyecto se puede levantar con un solo comando gracias a
 `scripts/deploy.ps1` (Windows PowerShell).
 
 - **Desarrollo**: todo corre en tu computadora (`localhost`).
-- **Producción**: todo corre en contenedores Docker listos para un servidor
-  (VPS, Render, Railway, etc.).
+- **Producción**: todo corre en contenedores Docker y queda publicado en
+  internet con ngrok (ver [Ambiente de producción](#ambiente-de-producción-docker--ngrok)).
 
 Comandos disponibles:
 
@@ -39,8 +39,8 @@ Comandos disponibles:
 En PowerShell también podés usar `-DryRun` para ver qué haría sin ejecutar nada:
 `.\scripts\deploy.ps1 prod -DryRun`.
 
-No se paga nada específico para desarrollo. Para producción puedes usar
-servicios gratuitos o de bajo costo (Render, Railway, etc.).
+No se paga nada: Docker, el plan gratuito de ngrok, Stripe en modo prueba
+y Factura Segura en el ambiente de TEST alcanzan para todo.
 
 ---
 
@@ -52,11 +52,9 @@ servicios gratuitos o de bajo costo (Render, Railway, etc.).
 - [Python 3.11+](https://www.python.org/)
 - [Node.js 20+](https://nodejs.org/) y npm
 
-### En el servidor (producción)
+### En la computadora anfitriona (producción)
 
-- Un servidor Linux con Docker y Docker Compose instalados
-- Acceso por SSH al servidor
-- Opcional: un dominio y un proxy reverso (nginx, Caddy, traefik)
+Ver [Requisitos de la computadora anfitriona](#requisitos-de-la-computadora-anfitriona).
 
 ---
 
@@ -107,66 +105,142 @@ En Windows:
 
 ---
 
-## Despliegue en producción (servidor)
+## Ambiente de producción (Docker + ngrok)
 
-### Paso 1: Conéctate al servidor
+El ambiente de producción (PI-96) es la computadora anfitriona, publicada en
+internet con ngrok. El sistema completo queda detrás de **una sola dirección
+pública**:
 
-```bash
-ssh usuario@tu-servidor.com
+```
+Internet ──> ngrok ──> gateway (nginx) ──> /        frontend (React)
+          https://<NGROK_DOMAIN>          /api/    backend (Django + gunicorn) ──> PostgreSQL
+                                          /auth/   Keycloak ─────────────────────> PostgreSQL
 ```
 
-### Paso 2: Clona el repositorio
+Servicios de `docker-compose.prod.yml` (en la raíz del repositorio):
+
+| Servicio | Qué es |
+|---|---|
+| `db` | PostgreSQL 16 con dos bases: `global_exchange_bd` (sistema) y `keycloak` |
+| `web` | Backend Django con gunicorn; aplica las migraciones al arrancar |
+| `keycloak` | Keycloak en modo producción (`start`), con el realm de `frontend/realm-export.json` |
+| `gateway` | nginx: sirve el frontend y reparte `/api/` y `/auth/` |
+| `ngrok` | Túnel que publica el gateway en `https://<NGROK_DOMAIN>` |
+| `keycloak-init` | Tarea de una sola vez que configura Keycloak (`scripts/keycloak_prod_init.py`) |
+
+Solo el gateway publica un puerto (`127.0.0.1:8081`). Producción usa una base
+de datos y un Keycloak **propios**: no comparte datos con el modo desarrollo
+y ambos pueden estar levantados a la vez.
+
+### Requisitos de la computadora anfitriona
+
+- [Docker Desktop](https://www.docker.com/) abierto (no hace falta Python ni
+  Node: todo se construye dentro de los contenedores).
+- Una cuenta gratuita de [ngrok](https://dashboard.ngrok.com/) con su dominio
+  fijo (`algo.ngrok-free.dev`) y su authtoken.
+- Las claves de prueba de Stripe y, si se va a facturar de verdad, el token
+  de Factura Segura.
+
+### Paso 1: crear `.env.prod`
+
+Copiá `.env.prod.example` a `.env.prod` (en la raíz; no se commitea) y
+reemplazá cada `__GENERAR__` por una clave larga al azar. Después completá:
+
+| Variable | Qué poner | Dónde se consigue |
+|---|---|---|
+| `NGROK_DOMAIN` | El dominio fijo, sin `https://` | <https://dashboard.ngrok.com/domains> |
+| `NGROK_AUTHTOKEN` | El authtoken de la cuenta | <https://dashboard.ngrok.com/get-started/your-authtoken> |
+| `KEYCLOAK_SMTP_PASSWORD` | Contraseña de aplicación de Gmail de la cuenta que envía los correos de verificación | La cuenta de Gmail del proyecto |
+| `USUARIOS_INICIALES` | Usuarios a crear con su rol: `usuario:correo:contraseña:rol;...` | Los define el equipo |
+| `STRIPE_SECRET_KEY` | Clave secreta de **prueba** (`sk_test_...`) | <https://dashboard.stripe.com/test/apikeys> |
+| `STRIPE_WEBHOOK_SECRET` | Secreto del webhook (`whsec_...`) | Ver paso 2 |
+| `FACTURASEGURA_*` | Modo, token y rango de números | Ver [Facturación electrónica](#facturación-electrónica-pi-30) |
+
+El resto de las variables ya viene con valores que funcionan.
+
+### Paso 2: registrar el webhook de Stripe (una sola vez)
+
+Como el dominio de ngrok es fijo, el webhook se registra una vez y queda:
+
+1. Entrar a <https://dashboard.stripe.com/test/webhooks> y agregar un destino
+   (endpoint) con la URL `https://<NGROK_DOMAIN>/api/payments/webhook/`.
+2. Elegir los eventos `checkout.session.completed`,
+   `checkout.session.expired`, `checkout.session.async_payment_succeeded` y
+   `checkout.session.async_payment_failed`.
+3. Copiar el *signing secret* (`whsec_...`) a `STRIPE_WEBHOOK_SECRET`.
+
+En producción no hace falta `stripe listen`: Stripe llama directo a la URL
+pública.
+
+### Paso 3: levantar el ambiente
+
+Desde la raíz del repositorio:
 
 ```bash
-git clone https://github.com/Sergio270103/Global-Exchange.git
-cd Global-Exchange
-git checkout develop
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm -T keycloak-init
 ```
 
-### Paso 3: Configura el entorno de producción
+El primer comando construye y levanta los contenedores (las migraciones se
+aplican solas). El segundo agrega la dirección pública al cliente del
+frontend en Keycloak, carga la contraseña SMTP y crea los usuarios
+iniciales; se puede repetir sin problema.
 
-Copia la plantilla de variables de entorno:
+Direcciones:
+
+- Aplicación: `https://<NGROK_DOMAIN>`
+- Consola de Keycloak: `https://<NGROK_DOMAIN>/auth/admin/`
+  (usuario y contraseña: `KEYCLOAK_ADMIN_USER` / `KEYCLOAK_ADMIN_PASSWORD`)
+- Webhook de Stripe: `https://<NGROK_DOMAIN>/api/payments/webhook/`
+
+> **Aviso de ngrok.** En el plan gratuito, la primera vez que un navegador
+> entra a la dirección aparece una página de ngrok con el botón
+> **Visit Site**. Es normal: se acepta una vez por navegador y dura 7 días.
+
+Los contenedores tienen `restart: unless-stopped`: si se reinicia la
+computadora, vuelven a levantarse solos al abrir Docker Desktop. Para
+apagarlos (los datos se conservan):
 
 ```bash
-cp backend/.env.prod.example backend/.env
-cp frontend/.env.prod.example frontend/.env
+docker compose -p global-exchange-prod down
 ```
 
-Edita `backend/.env` y `frontend/.env` con tus valores reales
-(contraseñas, URLs de producción, etc.). En el frontend, `VITE_API_URL=/api`
-hace que nginx reenvíe las llamadas al backend dentro de la misma red Docker.
+### Túnel manual (sin el contenedor de ngrok)
 
-### Paso 4: Ejecuta el despliegue
+Si `NGROK_AUTHTOKEN` queda vacío, levantá todo menos el túnel y abrilo con
+el ngrok instalado en la computadora:
 
 ```bash
-./scripts/deploy.sh prod
+docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build --scale ngrok=0
+ngrok http --url=https://<NGROK_DOMAIN> 8081
 ```
 
-Esto hará lo siguiente:
+### Empezar de cero
 
-1. Construirá e iniciará los contenedores de producción: base de datos,
-   backend (gunicorn) y frontend (nginx).
-2. Aplicará las migraciones de Django.
-3. Verificará que el backend responde en `/api/health/`.
+Para borrar **todos los datos** de producción (base de datos, usuarios de
+Keycloak y archivos) y volver a levantar desde cero:
 
-Al terminar:
+```bash
+docker compose -p global-exchange-prod down -v
+```
 
-- Frontend: `http://localhost:8081`
-- Backend: `http://localhost:8000`
-- PostgreSQL: `localhost:5433`
+Hace falta, por ejemplo, si se cambia `POSTGRES_PASSWORD` o
+`KEYCLOAK_ADMIN_PASSWORD` después del primer despliegue (esas claves solo se
+aplican cuando se crean las bases).
 
-Para detener los contenedores: `./scripts/deploy.sh stop`.
+### Variables que arma el compose
 
-### Paso 5: Configura el acceso público
+A partir de `NGROK_DOMAIN`, `docker-compose.prod.yml` arma solo todo lo que
+depende de la dirección pública:
 
-El script deja los contenedores corriendo. Para exponerlos desde Internet,
-configura un proxy reverso (nginx o Caddy) en tu servidor que redirija:
-
-- `http://tu-dominio.com` → frontend (nginx en el contenedor)
-- `http://tu-dominio.com/api/` → backend (Django en el contenedor)
-
-Si usas Render, Railway o similar, conecta el repositorio y usa los mismos
-comandos de build y start que aparecen en los Dockerfile.
+| Se calcula | Valor |
+|---|---|
+| `KEYCLOAK_URL` (issuer de los tokens) | `https://<NGROK_DOMAIN>/auth` |
+| `KEYCLOAK_INTERNAL_URL` (descarga de claves JWKS) | `http://keycloak:8080/auth` |
+| `FRONTEND_URL`, `CORS_ALLOWED_ORIGINS` | `https://<NGROK_DOMAIN>` |
+| `DJANGO_ALLOWED_HOSTS` | `<NGROK_DOMAIN>,localhost,127.0.0.1` |
+| `VITE_API_URL` / `VITE_KEYCLOAK_URL` (build del frontend) | `/api` / `https://<NGROK_DOMAIN>/auth` |
+| `POSTGRES_HOST`, `DJANGO_DEBUG` | `db`, `False` |
 
 ---
 
@@ -213,6 +287,14 @@ Para usar el modo real:
 2. Agrega tu token de Factura Segura en `FACTURASEGURA_TOKEN`.
 3. Completa los datos del emisor (`FACTURASEGURA_RUC`, `FACTURASEGURA_NOMBRE`, etc.).
 4. Confirma con la cátedra que los datos del emisor están correctos antes de emitir facturas reales.
+
+**Cuidado con los números en producción.** Levantar el ambiente nunca
+emite facturas: solo se emite cuando un usuario lo pide desde la pantalla de
+facturas. Pero la base de producción es nueva y no sabe qué números ya se
+usaron en desarrollo, así que el sistema empezaría de nuevo desde
+`FACTURASEGURA_NUMERO_DESDE`. Antes de pasar a modo `real`, poné en
+`FACTURASEGURA_NUMERO_DESDE` (y en `FACTURASEGURA_NC_NUMERO_DESDE`) el
+primer número que todavía **no** se usó.
 
 ### Anulación, inutilización y notas de crédito
 
@@ -320,6 +402,22 @@ cambios mínimos (no modifican la lógica de negocio):
    entorno de producción y contexto de build más liviano.
 8. Archivos nuevos de despliegue (Dockerfiles, docker-compose, scripts,
    documentación). No afectan el funcionamiento diario de la aplicación.
+
+### Ambiente de producción con ngrok (PI-96)
+
+1. **`docker-compose.prod.yml`** (raíz): base de datos, backend, Keycloak,
+   gateway y ngrok; no publica los puertos de la base, el backend ni Keycloak.
+2. **`.env.prod.example`** (raíz): una sola plantilla para todo el ambiente.
+3. **`frontend/nginx.conf`**: además de `/api/`, publica Keycloak en
+   `/auth/` y respeta el `X-Forwarded-Proto` de ngrok.
+4. **`frontend/Dockerfile`** y **`frontend/.dockerignore`**: las variables
+   `VITE_*` entran como argumentos de build y el `.env` local queda fuera
+   de la imagen.
+5. **`backend/core/settings.py`** y **`backend/monedas/autenticacion.py`**:
+   variable opcional `KEYCLOAK_INTERNAL_URL` para descargar las claves de
+   Keycloak por la red interna. Sin ella todo funciona como antes.
+6. **`scripts/keycloak_prod_init.py`** y **`deploy/postgres-init/`**:
+   configuración de Keycloak posterior al arranque y creación de su base.
 
 ---
 
