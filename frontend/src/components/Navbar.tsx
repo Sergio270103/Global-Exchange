@@ -35,7 +35,7 @@ const pageTitles: Record<string, string> = {
   'admin-roles': 'Roles y Permisos',
   'admin-currencies': 'Monedas Admitidas',
   'admin-rates': 'Tasas de Cambio',
-  'admin-payments': 'Métodos de Pago',
+  'admin-payments': 'Pagos Digitales',
   'admin-earnings': 'Ganancias',
   'admin-reports': 'Reportes',
   'admin-config': 'Configuración del Sistema',

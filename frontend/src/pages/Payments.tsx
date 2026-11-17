@@ -1,101 +1,104 @@
-/**
- * Vista de pagos digitales.
- *
- * Muestra los pagos asociados a las transacciones y su método de pago
- * (transferencia bancaria, billetera digital, tarjeta, QR).
- *
- * @module Payments
- */
-import { useState } from 'react'
+/** Pagos reales por cliente, estado y método (PI-27). */
+import { useEffect, useState } from 'react'
+import { listarOperaciones, type Operacion } from '@/services/operaciones'
+import { listarClientes, type Cliente } from '@/services/clientes'
+import { listarMetodos, type MetodoPago } from '@/services/metodos'
+import type { AuthUser, ClienteActivo } from '@/types'
 
-const payments = [
-  { id: 'PAG-001', date: '15 Ene 2024', client: 'Carlos Martínez', amount: 11370000, method: 'Transferencia bancaria', status: 'Pagada' },
-  { id: 'PAG-002', date: '15 Ene 2024', client: 'Ana López', amount: 6672000, method: 'Billetera digital', status: 'Pagada' },
-  { id: 'PAG-003', date: '14 Ene 2024', client: 'Pedro Silva', amount: 6900000, method: 'Transferencia bancaria', status: 'Pendiente' },
-  { id: 'PAG-004', date: '14 Ene 2024', client: 'María García', amount: 15300000, method: 'Tarjeta', status: 'Pagada' },
-  { id: 'PAG-005', date: '13 Ene 2024', client: 'Roberto Torres', amount: 9900000, method: 'Transferencia bancaria', status: 'Cancelada' },
-  { id: 'PAG-006', date: '13 Ene 2024', client: 'Laura Díaz', amount: 3790000, method: 'QR', status: 'Pagada' },
-]
+const estados: Record<string, string> = { PAGADA: 'Pagada', PENDIENTE: 'Pendiente', CANCELADA: 'Cancelada', ANULADA: 'Anulada' }
+const nombres: Record<string, string> = { transfer: 'Transferencia bancaria', wallet: 'Billetera digital', card: 'Tarjeta', qr: 'QR', efectivo: 'Efectivo' }
+const control = 'border border-slate-200 rounded-lg px-3 py-2 bg-white text-sm'
 
-const statusStyle: Record<string, string> = {
-  Pagada: 'bg-emerald-50 text-emerald-700 border-emerald-100',
-  Pendiente: 'bg-amber-50 text-amber-700 border-amber-100',
-  Cancelada: 'bg-red-50 text-red-600 border-red-100',
-  Anulada: 'bg-slate-100 text-slate-500 border-slate-200',
+export default function Payments({ auth, currentClient }: { auth: AuthUser; currentClient: ClienteActivo | null }) {
+  const admin = auth.role === 'admin'
+  const clienteId = currentClient && currentClient.id > 0 ? currentClient.id : null
+  return <ListadoPagos key={admin ? 'admin' : clienteId ?? 'sin-cliente'} admin={admin} clienteId={clienteId} />
 }
 
-const methodIcon: Record<string, string> = {
-  'Transferencia bancaria': '🏦',
-  'Billetera digital': '◈',
-  'Tarjeta': '💳',
-  'QR': '⊞',
-}
+function ListadoPagos({ admin, clienteId }: { admin: boolean; clienteId: number | null }) {
+  const [operaciones, setOperaciones] = useState<Operacion[]>([])
+  const [clientes, setClientes] = useState<Cliente[]>([])
+  const [metodos, setMetodos] = useState<MetodoPago[]>([])
+  const [clienteFiltro, setClienteFiltro] = useState('')
+  const [estado, setEstado] = useState('')
+  const [metodo, setMetodo] = useState('')
+  const [cargando, setCargando] = useState(admin || clienteId !== null)
+  const [error, setError] = useState('')
+  const [catalogoError, setCatalogoError] = useState('')
+  const [revision, setRevision] = useState(0)
 
-export default function Payments() {
-  const [filter, setFilter] = useState('Todos')
+  useEffect(() => {
+    let vigente = true
+    setCatalogoError('')
+    listarMetodos().then(ms => { if (vigente) setMetodos(ms) }).catch(() => {
+      if (vigente) setCatalogoError('No se pudo cargar el catálogo de métodos.')
+    })
+    if (admin) listarClientes().then(cs => { if (vigente) setClientes(cs) }).catch(() => {
+      if (vigente) setCatalogoError('No se pudo cargar el filtro de clientes.')
+    })
+    return () => { vigente = false }
+  }, [admin, revision])
 
-  const filtered = filter === 'Todos' ? payments : payments.filter(p => p.status === filter)
+  useEffect(() => {
+    if (!admin && clienteId === null) return
+    let vigente = true
+    setCargando(true)
+    setError('')
+    setOperaciones([])
+    listarOperaciones(admin ? {} : { clienteId: clienteId!, mine: true })
+      .then(ops => { if (vigente) setOperaciones(ops) })
+      .catch(err => { if (vigente) setError(err instanceof Error ? err.message : 'No se pudieron cargar los pagos.') })
+      .finally(() => { if (vigente) setCargando(false) })
+    return () => { vigente = false }
+  }, [admin, clienteId, revision])
 
-  return (
-    <div className="space-y-5 animate-fadein">
-      {/* Method cards */}
-      <div className="grid grid-cols-4 gap-4">
-        {[
-          { id: 'transfer', name: 'Transferencia', icon: '🏦', count: payments.filter(p => p.method === 'Transferencia bancaria').length },
-          { id: 'wallet', name: 'Billetera', icon: '◈', count: payments.filter(p => p.method === 'Billetera digital').length },
-          { id: 'card', name: 'Tarjeta', icon: '💳', count: payments.filter(p => p.method === 'Tarjeta').length },
-          { id: 'qr', name: 'QR', icon: '⊞', count: payments.filter(p => p.method === 'QR').length },
-        ].map(m => (
-          <div key={m.id} className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 flex items-center gap-3">
-            <div className="text-2xl">{m.icon}</div>
-            <div>
-              <div className="font-mono font-bold text-slate-900 text-lg">{m.count}</div>
-              <div className="text-[11px] text-slate-400">{m.name}</div>
-            </div>
-          </div>
-        ))}
-      </div>
+  // Tabla y tarjetas comparten exactamente el mismo conjunto filtrado.
+  const filtradas = operaciones.filter(op =>
+    (!clienteFiltro || op.cliente === Number(clienteFiltro)) &&
+    (!estado || op.estado === estado) && (!metodo || op.metodo_pago === metodo))
+  // Se incluyen códigos históricos aunque el catálogo ya no los ofrezca.
+  const codigos = [...new Set([...metodos.map(m => m.codigo), ...operaciones.map(o => o.metodo_pago)])].sort()
+  const nombreMetodo = (codigo: string) => metodos.find(m => m.codigo === codigo)?.nombre || nombres[codigo] || codigo || 'Sin método registrado'
 
-      {/* Filter */}
-      <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 flex items-center gap-3">
-        <span className="text-[12px] text-slate-400 font-semibold uppercase tracking-wider">Estado:</span>
-        <div className="flex gap-2">
-          {['Todos', 'Pagada', 'Pendiente', 'Cancelada', 'Anulada'].map(s => (
-            <button key={s} onClick={() => setFilter(s)} className={`px-3 py-1.5 rounded-lg text-[12px] font-semibold transition-colors ${filter === s ? 'bg-[#0f3460] text-white' : 'text-slate-500 bg-slate-50 hover:bg-slate-100'}`}>{s}</button>
-          ))}
-        </div>
-      </div>
+  if (!admin && clienteId === null) return <div role="status" className="p-6 bg-white rounded-xl">Seleccioná un cliente asociado en la barra superior para consultar sus pagos.</div>
 
-      {/* Table */}
-      <div className="bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden">
-        <table className="w-full">
-          <thead>
-            <tr className="border-b border-slate-100 bg-slate-50/60">
-              {['ID', 'Fecha', 'Cliente', 'Método de pago', 'Monto (PYG)', 'Estado', ''].map(h => (
-                <th key={h} className="px-5 py-3 text-left text-[11px] font-semibold text-slate-400 uppercase tracking-wider whitespace-nowrap">{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-50">
-            {filtered.map(p => (
-              <tr key={p.id} className="hover:bg-slate-50/60 transition-colors">
-                <td className="px-5 py-4"><span className="font-mono text-[12px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">{p.id}</span></td>
-                <td className="px-5 py-4 text-[13px] text-slate-500">{p.date}</td>
-                <td className="px-5 py-4 text-[13px] font-medium text-slate-800">{p.client}</td>
-                <td className="px-5 py-4">
-                  <div className="flex items-center gap-2">
-                    <span>{methodIcon[p.method]}</span>
-                    <span className="text-[13px] text-slate-600">{p.method}</span>
-                  </div>
-                </td>
-                <td className="px-5 py-4 font-mono font-semibold text-[13px] text-slate-800">₲ {p.amount.toLocaleString('es')}</td>
-                <td className="px-5 py-4"><span className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border ${statusStyle[p.status]}`}>{p.status}</span></td>
-                <td className="px-5 py-4"><button className="text-slate-300 hover:text-emerald-500 transition-colors text-[18px]">⋯</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+  return <div className="space-y-5 animate-fadein">
+    <div className="flex flex-wrap items-center gap-3 bg-white rounded-xl p-4">
+      {admin && <label>Cliente <select aria-label="Cliente" className={control} value={clienteFiltro} onChange={e => setClienteFiltro(e.target.value)}>
+        <option value="">Todos los clientes</option>
+        {clientes.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+      </select></label>}
+      <label>Estado <select aria-label="Estado" className={control} value={estado} onChange={e => setEstado(e.target.value)}>
+        <option value="">Todos los estados</option>
+        {Object.entries(estados).map(([id, nombre]) => <option key={id} value={id}>{nombre}</option>)}
+      </select></label>
+      <label>Método de pago <select aria-label="Método de pago" className={control} value={metodo} onChange={e => setMetodo(e.target.value)}>
+        <option value="">Todos los métodos</option>
+        {codigos.filter(Boolean).map(c => <option key={c} value={c}>{nombreMetodo(c)}</option>)}
+      </select></label>
+      <button className={control} onClick={() => setRevision(r => r + 1)}>Actualizar</button>
     </div>
-  )
+    {catalogoError && <p role="alert">{catalogoError}</p>}
+    {cargando ? <p role="status">Cargando pagos…</p> : error ? <p role="alert">{error}</p> : <>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4" aria-label="Resumen de pagos">
+        {['transfer', 'wallet', 'card', 'qr', ...codigos.filter(c => c && !['transfer', 'wallet', 'card', 'qr'].includes(c))].map(c =>
+          <div key={c} className="bg-white rounded-xl border border-slate-100 p-4">
+            <div className="font-mono font-bold text-lg" aria-label={`Cantidad ${nombreMetodo(c)}`}>{filtradas.filter(o => o.metodo_pago === c).length}</div>
+            <div className="text-sm text-slate-500">{nombreMetodo(c)}</div>
+          </div>)}
+      </div>
+      {filtradas.length === 0 ? <p role="status" className="bg-white p-8 rounded-xl text-center">No hay pagos para los filtros seleccionados.</p> :
+        <div className="bg-white rounded-xl overflow-x-auto"><table className="w-full text-sm">
+          <thead><tr>{['Operación', 'Fecha', 'Cliente', 'Método de pago', 'Importe enviado', 'Estado'].map(h => <th key={h} className="text-left p-4">{h}</th>)}</tr></thead>
+          <tbody>{filtradas.map(op => <tr key={op.id} className="border-t border-slate-100">
+            <td className="p-4">OP-{op.id}</td>
+            <td className="p-4">{new Date(op.fecha_creacion).toLocaleString('es-PY')}</td>
+            <td className="p-4">{op.cliente_nombre}</td>
+            <td className="p-4">{nombreMetodo(op.metodo_pago)}</td>
+            <td className="p-4 font-mono">{op.monto_enviado.toLocaleString('es-PY', { maximumFractionDigits: op.moneda_origen_codigo === 'PYG' ? 0 : 2 })} {op.moneda_origen_codigo}</td>
+            <td className="p-4">{estados[op.estado] || op.estado}</td>
+          </tr>)}</tbody>
+        </table></div>}
+    </>}
+  </div>
 }

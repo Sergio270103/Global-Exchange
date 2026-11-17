@@ -55,7 +55,7 @@ class OperacionTests(TestCase):
         vista = OperacionViewSet.as_view({'post': 'create'})
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'COMPRA',
-            'moneda': 'USD', 'monto_divisa': '100',
+            'moneda': 'USD', 'monto_divisa': '100', 'metodo_pago': 'transfer',
         }, format='json')
         res = _auth(vista, req)
         self.assertEqual(res.status_code, 201, res.data)
@@ -72,7 +72,7 @@ class OperacionTests(TestCase):
         vista = OperacionViewSet.as_view({'post': 'create'})
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'COMPRA',
-            'moneda': 'USD', 'monto_divisa': '100',
+            'moneda': 'USD', 'monto_divisa': '100', 'metodo_pago': 'transfer',
         }, format='json')
         res = _auth(vista, req)
         self.assertEqual(res.status_code, 201, res.data)
@@ -86,7 +86,7 @@ class OperacionTests(TestCase):
         vista = OperacionViewSet.as_view({'post': 'create'})
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'VENTA',
-            'moneda': 'USD', 'monto_divisa': '100',
+            'moneda': 'USD', 'monto_divisa': '100', 'metodo_pago': 'transfer',
         }, format='json')
         res = _auth(vista, req)
         self.assertEqual(res.status_code, 201, res.data)
@@ -102,7 +102,7 @@ class OperacionTests(TestCase):
         self.cliente.save(update_fields=['activo'])
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'VENTA',
-            'moneda': 'USD', 'monto_divisa': '10',
+            'moneda': 'USD', 'monto_divisa': '10', 'metodo_pago': 'transfer',
         }, format='json')
         res = _auth(vista, req)
         self.assertEqual(res.status_code, 400)
@@ -113,7 +113,7 @@ class OperacionTests(TestCase):
         vista = OperacionViewSet.as_view({'post': 'create'})
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'VENTA',
-            'moneda': 'USD', 'monto_divisa': '10',
+            'moneda': 'USD', 'monto_divisa': '10', 'metodo_pago': 'transfer',
         }, format='json')
         res = _auth(vista, req)
         self.assertEqual(res.status_code, 400)
@@ -151,7 +151,7 @@ class VinculacionTests(TestCase):
     def _crear(self, extra):
         vista = OperacionViewSet.as_view({'post': 'create'})
         base = {'cliente': self.cliente.id, 'tipo_operacion': 'COMPRA',
-                'moneda': 'USD', 'monto_divisa': '10'}
+                'moneda': 'USD', 'monto_divisa': '10', 'metodo_pago': 'transfer'}
         req = self.factory.post('/api/operaciones/', {**base, **extra}, format='json')
         return _auth(vista, req)
 
@@ -191,7 +191,7 @@ class VinculacionTests(TestCase):
         vista = OperacionViewSet.as_view({'post': 'create'})
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'VENTA',
-            'moneda': 'USD', 'monto_divisa': '10',
+            'moneda': 'USD', 'monto_divisa': '10', 'metodo_pago': 'transfer',
             'cuenta_origen': cuenta_usd.id,
         }, format='json')
         res = _auth(vista, req)
@@ -239,7 +239,7 @@ class AcreditacionTests(TestCase):
         vista = OperacionViewSet.as_view({'post': 'create'})
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'COMPRA',
-            'moneda': 'USD', 'monto_divisa': '100',
+            'moneda': 'USD', 'monto_divisa': '100', 'metodo_pago': 'transfer',
             'billetera_destino': self.billetera.id,
         }, format='json')
         res = _auth(vista, req)
@@ -280,7 +280,7 @@ class AcreditacionTests(TestCase):
         vista = OperacionViewSet.as_view({'post': 'create'})
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'COMPRA',
-            'moneda': 'USD', 'monto_divisa': '10',
+            'moneda': 'USD', 'monto_divisa': '10', 'metodo_pago': 'transfer',
         }, format='json')
         res = _auth(vista, req)
         self.assertEqual(res.status_code, 201, res.data)
@@ -338,7 +338,7 @@ class DebitoTests(TestCase):
     def _crear_venta(self, extra):
         vista = OperacionViewSet.as_view({'post': 'create'})
         base = {'cliente': self.cliente.id, 'tipo_operacion': 'VENTA',
-                'moneda': 'USD', 'monto_divisa': '100'}
+                'moneda': 'USD', 'monto_divisa': '100', 'metodo_pago': 'transfer'}
         req = self.factory.post('/api/operaciones/', {**base, **extra}, format='json')
         return _auth(vista, req)
 
@@ -436,7 +436,7 @@ class DebitoTests(TestCase):
     def _crear_compra(self, extra):
         vista = OperacionViewSet.as_view({'post': 'create'})
         base = {'cliente': self.cliente.id, 'tipo_operacion': 'COMPRA',
-                'moneda': 'USD', 'monto_divisa': '100'}
+                'moneda': 'USD', 'monto_divisa': '100', 'metodo_pago': 'transfer'}
         req = self.factory.post('/api/operaciones/', {**base, **extra}, format='json')
         return _auth(vista, req)
 

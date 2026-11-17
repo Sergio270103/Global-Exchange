@@ -179,7 +179,7 @@ export default function App() {
         return <Invoices auth={auth} />
       case 'payments':
       case 'admin-payments':
-        return <Payments />
+        return <Payments auth={auth} currentClient={currentClient} />
       case 'banks':
         return <Banks currentClient={currentClient} />
       // Analyst
