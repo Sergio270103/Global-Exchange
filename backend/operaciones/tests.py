@@ -1,10 +1,11 @@
 """Tests del módulo de operaciones (Hito Operaciones)."""
 
+from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.test import TestCase
-from rest_framework.test import APIRequestFactory, force_authenticate
+from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
 from clientes.models import Cliente, ClienteUsuario, Comision
 from cotizaciones.models import Cotizacion
@@ -485,3 +486,54 @@ class DebitoTests(TestCase):
         self.assertEqual(res.status_code, 400)
         op.refresh_from_db()
         self.assertEqual(op.estado, Operacion.ESTADO_PENDIENTE)
+
+
+class GananciasTests(TestCase):
+    def setUp(self):
+        self.pyg, _ = Moneda.objects.get_or_create(codigo='PYG', defaults={'nombre': 'Guaraní'})
+        self.usd, _ = Moneda.objects.get_or_create(codigo='USD', defaults={'nombre': 'Dólar'})
+        self.cliente = Cliente.objects.create(
+            nombre='Cliente de ganancias', documento='987', email='ganancias@example.com',
+            categoria=Cliente.CAT_MINORISTA,
+        )
+
+    def registrar(self, estado, fecha, moneda_destino, tasa, comision):
+        return Operacion.objects.create(
+            cliente=self.cliente, usuario_keycloak_id='sub-123', tipo_operacion='COMPRA',
+            moneda_origen=self.pyg if moneda_destino == self.usd else self.usd,
+            moneda_destino=moneda_destino, monto_enviado=100000, monto_recibido=10,
+            cotizacion_aplicada=1, tasa_destino=tasa, monto_comision=comision,
+            porcentaje_comision_aplicado=1, estado=estado, fecha_confirmacion=fecha,
+        )
+
+    def consultar(self, ruta, rol, params=None):
+        usuario = UsuarioFake()
+        usuario.roles = [rol]
+        cliente = APIClient()
+        cliente.force_authenticate(user=usuario)
+        return cliente.get(f'/api/operaciones/{ruta}/', params or {})
+
+    def test_ganancias_aplica_filtros_y_tasas_historicas(self):
+        noviembre = datetime(2026, 11, 20, 12, tzinfo=timezone.utc)
+        octubre = datetime(2026, 10, 20, 12, tzinfo=timezone.utc)
+        self.registrar('PAGADA', noviembre, self.usd, 7500, 2)
+        self.registrar('PAGADA', noviembre, self.pyg, None, 500)
+        self.registrar('PAGADA', octubre, self.usd, 7700, 3)
+        for estado in ('PENDIENTE', 'CANCELADA', 'ANULADA'):
+            self.registrar(estado, noviembre, self.usd, 7500, 8)
+        Cotizacion.objects.create(moneda=self.usd, compra=7900, venta=8000)
+
+        rango = {'desde': '2026-11-01', 'hasta': '2026-11-20'}
+        tablero = self.consultar('ganancias', 'analyst', rango)
+        self.assertEqual(tablero.status_code, 200, tablero.data)
+        self.assertEqual(tablero.data['total_pyg'], 15500)
+        self.assertEqual(tablero.data['por_mes'], [{'mes': '2026-11', 'total_pyg': Decimal(15500)}])
+        filtrado = self.consultar('ganancias', 'admin', {**rango, 'moneda': 'USD'})
+        self.assertEqual(filtrado.data['operaciones'], 1)
+        self.assertEqual(filtrado.data['total_pyg'], 15000)
+
+    def test_roles_y_rangos_invalidos(self):
+        for rol in ('user', 'cashier'):
+            self.assertEqual(self.consultar('ganancias', rol).status_code, 403)
+        self.assertEqual(self.consultar('ganancias', 'admin', {'desde': '2026-11-31'}).status_code, 400)
+        self.assertEqual(self.consultar('ganancias', 'admin').data['operaciones'], 0)

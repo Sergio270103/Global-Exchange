@@ -187,7 +187,9 @@ export default function App() {
         return <RatesManagement />
       case 'analyst-earnings':
       case 'admin-earnings':
-        return <Earnings />
+        return auth.role === 'admin' || auth.role === 'analyst'
+          ? <Earnings />
+          : <p role="alert">No tenés permiso para ver ganancias.</p>
       // Admin
       case 'admin-clients':
         return <Clients />
