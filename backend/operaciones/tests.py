@@ -513,7 +513,7 @@ class GananciasTests(TestCase):
         cliente.force_authenticate(user=usuario)
         return cliente.get(f'/api/operaciones/{ruta}/', params or {})
 
-    def test_ganancias_aplica_filtros_y_tasas_historicas(self):
+    def test_ganancias_y_reporte_comparten_filtros_y_equivalentes_historicos(self):
         noviembre = datetime(2026, 11, 20, 12, tzinfo=timezone.utc)
         octubre = datetime(2026, 10, 20, 12, tzinfo=timezone.utc)
         self.registrar('PAGADA', noviembre, self.usd, 7500, 2)
@@ -528,6 +528,14 @@ class GananciasTests(TestCase):
         self.assertEqual(tablero.status_code, 200, tablero.data)
         self.assertEqual(tablero.data['total_pyg'], 15500)
         self.assertEqual(tablero.data['por_mes'], [{'mes': '2026-11', 'total_pyg': Decimal(15500)}])
+        for agrupacion, periodos in (('dia', {'2026-11-20'}), ('mes', {'2026-11'}), ('moneda', {'PYG', 'USD'})):
+            with self.subTest(agrupacion=agrupacion):
+                reporte = self.consultar('reporte-ganancias', 'admin', {**rango, 'agrupar': agrupacion})
+                self.assertEqual(reporte.status_code, 200, reporte.data)
+                self.assertEqual(reporte.data['total_pyg'], 15500)
+                self.assertEqual(sum(f['operaciones'] for f in reporte.data['filas']), 2)
+                self.assertEqual({f['periodo'] for f in reporte.data['filas']}, periodos)
+
         filtrado = self.consultar('ganancias', 'admin', {**rango, 'moneda': 'USD'})
         self.assertEqual(filtrado.data['operaciones'], 1)
         self.assertEqual(filtrado.data['total_pyg'], 15000)
@@ -535,5 +543,6 @@ class GananciasTests(TestCase):
     def test_roles_y_rangos_invalidos(self):
         for rol in ('user', 'cashier'):
             self.assertEqual(self.consultar('ganancias', rol).status_code, 403)
+        self.assertEqual(self.consultar('reporte-ganancias', 'analyst').status_code, 403)
         self.assertEqual(self.consultar('ganancias', 'admin', {'desde': '2026-11-31'}).status_code, 400)
         self.assertEqual(self.consultar('ganancias', 'admin').data['operaciones'], 0)

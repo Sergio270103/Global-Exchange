@@ -24,14 +24,15 @@ export interface Ganancias {
   operaciones_sin_tasa: number
   por_moneda: Importes[]
   por_mes: { mes: string; total_pyg: number }[]
+  filas: (Importes & { periodo: string })[]
 }
 
-export function obtenerGanancias(filtros: FiltrosGanancias, signal: AbortSignal) {
+export function obtenerGanancias(filtros: FiltrosGanancias, reporte: boolean, signal: AbortSignal) {
   const params = new URLSearchParams()
   for (const [nombre, valor] of Object.entries(filtros)) {
     if (valor) params.set(nombre, valor)
   }
-  return apiFetch<Ganancias>(`/operaciones/ganancias/?${params}`, { signal })
+  return apiFetch<Ganancias>(`/operaciones/${reporte ? 'reporte-ganancias' : 'ganancias'}/?${params}`, { signal })
 }
 
 export const formatoImporte = (cantidad: number) => new Intl.NumberFormat('es-PY', {
