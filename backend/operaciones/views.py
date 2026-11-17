@@ -39,10 +39,12 @@ from billeteras.models import Billetera, Movimiento
 from clientes.models import Cliente, ClienteUsuario, Comision
 from clientes.permisos import es_cajero
 from cotizaciones.models import Cotizacion
+from cotizaciones.permisos import es_editor_tasas
 from monedas.models import Moneda
 from monedas.permisos import es_admin
 from pagos.models import CuentaBancaria
 
+from .ganancias import calcular_ganancias
 from .models import Operacion
 from .serializers import (
     CancelarOperacionSerializer,
@@ -374,6 +376,14 @@ class OperacionViewSet(viewsets.ModelViewSet):
                 'fecha': op.fecha_creacion.isoformat(),
             })
         return Response(puntos)
+
+    @action(detail=False, methods=['get'], url_path='ganancias')
+    def ganancias(self, request):
+        if not es_editor_tasas(request.user):
+            return Response({'detail': 'No tenés permiso para ver ganancias.'}, status=403)
+        datos = calcular_ganancias(request.query_params)
+        datos.pop('filas')
+        return Response(datos)
 
     @action(detail=False, methods=['get'], url_path='resumen')
     def resumen(self, request):
