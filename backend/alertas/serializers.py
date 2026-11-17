@@ -31,6 +31,6 @@ class DisparoAlertaSerializer(serializers.ModelSerializer):
         model = DisparoAlerta
         fields = [
             'id', 'alerta', 'moneda_codigo', 'tasa_alcanzada',
-            'umbral', 'direccion', 'creado',
+            'umbral', 'direccion', 'creado', 'leido', 'eliminado',
         ]
         read_only_fields = fields

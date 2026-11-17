@@ -172,7 +172,7 @@ export default function App() {
       case 'admin-rates':
         return <Rates authUser={auth} />
       case 'notifications':
-        return <Notifications />
+        return <Notifications usuario={auth.email} />
       case 'simulator':
         return <Simulator navigate={navigate} currentClient={currentClient} />
       case 'invoices':

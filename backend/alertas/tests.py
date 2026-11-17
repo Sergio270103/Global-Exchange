@@ -182,3 +182,30 @@ class AlertaTasaTest(APITestCase):
         force_authenticate(req2, user=self.otro)
         resp2 = alerta_view({'get': 'historial'})(req2)
         self.assertEqual(len(resp2.data), 0)
+
+
+class EstadoNotificacionesTest(APITestCase):
+    def test_lectura_y_eliminacion_persisten_y_solo_afectan_al_dueno(self):
+        usd, _ = Moneda.objects.get_or_create(codigo='USD', defaults={'nombre': 'Dólar'})
+
+        def crear_disparo(sub):
+            alerta = AlertaTasa.objects.create(
+                usuario_sub=sub, moneda=usd, umbral=7500, direccion='supera',
+            )
+            return DisparoAlerta.objects.create(
+                alerta=alerta, tasa_alcanzada=7600, umbral=7500, direccion='supera',
+            )
+
+        mio = crear_disparo('sub-alerta')
+        ajeno = crear_disparo('sub-otro')
+        self.client.force_authenticate(user=UsuarioFake())
+        respuesta = self.client.patch('/api/alertas/historial/leer/', {'ids': [mio.pk, ajeno.pk]}, format='json')
+        self.assertEqual(respuesta.status_code, 204)
+        self.assertTrue(self.client.get('/api/alertas/historial/').data[0]['leido'])
+
+        self.assertEqual(self.client.delete(f'/api/alertas/historial/{ajeno.pk}/').status_code, 204)
+        self.assertEqual(self.client.delete(f'/api/alertas/historial/{mio.pk}/').status_code, 204)
+        self.assertTrue(self.client.get('/api/alertas/historial/').data[0]['eliminado'])
+        ajeno.refresh_from_db()
+        self.assertFalse(ajeno.leido)
+        self.assertFalse(ajeno.eliminado)

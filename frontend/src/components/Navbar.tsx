@@ -11,16 +11,8 @@ import { useEffect, useState } from 'react'
 import { type Page, type AuthUser, type ClienteActivo } from '@/types'
 import { demoClients } from '@/data/mockData'
 import { misClientes } from '@/services/clientes'
-import { historialDisparos, leidasIds, marcarLeidas } from '@/services/alertas'
-
-/** Aviso real mostrado en la campanita (disparo de alerta de tasa). */
-interface Aviso {
-  id: number
-  title: string
-  message: string
-  time: string
-  read: boolean
-}
+import { marcarNotificacionesLeidas } from '@/services/notificaciones'
+import { useNotificaciones } from '@/services/useNotificaciones'
 
 /** Mapa de títulos por página de la aplicación. */
 const pageTitles: Record<string, string> = {
@@ -76,7 +68,8 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
   const [showNotifications, setShowNotifications] = useState(false)
   const [showProfile, setShowProfile] = useState(false)
   const [showClientDropdown, setShowClientDropdown] = useState(false)
-  const [notifList, setNotifList] = useState<Aviso[]>([])
+  const { notifications: notifList, cargando, error } = useNotificaciones(auth.email)
+  const [errorLectura, setErrorLectura] = useState('')
 
   // Clientes que el usuario puede representar (RF10/RF11 + Hito
   // Operaciones). Se guardan como {id, nombre} para validar activo +
@@ -100,24 +93,6 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth.role])
 
-  // PI-38: la campanita muestra disparos reales de alertas de tasa
-  // (sin mocks). Las leídas persisten recargas (localStorage).
-  // Si la API falla, queda vacía con "Sin notificaciones".
-  useEffect(() => {
-    historialDisparos()
-      .then(disparos => {
-        const leidas = leidasIds()
-        setNotifList(disparos.map(d => ({
-          id: d.id,
-          title: `Alerta ejecutada: ${d.moneda_codigo}/PYG`,
-          message: `La tasa ${d.direccion === 'supera' ? 'alcanzó o superó' : 'bajó hasta'} ${d.tasa_alcanzada} (umbral ${d.umbral}).`,
-          time: new Date(d.creado).toLocaleString(),
-          read: leidas.includes(d.id),
-        })))
-      })
-      .catch(() => {})
-  }, [])
-
   const unread = notifList.filter(n => !n.read).length
 
   // Si está en el dashboard y el rol es cajero, muestra "Cajero" o "Panel Cajero"
@@ -125,10 +100,12 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
     ? 'Cajero'
     : pageTitles[currentPage] || 'Panel'
 
-  const markAllRead = () => {
-    marcarLeidas(notifList.map(n => n.id))
-    setNotifList(n => n.map(x => ({ ...x, read: true })))
-  }
+  useEffect(() => {
+    if (!showNotifications || cargando) return
+    setErrorLectura('')
+    void marcarNotificacionesLeidas(notifList.filter(n => !n.read).map(n => n.id))
+      .catch(() => setErrorLectura('No se pudieron marcar las notificaciones como leídas.'))
+  }, [showNotifications, cargando, notifList])
 
   // 👈 Se agrega la validación para mostrar 'Cajero' cuando auth.role es 'cashier'
   const roleLabel =
@@ -220,10 +197,11 @@ export default function Navbar({ auth, currentPage, navigate, onLogout, currentC
           <div className="absolute right-0 top-full mt-2 w-80 bg-white rounded-xl shadow-xl border border-slate-100 animate-fadein z-50">
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
               <span className="font-semibold text-slate-800 text-sm" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Notificaciones</span>
-              <button onClick={markAllRead} className="text-xs text-emerald-600 hover:text-emerald-700 font-medium">Marcar todas como leídas</button>
+              {(error || errorLectura) && <span role="alert" className="text-xs text-red-600">{error || errorLectura}</span>}
             </div>
             <div className="max-h-72 overflow-y-auto">
-              {notifList.length === 0 && (
+              {cargando && <p className="p-4 text-sm text-slate-500">Cargando notificaciones…</p>}
+              {!cargando && !error && notifList.length === 0 && (
                 <div className="px-4 py-8 text-center text-[13px] text-slate-400 font-medium">
                   🔔 Sin notificaciones
                 </div>
