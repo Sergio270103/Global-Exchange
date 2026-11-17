@@ -101,6 +101,7 @@ services:
     volumes:
       # Mismo realm que en desarrollo; solo se importa si todavía no existe.
       - ./frontend/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+      - ./frontend/keycloak/themes/global-exchange:/opt/keycloak/themes/global-exchange:ro
       - keycloak_data:/opt/keycloak/data
 
   # Tarea de una sola vez (no queda corriendo): configura Keycloak después

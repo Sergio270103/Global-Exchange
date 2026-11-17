@@ -152,6 +152,18 @@ def configurar_cliente(admin: str, token: str, client_id: str, publica: str) -> 
     print(f'  OK: cliente "{client_id}" actualizado para {publica}.')
 
 
+def configurar_tema_acceso(admin: str, token: str) -> None:
+    apariencia = {
+        'displayName': 'Global Exchange',
+        'loginTheme': 'global-exchange',
+        'internationalizationEnabled': True,
+        'supportedLocales': ['en', 'es'],
+        'defaultLocale': 'es',
+    }
+    _exigir(_pedir('PUT', admin, token, cuerpo=apariencia), 'Activar el tema de acceso')
+    print('  OK: tema de acceso Global Exchange activado.')
+
+
 def configurar_smtp(admin: str, token: str, clave_smtp: str) -> None:
     if not clave_smtp:
         print('  AVISO: KEYCLOAK_SMTP_PASSWORD esta vacio; no se toca el correo de '
@@ -259,6 +271,7 @@ def main() -> int:
         admin = f'{base}/admin/realms/{urllib.parse.quote(realm)}'
         configurar_cliente(admin, token, client_id, publica)
         configurar_smtp(admin, token, _env('KEYCLOAK_SMTP_PASSWORD'))
+        configurar_tema_acceso(admin, token)
         crear_usuarios(admin, token, _env('USUARIOS_INICIALES'))
     except ErrorKeycloak as exc:
         print(f'  ERROR: {exc}')

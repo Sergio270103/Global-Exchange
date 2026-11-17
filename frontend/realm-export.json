@@ -1,7 +1,8 @@
 {
   "id": "f73a35ca-cbc5-49a4-927e-180880d4bb8c",
   "realm": "Global-Exchange",
-  "displayName": "",
+  "displayName": "Global Exchange",
+  "loginTheme": "global-exchange",
   "displayNameHtml": "",
   "notBefore": 0,
   "defaultSignatureAlgorithm": "RS256",
@@ -1888,7 +1889,9 @@
       }
     ]
   },
-  "internationalizationEnabled": false,
+  "internationalizationEnabled": true,
+  "supportedLocales": [ "en", "es" ],
+  "defaultLocale": "es",
   "authenticationFlows": [
     {
       "id": "e285e1a8-9595-438a-b6f6-ab35bc3efe43",

@@ -95,6 +95,28 @@ Esto hará lo siguiente:
 
 Ya puedes acceder a la aplicación.
 
+### Tema de acceso de Keycloak
+
+El tema Global Exchange se monta desde `frontend/keycloak/themes/global-exchange`
+al crear el contenedor. En una instalación nueva, el realm se importa con el
+tema activo y el español como idioma predeterminado. En producción, la tarea
+`keycloak-init` también actualiza el tema de un realm existente.
+
+En desarrollo, si Keycloak ya estaba instalado, recrea el contenedor desde la
+raíz del repositorio para que cargue el tema. Docker conserva el volumen
+`keycloak_data`.
+
+```powershell
+docker compose -f frontend/docker-compose.yml up -d --force-recreate keycloak
+```
+
+Abre la consola de Keycloak en `http://localhost:8080/admin/` y selecciona el
+realm `Global-Exchange`. En **Realm settings → Themes**, selecciona
+`global-exchange` en **Login theme**. En **Localization**, habilita
+**Internationalization** y configura `es` como idioma disponible y
+predeterminado. En **General**, establece **Display name** a `Global Exchange`.
+Guarda los cambios en cada pestaña.
+
 Los logs de los procesos en segundo plano quedan en `.run/`
 (`backend.out.log`, `frontend.out.log`, etc.).
 
