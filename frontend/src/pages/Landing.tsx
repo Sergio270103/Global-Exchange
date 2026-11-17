@@ -6,12 +6,12 @@
  *
  * @module Landing
  */
-import { useState } from 'react'
-import { exchangeRates } from '@/data/mockData'
+import { useEffect, useState } from 'react'
+import { cotizacionesPublicas, type Cotizacion } from '@/services/cotizaciones'
 import { type Page } from '@/types'
 import keycloak from '../keycloak';
 
-console.log('Keycloak:', keycloak);
+
 
 const faqs = [
   { q: '¿Cómo funciona el proceso de compra?', a: 'Seleccionás la divisa que deseás comprar, ingresás el monto, confirmás la transacción y el importe se acredita automáticamente en tu billetera digital en minutos.' },
@@ -36,8 +36,6 @@ const benefits = [
   { icon: '🏆', title: 'Respaldo institucional', desc: 'Empresa regulada con más de 10 años de trayectoria en el mercado.' },
 ]
 
-const currencies = ['🇺🇸 USD', '🇪🇺 EUR', '🇧🇷 BRL', '🇦🇷 ARS', '🇵🇾 PYG', '🇬🇧 GBP', '🇨🇱 CLP', '🇺🇾 UYP', '🇨🇴 COP', '🇵🇪 PEN', '🇧🇴 BOB', '🇨🇭 CHF']
-
 /** Propiedades de la página de aterrizaje. */
 export interface LandingProps {
   /** Función para navegar entre páginas de la aplicación. */
@@ -45,19 +43,77 @@ export interface LandingProps {
 }
 
 export default function Landing({ navigate }: LandingProps) {
+  const [tasas, setTasas] = useState<Cotizacion[]>([])
+  const [cargando, setCargando] = useState(true)
+  const [errorTasas, setErrorTasas] = useState('')
+  const [errorSimulacion, setErrorSimulacion] = useState('')
   const [openFaq, setOpenFaq] = useState<number | null>(null)
   const [simFrom, setSimFrom] = useState('USD')
   const [simTo, setSimTo] = useState('PYG')
   const [simAmount, setSimAmount] = useState('1000')
   const [simResult, setSimResult] = useState<{ rate: number; converted: number } | null>(null)
 
-  const currencyOptions = exchangeRates.map(r => r.currency).concat(['PYG'])
+  useEffect(() => {
+    const control = new AbortController()
+    let consultando = false
+    async function cargar() {
+      if (consultando) return
+      consultando = true
+      try {
+        const resultado = await cotizacionesPublicas(control.signal)
+        if (control.signal.aborted) return
+        setTasas(resultado)
+        setErrorTasas('')
+        setSimResult(null)
+      } catch {
+        if (control.signal.aborted) return
+        setTasas([])
+        setSimResult(null)
+        setErrorTasas('No se pudieron cargar las tasas. Volvé a intentarlo en unos instantes.')
+      } finally {
+        consultando = false
+        if (!control.signal.aborted) setCargando(false)
+      }
+    }
+    void cargar()
+    const intervalo = window.setInterval(() => void cargar(), 30000)
+    return () => {
+      control.abort()
+      window.clearInterval(intervalo)
+    }
+  }, [])
+
+  useEffect(() => {
+    setSimResult(null)
+    setErrorSimulacion('')
+  }, [simFrom, simTo, simAmount])
+
+  const exchangeRates = tasas.filter(t => t.moneda !== 'PYG').map(t => ({
+    currency: t.moneda,
+    name: t.nombre,
+    flag: t.flag,
+    buy: t.compra,
+    sell: t.venta,
+    updatedAt: new Date(t.vigente_desde).toLocaleString('es-PY'),
+  }))
+  const currencyOptions = ['PYG', ...exchangeRates.map(r => r.currency)]
+  const currencies = ['🇵🇾 PYG', ...exchangeRates.map(r => `${r.flag} ${r.currency}`)]
+  const estadoTasas = cargando ? 'Cargando tasas…' : errorTasas || (
+    exchangeRates.length === 0 ? 'No hay cotizaciones disponibles.' : ''
+  )
 
   const simulate = () => {
-    const amount = parseFloat(simAmount) || 0
-    const rate = exchangeRates.find(r => r.currency === simFrom)?.sell || 7650
-    const converted = amount * rate
-    setSimResult({ rate, converted })
+    const amount = Number(simAmount)
+    const origen = simFrom === 'PYG' ? 1 : tasas.find(t => t.moneda === simFrom)?.compra
+    const destino = simTo === 'PYG' ? 1 : tasas.find(t => t.moneda === simTo)?.venta
+    if (!Number.isFinite(amount) || amount <= 0 || simFrom === simTo || !origen || !destino) {
+      setSimResult(null)
+      setErrorSimulacion('Elegí monedas distintas con cotización vigente e ingresá un monto mayor a cero.')
+      return
+    }
+    const rate = origen / destino
+    setErrorSimulacion('')
+    setSimResult({ rate, converted: amount * rate })
   }
 
   const tickerRates = [...exchangeRates, ...exchangeRates]
@@ -104,7 +160,7 @@ export default function Landing({ navigate }: LandingProps) {
           <div>
             <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 mb-8">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse-slow"/>
-              <span className="text-emerald-400 text-[12px] font-semibold uppercase tracking-wider">Tasas actualizadas en tiempo real</span>
+              <span className="text-emerald-400 text-[12px] font-semibold uppercase tracking-wider">Cotizaciones vigentes</span>
             </div>
             <h1 className="text-5xl lg:text-6xl font-extrabold leading-tight mb-6" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif', color: '#fff' }}>
               Cambiá divisas<br/>
@@ -151,6 +207,7 @@ export default function Landing({ navigate }: LandingProps) {
                   EN VIVO
                 </span>
               </div>
+              {estadoTasas && <p role="status" className="py-4 text-sm text-slate-300">{estadoTasas}</p>}
               {exchangeRates.slice(0, 4).map(r => (
                 <div key={r.currency} className="flex items-center justify-between py-3 border-b border-white/5 last:border-0">
                   <div className="flex items-center gap-3">
@@ -162,9 +219,7 @@ export default function Landing({ navigate }: LandingProps) {
                   </div>
                   <div className="text-right">
                     <div className="text-white font-mono font-semibold text-[14px]">₲ {r.sell.toLocaleString()}</div>
-                    <div className={`text-[11px] font-semibold ${r.change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                      {r.change >= 0 ? '▲' : '▼'} {Math.abs(r.change)}%
-                    </div>
+                    <div className="text-[11px] text-slate-400">Venta en PYG</div>
                   </div>
                 </div>
               ))}
@@ -180,9 +235,7 @@ export default function Landing({ navigate }: LandingProps) {
                 <span className="text-base">{r.flag}</span>
                 <span className="text-slate-400 text-[13px] font-medium">{r.currency}</span>
                 <span className="text-white font-mono font-semibold text-[13px]">₲ {r.sell.toLocaleString()}</span>
-                <span className={`text-[11px] font-semibold ${r.change >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {r.change >= 0 ? '+' : ''}{r.change}%
-                </span>
+
                 <span className="text-white/10 mx-2">|</span>
               </div>
             ))}
@@ -198,6 +251,7 @@ export default function Landing({ navigate }: LandingProps) {
             <p className="text-slate-500">Actualizadas durante todo el día hábil por nuestros analistas</p>
           </div>
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {estadoTasas && <p role="status" className="text-sm text-slate-500">{estadoTasas}</p>}
             {exchangeRates.map(r => (
               <div key={r.currency} className="rounded-xl border border-slate-100 bg-white shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all p-5">
                 <div className="flex items-center justify-between mb-4">
@@ -208,9 +262,7 @@ export default function Landing({ navigate }: LandingProps) {
                       <div className="text-slate-400 text-[11px]">{r.name}</div>
                     </div>
                   </div>
-                  <span className={`text-[12px] font-bold px-2 py-0.5 rounded-full ${r.change >= 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-500'}`}>
-                    {r.change >= 0 ? '▲' : '▼'} {Math.abs(r.change)}%
-                  </span>
+
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="bg-slate-50 rounded-lg p-3">
@@ -298,7 +350,7 @@ export default function Landing({ navigate }: LandingProps) {
               <div>
                 <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Tengo (origen)</label>
                 <select value={simFrom} onChange={e => setSimFrom(e.target.value)} className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
-                  {exchangeRates.map(r => <option key={r.currency} value={r.currency}>{r.flag} {r.currency}</option>)}
+                  {currencyOptions.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
               <div>
@@ -308,24 +360,25 @@ export default function Landing({ navigate }: LandingProps) {
               <div>
                 <label className="block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Recibo (destino)</label>
                 <select value={simTo} onChange={e => setSimTo(e.target.value)} className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm font-medium text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
-                  <option value="PYG">🇵🇾 PYG</option>
-                  {exchangeRates.filter(r => r.currency !== simFrom).map(r => <option key={r.currency} value={r.currency}>{r.flag} {r.currency}</option>)}
+                  {currencyOptions.map(c => <option key={c} value={c}>{c}</option>)}
                 </select>
               </div>
             </div>
-            <button onClick={simulate} className="w-full py-3 rounded-xl text-white font-semibold text-[15px] transition-all hover:-translate-y-0.5 hover:shadow-lg" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
+            <button disabled={cargando || !!errorTasas || exchangeRates.length === 0} onClick={simulate} className="w-full py-3 rounded-xl text-white font-semibold text-[15px] transition-all hover:-translate-y-0.5 hover:shadow-lg" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
               Simular conversión
             </button>
+            <p className="mt-3 text-xs text-slate-500">Estimación con las tasas vigentes. El importe final se calcula al operar según la categoría del cliente.</p>
+            {errorSimulacion && <p role="alert" className="mt-3 text-sm text-red-600">{errorSimulacion}</p>}
             {simResult && (
               <div className="mt-6 rounded-xl bg-emerald-50 border border-emerald-100 p-5 animate-fadein">
                 <div className="grid grid-cols-2 gap-4 text-center mb-4">
                   <div>
-                    <div className="text-[11px] text-slate-400 font-semibold uppercase tracking-wider mb-1">Tasa final</div>
-                    <div className="font-mono font-bold text-slate-800">₲ {simResult.rate.toLocaleString()}</div>
+                    <div className="text-[11px] text-slate-400 font-semibold uppercase tracking-wider mb-1">Tasa estimada</div>
+                    <div className="font-mono font-bold text-slate-800">{simResult.rate.toLocaleString('es-PY', { maximumFractionDigits: 6 })} {simTo} por {simFrom}</div>
                   </div>
                   <div>
                     <div className="text-[11px] text-emerald-600 font-semibold uppercase tracking-wider mb-1">Total a recibir</div>
-                    <div className="font-mono font-bold text-emerald-700 text-lg">₲ {simResult.converted.toLocaleString('es', { maximumFractionDigits: 0 })}</div>
+                    <div className="font-mono font-bold text-emerald-700 text-lg">{simResult.converted.toLocaleString('es-PY', { maximumFractionDigits: simTo === 'PYG' ? 0 : 2 })} {simTo}</div>
                   </div>
                 </div>
                 <button onClick={() => keycloak.register()} className="w-full py-2.5 rounded-lg text-white font-semibold text-[14px]" style={{ background: '#10b981' }}>

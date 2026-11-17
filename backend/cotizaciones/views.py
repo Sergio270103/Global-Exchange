@@ -17,7 +17,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date
 from rest_framework import viewsets
 from rest_framework.decorators import action, api_view, permission_classes
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from clientes.models import Cliente, ClienteUsuario, Comision
@@ -70,6 +70,16 @@ class CotizacionViewSet(viewsets.ModelViewSet):
         # PI-38: una tasa nueva puede disparar alertas configuradas.
         from alertas.servicios import evaluar_alertas
         evaluar_alertas(serializer.instance)
+
+    @action(detail=False, methods=['get'], url_path='publicas',
+            permission_classes=[AllowAny], authentication_classes=[])
+    def publicas(self, request):
+        campos = ('id', 'moneda', 'moneda_codigo', 'moneda_nombre',
+                  'compra', 'venta', 'vigente_desde')
+        return Response([
+            {campo: cotizacion[campo] for campo in campos}
+            for cotizacion in self.vigentes(request).data
+        ])
 
     @action(detail=False, methods=['get'], url_path='vigentes')
     def vigentes(self, request):

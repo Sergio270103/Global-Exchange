@@ -73,6 +73,23 @@ class CotizacionTest(APITestCase):
         self.assertEqual(resp.status_code, 201)
         self.assertEqual(resp.data['creado_por'], 'tester')
 
+    def test_cotizaciones_publicas_sin_sesion_coinciden_con_vigentes(self):
+        from rest_framework.test import APIClient
+
+        cliente = APIClient()
+        publica = cliente.get('/api/cotizaciones/publicas/')
+        self.assertEqual(publica.status_code, 200)
+        cliente.force_authenticate(user=UsuarioFake(roles=['user']))
+        privada = cliente.get('/api/cotizaciones/vigentes/')
+        por_moneda = {c['moneda_codigo']: c for c in privada.data}
+        for cotizacion in publica.data:
+            self.assertNotIn('creado_por', cotizacion)
+            self.assertEqual(cotizacion['venta'], por_moneda[cotizacion['moneda_codigo']]['venta'])
+            self.assertEqual(cotizacion['compra'], por_moneda[cotizacion['moneda_codigo']]['compra'])
+        cliente.force_authenticate(user=None)
+        self.assertIn(cliente.post('/api/cotizaciones/', {}).status_code, (401, 403))
+        self.assertIn(cliente.get('/api/cotizaciones/').status_code, (401, 403))
+
     def test_vigentes_devuelve_ultima_por_moneda(self):
         factory = APIRequestFactory()
         req = factory.get('/api/cotizaciones/vigentes/')
