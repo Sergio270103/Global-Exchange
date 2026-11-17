@@ -49,6 +49,8 @@ export interface DisparoAlerta {
   umbral: number
   direccion: DireccionAlerta
   creado: string
+  leido: boolean
+  eliminado: boolean
 }
 
 interface DisparoAlertaApi {
@@ -59,6 +61,8 @@ interface DisparoAlertaApi {
   umbral: string
   direccion: DireccionAlerta
   creado: string
+  leido: boolean
+  eliminado: boolean
 }
 
 function mapear(a: AlertaTasaApi): AlertaTasa {
@@ -119,43 +123,4 @@ export async function historialDisparos(alertaId?: number): Promise<DisparoAlert
   const qs = alertaId ? `?alerta=${alertaId}` : ''
   const datos = await apiFetch<DisparoAlertaApi[]>(`/alertas/historial/${qs}`)
   return datos.map(mapearDisparo)
-}
-
-const CLAVE_LEIDAS = 'alertasLeidas'
-const CLAVE_ELIMINADAS = 'alertasEliminadas'
-
-function leerIds(clave: string): number[] {
-  try {
-    return JSON.parse(localStorage.getItem(clave) ?? '[]')
-  } catch {
-    return []
-  }
-}
-
-function guardarIds(clave: string, ids: number[]): void {
-  try {
-    localStorage.setItem(clave, JSON.stringify(ids))
-  } catch {
-    // Sin almacenamiento, el estado queda solo en memoria.
-  }
-}
-
-/** Ids de disparos marcados como leídos (persiste recargas). */
-export function leidasIds(): number[] {
-  return leerIds(CLAVE_LEIDAS)
-}
-
-/** Marca disparos como leídos (persiste recargas). */
-export function marcarLeidas(ids: number[]): void {
-  guardarIds(CLAVE_LEIDAS, [...new Set([...leerIds(CLAVE_LEIDAS), ...ids])])
-}
-
-/** Ids de disparos eliminados del feed (persiste recargas). */
-export function eliminadasIds(): number[] {
-  return leerIds(CLAVE_ELIMINADAS)
-}
-
-/** Elimina un disparo del feed (persiste recargas). */
-export function marcarEliminada(id: number): void {
-  guardarIds(CLAVE_ELIMINADAS, [...new Set([...leerIds(CLAVE_ELIMINADAS), id])])
 }
