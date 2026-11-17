@@ -8,7 +8,7 @@
  * @module Banks.test
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import Banks from '@/pages/Banks'
 
@@ -39,7 +39,7 @@ function mockFetch() {
     if (url.includes('/clientes/')) return respuesta(clientes)
     if (url.includes('/monedas/')) return respuesta(monedas)
     if (url.includes('/cuentas-bancarias/')) {
-      if (method === 'GET') return respuesta(cuentas)
+      if (method === 'GET') return respuesta(cuentas.filter(c => c.cliente === Number(new URL(url).searchParams.get('cliente'))))
       const cuerpo = JSON.parse(String(init.body ?? '{}'))
       if (method === 'POST') {
         const digitos = String(cuerpo.numero_cuenta ?? '').replace(/\D/g, '')
@@ -80,7 +80,7 @@ function mockFetch() {
 }
 
 function renderBanks() {
-  render(<Banks />)
+  return render(<Banks currentClient={clientes[0]} />)
 }
 
 async function fillValidForm(user: ReturnType<typeof userEvent.setup>, overrides: Partial<Record<string, string>> = {}) {
@@ -116,6 +116,84 @@ describe('Banks (CRUD de medios de pago del cliente)', () => {
     expect(await screen.findByText('Banco Continental')).toBeInTheDocument()
     expect(screen.getByText('Itaú Paraguay')).toBeInTheDocument()
     expect(screen.getByText('2 cuentas vinculadas')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Cliente')).not.toBeInTheDocument()
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes('/clientes/'))).toBe(false)
+  })
+
+  it('sin cliente activo no consulta cuentas ni permite crearlas', () => {
+    const { rerender } = render(<Banks currentClient={null} />)
+    expect(screen.getByText(/Seleccioná un cliente asociado/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '+ Agregar cuenta' })).toBeDisabled()
+    expect(fetch).not.toHaveBeenCalled()
+    rerender(<Banks currentClient={{ id: -1, nombre: 'Demo' }} />)
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('cambia las cuentas y descarta el formulario al cambiar el cliente activo', async () => {
+    const user = userEvent.setup()
+    cuentas.push({ ...cuentas[0], id: 3, cliente: 2, banco: 'Banco del segundo cliente' })
+    const { rerender } = renderBanks()
+    await screen.findByText('Banco Continental')
+    expect(screen.queryByText('Banco del segundo cliente')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Editar cuenta Banco Continental' }))
+    rerender(<Banks currentClient={{ id: 2, nombre: 'Segundo' }} />)
+    expect(screen.queryByText('Editar cuenta bancaria')).not.toBeInTheDocument()
+    expect(screen.queryByText('Banco Continental')).not.toBeInTheDocument()
+    expect(await screen.findByText('Banco del segundo cliente')).toBeInTheDocument()
+    rerender(<Banks currentClient={null} />)
+    expect(screen.queryByText('Banco del segundo cliente')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '+ Agregar cuenta' })).toBeDisabled()
+  })
+
+  it('ignora consultas anteriores que terminan después del cambio de cliente', async () => {
+    const base = mockFetch()
+    let resolver!: (value: Response) => void
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) =>
+      url.includes('/cuentas-bancarias/?cliente=1')
+        ? new Promise<Response>(resolve => { resolver = resolve }) : base(url, init)))
+    const { rerender } = renderBanks()
+    await waitFor(() => expect(resolver).toBeDefined())
+    rerender(<Banks currentClient={{ id: 2, nombre: 'Segundo' }} />)
+    await screen.findByText('Sin cuentas vinculadas')
+    await act(async () => { resolver(respuesta(cuentas)) })
+    expect(screen.queryByText('Banco Continental')).not.toBeInTheDocument()
+    expect(screen.getByText('Sin cuentas vinculadas')).toBeInTheDocument()
+  })
+
+  it('una creación pendiente conserva su cliente y no contamina la nueva vista', async () => {
+    const user = userEvent.setup()
+    const base = mockFetch()
+    let resolver!: (value: Response) => void
+    let cuerpo: Record<string, unknown> = {}
+    vi.stubGlobal('fetch', vi.fn((url: string, init: RequestInit = {}) => {
+      if (init.method === 'POST') {
+        cuerpo = JSON.parse(String(init.body))
+        return new Promise<Response>(resolve => { resolver = resolve })
+      }
+      return base(url, init)
+    }))
+    const { rerender } = renderBanks()
+    await screen.findByText('Banco Continental')
+    await user.click(screen.getByRole('button', { name: '+ Agregar cuenta' }))
+    await fillValidForm(user)
+    await user.click(screen.getByRole('button', { name: 'Vincular cuenta' }))
+    expect(cuerpo.cliente).toBe(1)
+    rerender(<Banks currentClient={{ id: 2, nombre: 'Segundo' }} />)
+    await screen.findByText('Sin cuentas vinculadas')
+    await act(async () => { resolver(respuesta({ ...cuentas[0], id: 3, banco: 'Sudameris Bank' }, 201)) })
+    expect(screen.queryByText('Sudameris Bank')).not.toBeInTheDocument()
+    expect(screen.queryByText('La cuenta quedó vinculada.')).not.toBeInTheDocument()
+  })
+
+  it('al fallar la consulta del nuevo cliente no muestra cuentas anteriores', async () => {
+    const { rerender } = renderBanks()
+    await screen.findByText('Banco Continental')
+    const base = mockFetch()
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) =>
+      url.includes('/cuentas-bancarias/') ? Promise.resolve(respuesta({ detail: 'No disponible' }, 403)) : base(url, init)))
+    rerender(<Banks currentClient={{ id: 2, nombre: 'Segundo' }} />)
+    await screen.findByText('No se pudieron cargar las cuentas del cliente.')
+    expect(screen.queryByText('Banco Continental')).not.toBeInTheDocument()
   })
 
   it('muestra errores de validación al vincular con campos vacíos', async () => {
