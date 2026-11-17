@@ -12,10 +12,9 @@
  */
 import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { listarClientes, type Cliente } from '@/services/clientes'
 import { listarCuentas, crearCuenta, actualizarCuenta, eliminarCuenta } from '@/services/cuentas'
 import { listarMonedas } from '@/services/monedas'
-import type { BankAccount } from '@/types'
+import type { BankAccount, ClienteActivo } from '@/types'
 
 /** Entidades bancarias disponibles para vincular. */
 const bankOptions = [
@@ -68,12 +67,17 @@ function validateForm(form: typeof emptyForm, requireAccount: boolean): Record<s
 const inputClass = 'w-full border border-slate-200 rounded-xl px-4 py-2.5 text-[14px] text-slate-800 bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300'
 const labelClass = 'block text-[12px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5'
 
-export default function Banks() {
-  const [clientes, setClientes] = useState<Cliente[]>([])
-  const [clienteId, setClienteId] = useState<number | null>(null)
+export default function Banks({ currentClient }: { currentClient: ClienteActivo | null }) {
+  const clienteId = currentClient && currentClient.id > 0 ? currentClient.id : null
+  // Al cambiar de cliente se descartan cuentas, formularios y operaciones
+  // pendientes de la vista anterior, incluso si su respuesta llega después.
+  return <CuentasDelCliente key={clienteId ?? 'sin-cliente'} clienteId={clienteId} />
+}
+
+function CuentasDelCliente({ clienteId }: { clienteId: number | null }) {
   const [monedas, setMonedas] = useState<{ id: number; code: string; name: string; flag: string }[]>([])
   const [accounts, setAccounts] = useState<BankAccount[]>([])
-  const [cargando, setCargando] = useState(true)
+  const [cargando, setCargando] = useState(clienteId !== null)
   const [aviso, setAviso] = useState('')
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -84,26 +88,20 @@ export default function Banks() {
   const [guardando, setGuardando] = useState(false)
 
   useEffect(() => {
-    Promise.all([listarClientes({ activo: true }), listarMonedas(true)])
-      .then(([cs, ms]) => {
-        setClientes(cs)
-        setMonedas(ms)
-        if (cs.length > 0) setClienteId(cs[0].id)
-        else setCargando(false)
+    if (clienteId === null) return
+    let vigente = true
+    setCargando(true)
+    Promise.all([listarCuentas(clienteId), listarMonedas(true)])
+      .then(([cuentas, divisas]) => {
+        if (!vigente) return
+        setAccounts(cuentas)
+        setMonedas(divisas)
       })
       .catch(() => {
-        setAviso('No se pudieron cargar los datos. Verificá que el backend esté corriendo.')
-        setCargando(false)
+        if (vigente) setAviso('No se pudieron cargar las cuentas del cliente.')
       })
-  }, [])
-
-  useEffect(() => {
-    if (clienteId === null) return
-    setCargando(true)
-    listarCuentas(clienteId)
-      .then(setAccounts)
-      .catch(() => setAviso('No se pudieron cargar las cuentas del cliente.'))
-      .finally(() => setCargando(false))
+      .finally(() => { if (vigente) setCargando(false) })
+    return () => { vigente = false }
   }, [clienteId])
 
   const set = (field: keyof typeof emptyForm, value: string) => {
@@ -120,6 +118,7 @@ export default function Banks() {
     monedas.find(m => m.code === code)?.id
 
   const openCreate = () => {
+    if (clienteId === null) return
     setForm({ ...emptyForm, currency: monedas[0]?.code ?? 'PYG' })
     setErrors({})
     setAviso('')
@@ -147,7 +146,7 @@ export default function Banks() {
 
   const handleSubmit = async () => {
     if (clienteId === null) {
-      setAviso('Primero tiene que existir un cliente: crealo en Clientes (administración).')
+      setAviso('Seleccioná un cliente asociado en la barra superior.')
       return
     }
     const validation = validateForm(form, !originalAccount || form.account.trim().length > 0)
@@ -219,15 +218,6 @@ export default function Banks() {
           </p>
         </div>
         <div className="flex items-center gap-3">
-          <label htmlFor="bank-client" className="sr-only">Cliente</label>
-          <select
-            id="bank-client"
-            value={clienteId ?? ''}
-            onChange={e => setClienteId(Number(e.target.value))}
-            className="border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-medium text-slate-700 bg-white focus:outline-none"
-          >
-            {clientes.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-          </select>
           <button onClick={openCreate} disabled={clienteId === null} className="px-4 py-2 rounded-lg text-white text-[13px] font-semibold transition-all hover:opacity-90 disabled:opacity-50" style={{ background: '#0f3460' }}>
             + Agregar cuenta
           </button>
@@ -241,14 +231,14 @@ export default function Banks() {
       )}
 
       {/* Sin clientes: no se puede operar */}
-      {!cargando && clientes.length === 0 && (
+      {clienteId === null && (
         <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-[13px] text-amber-800">
-          Todavía no hay clientes registrados. Un administrador debe crear al menos uno en <strong>Clientes</strong> antes de vincular cuentas.
+          Seleccioná un cliente asociado en la barra superior para ver y vincular sus cuentas bancarias.
         </div>
       )}
 
       {/* List */}
-      {cargando ? (
+      {clienteId === null ? null : cargando ? (
         <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-16 text-center text-slate-400 text-[14px]">
           Cargando cuentas…
         </div>

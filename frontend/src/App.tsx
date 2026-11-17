@@ -181,7 +181,7 @@ export default function App() {
       case 'admin-payments':
         return <Payments />
       case 'banks':
-        return <Banks />
+        return <Banks currentClient={currentClient} />
       // Analyst
       case 'analyst-rates':
         return <RatesManagement />
