@@ -382,8 +382,15 @@ class OperacionViewSet(viewsets.ModelViewSet):
         if not es_editor_tasas(request.user):
             return Response({'detail': 'No tenés permiso para ver ganancias.'}, status=403)
         datos = calcular_ganancias(request.query_params)
-        datos.pop('filas')
+        if not es_admin(request.user):
+            datos.pop('filas')
         return Response(datos)
+
+    @action(detail=False, methods=['get'], url_path='reporte-ganancias')
+    def reporte_ganancias(self, request):
+        if not es_admin(request.user):
+            return Response({'detail': 'Solo un administrador puede ver el reporte.'}, status=403)
+        return Response(calcular_ganancias(request.query_params))
 
     @action(detail=False, methods=['get'], url_path='resumen')
     def resumen(self, request):

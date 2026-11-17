@@ -198,7 +198,9 @@ export default function App() {
       case 'admin-currencies':
         return <Currencies auth={auth} />
       case 'admin-reports':
-        return <ReportsPlaceholder />
+        return auth.role === 'admin'
+          ? <ReportsPlaceholder />
+          : <p role="alert">No tenés permiso para ver reportes.</p>
       case 'admin-config':
         return <Configuration />
       case 'admin-cash-deliveries':
@@ -224,6 +226,15 @@ export default function App() {
 
 
 function ReportsPlaceholder() {
+  const [verGanancias, setVerGanancias] = useState(false)
+  if (verGanancias) {
+    return (
+      <div className="space-y-4">
+        <button type="button" onClick={() => setVerGanancias(false)} className="text-sm font-semibold text-emerald-700">Volver a Reportes</button>
+        <Earnings reporte />
+      </div>
+    )
+  }
   return (
     <div className="space-y-4 animate-fadein">
       <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
@@ -241,10 +252,12 @@ function ReportsPlaceholder() {
               <div className="text-3xl mb-3">{r.icon}</div>
               <div className="font-semibold text-slate-900 text-[14px] mb-1" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>{r.title}</div>
               <div className="text-[12px] text-slate-400 mb-4">{r.desc}</div>
-              <div className="flex gap-2">
+              {r.title === 'Reporte de ganancias' ? (
+                <button type="button" onClick={() => setVerGanancias(true)} className="rounded-lg border border-slate-200 px-3 py-1.5 text-[12px] font-semibold text-emerald-700">Abrir reporte</button>
+              ) : <div className="flex gap-2">
                 <button className="flex-1 py-1.5 rounded-lg border border-slate-200 text-[12px] font-semibold text-slate-600 hover:bg-slate-50">📥 PDF</button>
                 <button className="flex-1 py-1.5 rounded-lg border border-slate-200 text-[12px] font-semibold text-slate-600 hover:bg-slate-50">📊 Excel</button>
-              </div>
+              </div>}
             </div>
           ))}
         </div>
