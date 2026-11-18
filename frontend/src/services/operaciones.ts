@@ -212,6 +212,7 @@ function mapear(o: Record<string, unknown>): Operacion {
  * filtros de RF35 (fecha, tipo, moneda, estado) también se aplican allá.
  */
 export async function listarOperaciones(params: {
+  metodo?: string
   mine?: boolean
   clienteId?: number
   tipo?: string
@@ -224,6 +225,7 @@ export async function listarOperaciones(params: {
   buscar?: string
 } = {}): Promise<Operacion[]> {
   const qs = new URLSearchParams()
+  if (params.metodo) qs.set('metodo', params.metodo)
   if (params.mine) qs.set('mine', '1')
   if (params.clienteId) qs.set('cliente', String(params.clienteId))
   if (params.tipo) qs.set('tipo', params.tipo)

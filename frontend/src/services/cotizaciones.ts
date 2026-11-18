@@ -8,7 +8,7 @@
  *
  * @module services/cotizaciones
  */
-import { apiFetch } from '@/services/api'
+import { API_BASE, apiFetch } from '@/services/api'
 import { banderaDesdeCodigo } from '@/services/monedas'
 
 /** Cotización tal como la devuelve el backend. */
@@ -91,4 +91,12 @@ export async function crearCotizacion(
     body: JSON.stringify({ moneda: monedaId, compra, venta }),
   })
   return mapear(creada)
+}
+
+/** Cotizaciones públicas sin datos del personal ni autenticación. */
+export async function cotizacionesPublicas(signal?: AbortSignal): Promise<Cotizacion[]> {
+  const respuesta = await fetch(`${API_BASE}/cotizaciones/publicas/`, { signal })
+  if (!respuesta.ok) throw new Error('No se pudieron cargar las cotizaciones vigentes.')
+  const datos: CotizacionApi[] = await respuesta.json()
+  return datos.map(c => mapear({ ...c, creado_por: '' }))
 }

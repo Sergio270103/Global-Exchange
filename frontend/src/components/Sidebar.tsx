@@ -60,7 +60,7 @@ const adminMenu: SidebarItem[] = [
   { icon: '◈', label: 'Monedas', page: 'admin-currencies' },
   { icon: '%', label: 'Tasas', page: 'admin-rates' },
   { icon: '💵', label: 'Entregas de Billetes', page: 'admin-cash-deliveries' },
-  { icon: '⊟', label: 'Métodos de Pago', page: 'admin-payments' },
+  { icon: '⊟', label: 'Pagos Digitales', page: 'admin-payments' },
   { icon: '⬜', label: 'Facturas', page: 'invoices' },
   { icon: '↗', label: 'Ganancias', page: 'admin-earnings' },
   { icon: '≡', label: 'Reportes', page: 'admin-reports' },

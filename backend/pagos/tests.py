@@ -2,7 +2,7 @@
 
 from rest_framework.test import APIRequestFactory, APITestCase, force_authenticate
 
-from clientes.models import Cliente
+from clientes.models import Cliente, ClienteUsuario
 from monedas.models import Moneda
 
 from .models import CuentaBancaria, MetodoPago
@@ -15,6 +15,7 @@ class UsuarioFake:
         self.is_superuser = 'admin' in [r.lower() for r in roles]
         self._authenticated = authenticated
         self.username = 'tester'
+        self.id = 'usuario-test'
 
     @property
     def is_authenticated(self):
@@ -49,6 +50,7 @@ class MetodoPagoTest(APITestCase):
 class CuentaBancariaTest(APITestCase):
     def setUp(self):
         self.cliente = Cliente.objects.create(nombre='Carlos', documento='1', email='c@x.com')
+        ClienteUsuario.objects.create(cliente=self.cliente, keycloak_id='usuario-test')
         self.pyg, _ = Moneda.objects.get_or_create(
             codigo='PYG', defaults={'nombre': 'Guaraní', 'decimales': 0})
 

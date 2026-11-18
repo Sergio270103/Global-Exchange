@@ -42,7 +42,8 @@ from cotizaciones.models import Cotizacion
 from cotizaciones.permisos import es_editor_tasas
 from monedas.models import Moneda
 from monedas.permisos import es_admin
-from pagos.models import CuentaBancaria
+from pagos.models import CuentaBancaria, MetodoPago
+from rest_framework.exceptions import ValidationError
 
 from .ganancias import calcular_ganancias
 from .models import Operacion
@@ -66,6 +67,14 @@ METODO_BILLETERA = 'wallet'
 #: Pago en efectivo en ventanilla (PI-42): sin billeteras ni cuentas,
 #: solo para el cajero operando en nombre del cliente presencial.
 METODO_EFECTIVO = 'efectivo'
+
+
+def validar_metodo_pago(codigo, usuario):
+    """El efectivo de ventanilla conserva su autorización especial."""
+    if codigo == METODO_EFECTIVO and es_cajero(usuario):
+        return
+    if not MetodoPago.objects.filter(codigo=codigo, activo=True).exists():
+        raise ValidationError({'detail': 'El método de pago no existe o está deshabilitado. Seleccioná otro método habilitado.'})
 
 
 class ErrorCotizacion(Exception):
@@ -343,6 +352,9 @@ class OperacionViewSet(viewsets.ModelViewSet):
             codigo = moneda.strip().upper()
             qs = qs.filter(Q(moneda_origen__codigo=codigo) | Q(moneda_destino__codigo=codigo))
         estado = params.get('estado')
+        metodo = params.get('metodo')
+        if metodo:
+            qs = qs.filter(metodo_pago=metodo.strip().lower())
         if estado:
             qs = qs.filter(estado=estado.strip().upper())
         buscar = params.get('buscar')
@@ -503,6 +515,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
             return Response({'detail': ERROR_CLIENTE}, status=status.HTTP_400_BAD_REQUEST)
 
         es_efectivo = metodo_pago == METODO_EFECTIVO
+        validar_metodo_pago(metodo_pago, request.user)
         if es_efectivo and not es_cajero(request.user):
             return Response(
                 {'detail': 'El pago en efectivo es solo en ventanilla.'},
@@ -657,6 +670,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
                     {'detail': f'La operación ya está {op.get_estado_display().lower()}.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            validar_metodo_pago(op.metodo_pago, request.user)
             if op.metodo_pago in settings.STRIPE_METODOS:
                 return Response(
                     {'detail': 'Esta operación se paga por pasarela (Stripe).'},
@@ -786,6 +800,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
                 {'detail': 'Solo se puede pagar una operación pendiente.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        validar_metodo_pago(op.metodo_pago, request.user)
         if op.metodo_pago not in settings.STRIPE_METODOS:
             return Response(
                 {'detail': 'Esta operación usa confirmación directa.'},
