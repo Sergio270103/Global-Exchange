@@ -450,9 +450,6 @@ export default function BuySell({ auth: _auth, currentClient }: BuySellProps) {
           )}
 
           <div className="flex gap-3">
-            <button className="flex-1 py-2.5 rounded-xl border border-slate-200 text-[13px] font-semibold text-slate-700 hover:bg-slate-50 transition-colors">
-              📄 Descargar PDF
-            </button>
             <button onClick={resetForm} className="flex-1 py-2.5 rounded-xl text-white text-[13px] font-semibold transition-all hover:-translate-y-0.5" style={{ background: 'linear-gradient(135deg,#0f3460,#10b981)' }}>
               Nueva operación
             </button>

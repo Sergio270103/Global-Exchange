@@ -17,7 +17,8 @@
  */
 import { ApiError, apiFetch } from '@/services/api'
 
-export type EstadoFactura = 'ANULADA' | 'DEVUELTA' | 'ERROR' | 'VERIFICAR' | 'EMITIDA' | 'APROBADA' | 'RECHAZADA'
+export type ContextoGestion = 'cajero' | 'administrador'
+export type EstadoFactura = 'PROCESANDO' | 'ANULADA' | 'DEVUELTA' | 'ERROR' | 'VERIFICAR' | 'EMITIDA' | 'APROBADA' | 'RECHAZADA'
 export type EstadoEvento = '' | 'PENDIENTE' | 'APROBADA' | 'RECHAZADA' | 'ERROR'
 
 export interface EventoSIFEN {
@@ -67,6 +68,12 @@ export interface NotaCreditoElectronica extends NotaCreditoResumen {
 }
 
 export interface FacturaElectronica {
+  reversion_emision_pendiente?: boolean
+  reversion_emision_error?: string
+  gestion_rol?: string
+  reversion_aplicada?: boolean
+  reversion_pendiente?: boolean
+  reversion_error?: string
   tipo_operacion?: 'COMPRA' | 'VENTA'
   tipo_operacion_display?: 'Compra' | 'Venta'
   pdf_pendiente?: boolean
@@ -134,6 +141,7 @@ export const MOTIVOS_NOTA_CREDITO = [
 ] as const
 
 export const ETIQUETA_ESTADO_FACTURA: Record<EstadoFactura, string> = {
+  PROCESANDO: 'Pendiente en SIFEN',
   ANULADA: 'Anulada', DEVUELTA: 'Devuelta',
   ERROR: 'Error (no generada)',
   VERIFICAR: 'Pendiente de verificar',
@@ -199,6 +207,12 @@ function mapear(f: Record<string, unknown>): FacturaElectronica {
   return {
     id: Number(f.id),
     operacion: Number(f.operacion),
+    gestion_rol: String(f.gestion_rol ?? ''),
+    reversion_aplicada: Boolean(f.reversion_aplicada),
+    reversion_pendiente: Boolean(f.reversion_pendiente),
+    reversion_error: String(f.reversion_error ?? ''),
+    reversion_emision_pendiente: Boolean(f.reversion_emision_pendiente),
+    reversion_emision_error: String(f.reversion_emision_error ?? ''),
     cliente_nombre: String(f.cliente_nombre ?? ''),
     tipo_operacion: String(f.tipo_operacion ?? 'VENTA') as 'COMPRA' | 'VENTA',
     tipo_operacion_display: String(f.tipo_operacion_display ?? (f.tipo_operacion === 'COMPRA' ? 'Compra' : 'Venta')) as 'Compra' | 'Venta',
@@ -280,10 +294,10 @@ export interface RespuestaEvento {
 }
 
 /** Solicita la cancelación de una factura aprobada. */
-export async function cancelarFactura(id: number, motivo = ''): Promise<RespuestaEvento> {
+export async function cancelarFactura(id: number, motivo = '', contexto_rol?: ContextoGestion): Promise<RespuestaEvento> {
   const d = await apiFetch<Record<string, unknown>>(`/facturas/${id}/cancelar/`, {
     method: 'POST',
-    body: JSON.stringify({ motivo }),
+    body: JSON.stringify({ motivo, contexto_rol }),
   })
   return {
     factura: mapear((d.factura ?? {}) as Record<string, unknown>),
@@ -327,11 +341,11 @@ export async function consultarInutilizacion(id: number): Promise<RespuestaEvent
 
 /** Emite una nota de crédito total de una factura aprobada. */
 export async function emitirNotaCredito(
-  id: number, motivo = '5', email = '',
+  id: number, motivo = '5', email = '', contexto_rol?: ContextoGestion,
 ): Promise<NotaCreditoElectronica> {
   const n = await apiFetch<Record<string, unknown>>(`/facturas/${id}/nota-credito/`, {
     method: 'POST',
-    body: JSON.stringify({ motivo, email }),
+    body: JSON.stringify({ motivo, email, contexto_rol }),
   })
   return mapearNota(n)
 }
@@ -360,4 +374,8 @@ export async function gestionarFactura(id: number, accion: 'reintentar' | 'reenv
   return mapear(await apiFetch<Record<string, unknown>>(`/facturas/${id}/${accion}/`, {
     method: 'POST', body: JSON.stringify({ email }),
   }))
+}
+
+export async function reintentarReversion(id: number): Promise<FacturaElectronica> {
+  return mapear(await apiFetch<Record<string, unknown>>(`/facturas/${id}/reversion/reintentar/`, { method: 'POST' }))
 }

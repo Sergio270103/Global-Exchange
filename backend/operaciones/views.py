@@ -702,6 +702,10 @@ class OperacionViewSet(viewsets.ModelViewSet):
         FONDOS_INSUFICIENTES y no se registra ningún movimiento. Corre dentro
         del ``transaction.atomic()`` de ``confirmar``.
         """
+        # Mantener el orden operación -> serie fiscal -> billeteras para evitar
+        # interbloqueos entre compras y ventas de los mismos clientes.
+        from facturacion.cupos import reservar
+        reservar(op)
         origen = None
         if op.billetera_origen_id:
             origen = Billetera.objects.select_for_update().get(
@@ -754,6 +758,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
     # Iniciar el cobro por pasarela (Stripe Checkout, redirect externo)
     # ------------------------------------------------------------------
     @action(detail=True, methods=['post'], url_path='iniciar-pago')
+    @transaction.atomic
     def iniciar_pago(self, request, pk=None):
         """Crea la Checkout Session y devuelve su URL de pago.
 
@@ -768,7 +773,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
 
         try:
             op = (
-                Operacion.objects.select_related('cliente', 'moneda_origen', 'moneda_destino')
+                Operacion.objects.select_for_update().select_related('cliente', 'moneda_origen', 'moneda_destino')
                 .get(pk=pk)
             )
         except Operacion.DoesNotExist:
@@ -786,12 +791,15 @@ class OperacionViewSet(viewsets.ModelViewSet):
                 {'detail': 'Esta operación usa confirmación directa.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        from facturacion.cupos import reservar
+        reservar(op)
         url = sesion_abierta(op.stripe_session_id)
         if url:
             return Response({'url': url, 'session_id': op.stripe_session_id})
         try:
             sesion = crear_sesion_checkout(op)
         except ErrorPasarela as err:
+            transaction.set_rollback(True)
             return Response({'detail': str(err)}, status=status.HTTP_400_BAD_REQUEST)
 
         op.stripe_session_id = sesion['id']

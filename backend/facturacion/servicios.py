@@ -18,8 +18,9 @@ correo del cliente (Factura Segura envía el XML y el KuDE a ``dEmailRec``).
 Gestión posterior: :func:`anular_factura` (``sol_cancelacion``),
 :func:`inutilizar_factura` (``sol_inutilizacion``) y
 :func:`emitir_nota_credito` (``generar_de`` con ``iTiDE=5``). La consulta
-aplica la precedencia inutilización → cancelación → aprobación y no
-modifica la caja ni la operación interna.
+aplica la precedencia inutilización → cancelación → aprobación. Solo una
+aprobación fiscal definitiva habilita la reversión de una gestión según el rol.
+El rechazo definitivo de una emisión revierte las billeteras de la operación.
 """
 
 from datetime import timedelta
@@ -31,7 +32,7 @@ from django.utils import timezone
 
 from operaciones.models import Operacion
 
-from . import cliente_fs
+from . import cliente_fs, numeracion, cupos
 from .armado import DatosIncompletos, armar_de_resumido, armar_nc_resumido
 from .models import (
     EVENTO_APROBADA,
@@ -68,41 +69,22 @@ def rango_nc() -> tuple[int, int]:
 
 
 def numeros_usados(simulada: bool) -> set[int]:
-    valores = FacturaElectronica.objects.filter(
-        simulada=simulada, numero__isnull=False,
-        estado__in=FacturaElectronica.ESTADOS_CON_NUMERO,
-    ).values_list('numero', flat=True)
-    return {int(v) for v in valores if str(v).isdigit()}
+    return numeracion.usados('1', simulada)
 
 
 def numeros_nc_usados(simulada: bool) -> set[int]:
-    valores = NotaCreditoElectronica.objects.filter(
-        simulada=simulada, numero__isnull=False,
-        estado__in=NotaCreditoElectronica.ESTADOS_CON_NUMERO,
-    ).values_list('numero', flat=True)
-    return {int(v) for v in valores if str(v).isdigit()}
+    return numeracion.usados('5', simulada)
 
 
 def siguiente_numero(simulada: bool) -> str | None:
-    """Primer número libre del rango, como texto de 7 dígitos."""
-    desde, hasta = rango()
-    usados = numeros_usados(simulada)
-    for n in range(desde, hasta + 1):
-        if n not in usados:
-            return str(n).zfill(7)
-    return None
+    return numeracion.siguiente('1', simulada)
 
 
-def siguiente_numero_nc(simulada: bool) -> str | None:
-    desde, hasta = rango_nc()
-    usados = numeros_nc_usados(simulada)
-    for n in range(desde, hasta + 1):
-        if n not in usados:
-            return str(n).zfill(7)
-    return None
+def siguiente_numero_nc(simulada: bool, de=None) -> str | None:
+    return numeracion.siguiente('5', simulada, de)
 
 
-def uso(simulada: bool | None = None) -> dict:
+def uso(simulada: bool | None = None, operacion_id=None) -> dict:
     """Emisiones usadas del rango ("emisiones usadas X de N")."""
     if simulada is None:
         simulada = cliente_fs.modo_simulado()
@@ -110,13 +92,13 @@ def uso(simulada: bool | None = None) -> dict:
     limite = min(hasta - desde + 1, 49)
     nc_desde, nc_hasta = rango_nc()
     nc_limite = nc_hasta - nc_desde + 1
-    usadas = FacturaElectronica.objects.filter(simulada=simulada, consume_emision=True).count()
+    usadas = FacturaElectronica.objects.filter(simulada=simulada, consume_emision=True, **numeracion.serie()).count()
     nc_usadas = len([n for n in numeros_nc_usados(simulada) if nc_desde <= n <= nc_hasta])
     return {
         'modo': 'simulado' if simulada else 'real',
         'usadas': usadas,
         'limite': limite,
-        'disponibles': max(limite - usadas - FacturaElectronica.objects.filter(simulada=simulada, estado='VERIFICAR', consume_emision=False, numero__isnull=False).count(), 0),
+        'disponibles': cupos.disponibles(simulada, operacion_id),
         'siguiente_numero': siguiente_numero(simulada),
         'nc_usadas': nc_usadas,
         'nc_limite': nc_limite,
@@ -157,7 +139,7 @@ def _emitir_factura(operacion_id: int, email: str, usuario_sub: str = '',
             'La operación ya tiene una factura emitida o aprobada.')
     # Verificar el cupo antes de preparar o consultar el DE. `siguiente_numero`
     # por sí solo no aplica el límite operativo de 49 emisiones.
-    if uso(simulada)['disponibles'] <= 0:
+    if uso(simulada, op.pk)['disponibles'] <= 0:
         info = uso(simulada)
         raise EmisionRechazada(
             f"Se alcanzó el límite de emisiones ({info['usadas']} de "
@@ -200,13 +182,15 @@ def _emitir_factura(operacion_id: int, email: str, usuario_sub: str = '',
     # 2) Reservar el número (fila VERIFICAR) dentro de una transacción.
     try:
         with transaction.atomic():
-            Operacion.objects.select_for_update().get(pk=op.pk)
+            op = Operacion.objects.select_for_update().get(pk=op.pk)
+            if op.estado != Operacion.ESTADO_PAGADA:
+                raise EmisionRechazada('La operación ya no está PAGADA; no se puede emitir.')
             if FacturaElectronica.objects.filter(
                     operacion=op, simulada=simulada,
                     estado__in=FacturaElectronica.ESTADOS_ACTIVOS).exists():
                 raise EmisionRechazada(
                     'La operación ya tiene una factura emitida o aprobada.')
-            numero = siguiente_numero(simulada)
+            numero = numeracion.reservar('1', simulada, de)
             if numero is None:
                 raise EmisionRechazada('Se alcanzó el límite de emisiones.')
             de['dNumDoc'] = numero
@@ -217,14 +201,17 @@ def _emitir_factura(operacion_id: int, email: str, usuario_sub: str = '',
                 total=total, de_enviado=de,
                 detalle='Enviando a Factura Segura…', consume_emision=False,
             )
+            cupos.consumir(op)
     except IntegrityError as exc:
         raise EmisionRechazada(
             'Otra emisión tomó el mismo número u operación. Intentá de nuevo.'
         ) from exc
+    except cliente_fs.ErrorFacturaSegura as exc:
+        raise EmisionRechazada(str(exc)) from exc
 
     # 3) Generar (consume el número).
     try:
-        cdc, respuesta = cliente_fs.generar_de(de)
+        cdc, respuesta = numeracion.generar(factura, '1')
     except cliente_fs.ErrorFacturaSegura as exc:
         factura.estado = FacturaElectronica.ESTADO_ERROR
         factura.consume_emision = bool(exc.code is not None and exc.code < 0)
@@ -232,6 +219,9 @@ def _emitir_factura(operacion_id: int, email: str, usuario_sub: str = '',
         factura.detalle = f'generar_de: {exc}'[:500]
         factura.respuesta_servicio = exc.respuesta
         factura.save()
+        if not factura.consume_emision:
+            # La operación sigue pagada: conservar su cupo para corregir y reintentar.
+            cupos.restaurar(op)
         return factura
     except cliente_fs.SinRespuesta as exc:
         factura.detalle = (
@@ -297,7 +287,7 @@ def _estado_evento(estado_raw: str) -> str:
     if estado_raw == 'Rechazado':
         return EVENTO_RECHAZADA
     if estado_raw in ERRORES_SIFEN:
-        return EVENTO_ERROR
+        return EVENTO_PENDIENTE
     return EVENTO_PENDIENTE
 
 
@@ -336,10 +326,28 @@ def _aplicar_evento(
         factura.inutilizacion_detalle = evento.detalle
 
 
+def bloquear_factura(func):
+    from functools import wraps
+    @wraps(func)
+    def protegida(factura, *args, **kwargs):
+        with transaction.atomic():
+            FacturaElectronica.objects.select_for_update().get(pk=factura.pk)
+            factura.refresh_from_db()
+            return func(factura, *args, **kwargs)
+    return protegida
+
+
+@bloquear_factura
 def _aplicar_resultado(
     factura: FacturaElectronica, resultado: dict, respuesta: dict,
 ) -> FacturaElectronica:
     """Aplica el orden normativo: inutilización, cancelación y aprobación."""
+    if factura.estado in ('ANULADA', 'DEVUELTA'):
+        return factura
+    if factura.estado == 'RECHAZADA' and factura.operacion.motivo_cancelacion == Operacion.MOTIVO_SIFEN:
+        from .reversion import revertir_emision_rechazada
+        revertir_emision_rechazada(factura)
+        return factura
     ahora = timezone.now()
     factura.respuesta_servicio = respuesta
     factura.estado_consultado = ahora
@@ -365,7 +373,7 @@ def _aplicar_resultado(
             factura.envio_resultado = (
                 'Simulado: no se envió ningún correo.' if factura.simulada
                 else 'Enviada por Factura Segura (XML y KuDE) al aprobarse.')
-    elif estado_sifen in ('Rechazado', 'Reingresado'):
+    elif estado_sifen == 'Rechazado':
         factura.consume_emision = True
         factura.estado = FacturaElectronica.ESTADO_RECHAZADA
         factura.detalle = descripcion or estado_sifen
@@ -386,12 +394,19 @@ def _aplicar_resultado(
     elif factura.estado_cancelacion == EVENTO_APROBADA:
         factura.detalle = _texto('Cancelado', factura.cancelacion_detalle)
     elif factura.estado_cancelacion == EVENTO_RECHAZADA:
+        factura.estado = FacturaElectronica.ESTADO_APROBADA
         factura.detalle = _texto(
             'Aprobada (Rech.Can.)', factura.cancelacion_detalle)
     factura.detalle = factura.detalle[:500]
+    if factura.estado_cancelacion == EVENTO_PENDIENTE or factura.notas_credito.filter(
+            estado__in=('EMITIDA', 'VERIFICAR')).exists():
+        factura.estado = FacturaElectronica.ESTADO_PROCESANDO
+    factura.save()
     if factura.estado_cancelacion == EVENTO_APROBADA:
         finalizar_gestion(factura, 'ANULADA', factura.cdc)
-    factura.save()
+    elif estado_sifen == 'Rechazado' and factura.estado == 'RECHAZADA':
+        from .reversion import revertir_emision_rechazada
+        revertir_emision_rechazada(factura)
     return factura
 
 
@@ -436,21 +451,10 @@ def _validar_ventana_cancelacion(factura: FacturaElectronica) -> None:
             'admite la cancelación. Emití una nota de crédito.')
 
 
-def bloquear_factura(func):
-    from functools import wraps
-    @wraps(func)
-    def protegida(factura, *args, **kwargs):
-        with transaction.atomic():
-            FacturaElectronica.objects.select_for_update().get(pk=factura.pk)
-            factura.refresh_from_db()
-            return func(factura, *args, **kwargs)
-    return protegida
-
-
 @bloquear_factura
 def anular_factura(
     factura: FacturaElectronica, motivo: str = '', usuario_sub: str = '',
-    usuario_nombre: str = '',
+    usuario_nombre: str = '', *, rol: str,
 ) -> EventoSIFEN:
     """Solicita la cancelación de una factura aprobada (``sol_cancelacion``)."""
     if factura.estado != FacturaElectronica.ESTADO_APROBADA:
@@ -471,6 +475,11 @@ def anular_factura(
     if factura.notas_credito.filter(estado__in=NotaCreditoElectronica.ESTADOS_ACTIVOS).exists():
         raise GestionRechazada('La factura ya tiene una nota de crédito activa.')
     _validar_ventana_cancelacion(factura)
+
+    if Operacion.objects.select_for_update().get(pk=factura.operacion_id).estado != Operacion.ESTADO_PAGADA:
+        raise GestionRechazada('Solo se gestiona la factura de una operación pagada.')
+    from .reversion import registrar_solicitud
+    registrar_solicitud(factura, rol, usuario_sub, usuario_nombre, 'CANCELACION')
 
     ahora = timezone.now()
     motivo = (motivo or '').strip()[:255]
@@ -497,6 +506,7 @@ def anular_factura(
         evento.detalle = f'sol_cancelacion: {exc}'[:500]
         evento.save()
         factura.estado_cancelacion = EVENTO_ERROR
+        factura.estado = FacturaElectronica.ESTADO_APROBADA
         factura.cancelacion_detalle = evento.detalle
         factura.save()
         return evento
@@ -539,7 +549,7 @@ def inutilizar_factura(
     if factura.simulada != cliente_fs.modo_simulado():
         raise GestionRechazada(
             'Esta factura se emitió en otro modo (simulado/real).')
-    if factura.estado_cancelacion == EVENTO_APROBADA:
+    if factura.estado_cancelacion in (EVENTO_PENDIENTE, EVENTO_APROBADA):
         raise GestionRechazada('La factura ya fue cancelada.')
     if factura.estado_inutilizacion in (EVENTO_PENDIENTE, EVENTO_APROBADA):
         raise GestionRechazada('La factura ya tiene una inutilización en curso o aprobada.')
@@ -603,6 +613,8 @@ def inutilizar_factura(
 # ---------------------------------------------------- nota de crédito --
 
 def _validar_nc(factura: FacturaElectronica, motivo: str, email: str) -> str:
+    if factura.notas_credito.filter(estado__in=NotaCreditoElectronica.ESTADOS_ACTIVOS).exists():
+        raise GestionRechazada('La factura ya tiene una nota de crédito activa.')
     if factura.estado != FacturaElectronica.ESTADO_APROBADA:
         raise GestionRechazada(
             'Solo se emite una nota de crédito de una factura aprobada.')
@@ -611,14 +623,9 @@ def _validar_nc(factura: FacturaElectronica, motivo: str, email: str) -> str:
             'Esta factura se emitió en otro modo (simulado/real).')
     if not factura.cdc:
         raise GestionRechazada('La factura no tiene CDC: no se puede acreditar.')
-    if factura.estado_cancelacion == EVENTO_APROBADA:
+    if factura.estado_cancelacion in (EVENTO_PENDIENTE, EVENTO_APROBADA):
         raise GestionRechazada(
             'La factura está cancelada en SIFEN: no se emite nota de crédito.')
-    if NotaCreditoElectronica.objects.filter(
-            factura=factura, simulada=factura.simulada,
-            estado__in=NotaCreditoElectronica.ESTADOS_ACTIVOS).exists():
-        raise GestionRechazada(
-            'La factura ya tiene una nota de crédito activa.')
     if motivo not in MOTIVOS_NC_CODIGOS:
         raise GestionRechazada('Elegí un motivo de nota de crédito válido.')
     email = (email or factura.email_destino or '').strip()
@@ -633,12 +640,14 @@ def _validar_nc(factura: FacturaElectronica, motivo: str, email: str) -> str:
 @bloquear_factura
 def emitir_nota_credito(
     factura: FacturaElectronica, motivo: str = '5', email: str = '',
-    usuario_sub: str = '', usuario_nombre: str = '',
+    usuario_sub: str = '', usuario_nombre: str = '', *, rol: str,
 ) -> NotaCreditoElectronica:
     """Emite una nota de crédito total (iTiDE=5) de una factura aprobada."""
     simulada = cliente_fs.modo_simulado()
     email = _validar_nc(factura, motivo, email)
-    numero = siguiente_numero_nc(simulada)
+    if Operacion.objects.select_for_update().get(pk=factura.operacion_id).estado != Operacion.ESTADO_PAGADA:
+        raise GestionRechazada('Solo se gestiona la factura de una operación pagada.')
+    numero = siguiente_numero_nc(simulada, factura.de_enviado or None)
     if numero is None:
         desde, hasta = rango_nc()
         raise GestionRechazada(
@@ -651,12 +660,17 @@ def emitir_nota_credito(
         'emitida_por_nombre': usuario_nombre[:160],
     }
 
+    from .reversion import registrar_solicitud
+    registrar_solicitud(factura, rol, usuario_sub, usuario_nombre, 'NC')
+
     try:
         de_resumido = armar_nc_resumido(factura, numero, email, motivo)
         de = cliente_fs.calcular_de(de_resumido)
     except DatosIncompletos as exc:
         raise GestionRechazada(str(exc)) from exc
     except cliente_fs.ErrorFacturaSegura as exc:
+        factura.estado = FacturaElectronica.ESTADO_APROBADA
+        factura.save(update_fields=['estado'])
         return NotaCreditoElectronica.objects.create(
             **comunes, estado=NotaCreditoElectronica.ESTADO_ERROR,
             detalle=f'calcular_de: {exc}'[:500],
@@ -674,7 +688,7 @@ def emitir_nota_credito(
                     estado__in=NotaCreditoElectronica.ESTADOS_ACTIVOS).exists():
                 raise GestionRechazada(
                     'La factura ya tiene una nota de crédito activa.')
-            numero = siguiente_numero_nc(simulada)
+            numero = numeracion.reservar('5', simulada, de)
             if numero is None:
                 raise GestionRechazada(
                     'Se alcanzó el límite de notas de crédito.')
@@ -688,9 +702,11 @@ def emitir_nota_credito(
     except IntegrityError as exc:
         raise GestionRechazada(
             'Otra emisión tomó el mismo número. Intentá de nuevo.') from exc
+    except cliente_fs.ErrorFacturaSegura as exc:
+        raise GestionRechazada(str(exc)) from exc
 
     try:
-        cdc, respuesta = cliente_fs.generar_de(de)
+        cdc, respuesta = numeracion.generar(nota, '5')
     except cliente_fs.ErrorFacturaSegura as exc:
         nota.estado = NotaCreditoElectronica.ESTADO_ERROR
         nota.numero = None
@@ -698,6 +714,8 @@ def emitir_nota_credito(
         nota.detalle = f'generar_de: {exc}'[:500]
         nota.respuesta_servicio = exc.respuesta
         nota.save()
+        factura.estado = FacturaElectronica.ESTADO_APROBADA
+        factura.save(update_fields=['estado'])
         return nota
     except cliente_fs.SinRespuesta as exc:
         nota.detalle = (
@@ -712,12 +730,19 @@ def emitir_nota_credito(
     nota.respuesta_servicio = respuesta
     nota.detalle = 'Generada. Esperando la aprobación de SIFEN.'
     nota.save()
-    if nota.estado == NotaCreditoElectronica.ESTADO_APROBADA:
-        finalizar_gestion(nota.factura, 'DEVUELTA', nota.cdc)
     return nota
 
 
-def actualizar_estado_nc(nota: NotaCreditoElectronica) -> NotaCreditoElectronica:
+def actualizar_estado_nc(nota):
+    with transaction.atomic():
+        FacturaElectronica.objects.select_for_update().get(pk=nota.factura_id)
+        nota.refresh_from_db()
+        if nota.estado == NotaCreditoElectronica.ESTADO_APROBADA:
+            return nota
+        return _actualizar_estado_nc(nota)
+
+
+def _actualizar_estado_nc(nota: NotaCreditoElectronica) -> NotaCreditoElectronica:
     """Consulta ``get_estado_sifen`` para una nota de crédito."""
     if not nota.cdc:
         raise GestionRechazada(
@@ -759,6 +784,8 @@ def actualizar_estado_nc(nota: NotaCreditoElectronica) -> NotaCreditoElectronica
     nota.save()
     if nota.estado == NotaCreditoElectronica.ESTADO_APROBADA:
         finalizar_gestion(nota.factura, 'DEVUELTA', nota.cdc)
+    elif nota.estado == NotaCreditoElectronica.ESTADO_RECHAZADA:
+        FacturaElectronica.objects.filter(pk=nota.factura_id, estado='PROCESANDO').update(estado='APROBADA')
     return nota
 
 
@@ -769,10 +796,16 @@ def ruta_pdf(factura):
 
 
 def finalizar_gestion(factura, estado, cdc):
-    factura.estado = estado
-    factura.pdf_cdc = cdc
-    factura.pdf_pendiente = not factura.simulada
-    factura.save(update_fields=['estado', 'pdf_cdc', 'pdf_pendiente'])
+    from .reversion import aplicar_reversion
+    with transaction.atomic():
+        f = FacturaElectronica.objects.select_for_update().get(pk=factura.pk)
+        if f.estado not in ('ANULADA', 'DEVUELTA'):
+            f.estado = estado
+            f.pdf_cdc = cdc
+            f.pdf_pendiente = not f.simulada
+            f.save(update_fields=['estado', 'pdf_cdc', 'pdf_pendiente'])
+        aplicar_reversion(f)
+    factura.refresh_from_db()
     actualizar_pdf(factura)
 
 
@@ -804,6 +837,8 @@ def actualizar_pdf(factura):
 
 def sincronizar_gestion(factura):
     try:
+        if factura.estado in ('EMITIDA', 'VERIFICAR') and factura.cdc:
+            actualizar_estado(factura)
         if factura.estado_cancelacion == EVENTO_PENDIENTE:
             actualizar_evento(factura, EventoSIFEN.TIPO_CANCELACION)
         for nota in factura.notas_credito.filter(estado__in=['EMITIDA', 'VERIFICAR']).exclude(cdc=''):
@@ -817,8 +852,8 @@ def sincronizar_gestion(factura):
 
 @transaction.atomic
 def emitir_factura(operacion_id, email, usuario_sub='', usuario_nombre=''):
-    from monedas.models import Moneda
-    Moneda.objects.select_for_update().get(codigo='PYG')
+    Operacion.objects.select_for_update().filter(pk=operacion_id).first()
+    cupos.bloquear()
     factura = _emitir_factura(operacion_id, email, usuario_sub, usuario_nombre)
     IntentoFactura.objects.create(factura=factura, accion='EMISION',
         usuario_sub=usuario_sub[:160], usuario_nombre=usuario_nombre[:160],

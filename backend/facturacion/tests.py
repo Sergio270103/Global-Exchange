@@ -175,9 +175,12 @@ class EmisionSimuladaTest(FacturacionTestBase):
 
     @override_settings(FACTURASEGURA=config(desde=100, hasta=101))
     def test_limite_de_emisiones(self, _red):
+        historica = self.operacion(pagar=False)
+        historica.estado = 'PAGADA'
+        historica.save(update_fields=['estado'])
         self.assertEqual(self.emitir(self.operacion()).status_code, 201)
         self.assertEqual(self.emitir(self.operacion()).status_code, 201)
-        resp = self.emitir(self.operacion())
+        resp = self.emitir(historica)
         self.assertEqual(resp.status_code, 400)
         self.assertIn('2 de 2', resp.data['detail'])
 
@@ -296,7 +299,7 @@ class EmisionRealMockeadaTest(FacturacionTestBase):
         self.assertEqual(self.ver_uso(op).data['usadas'], 0)
         self.assertEqual(red.call_count, 2)
 
-    def test_rechazo_sifen_permite_reemitir(self, red):
+    def test_rechazo_sifen_cancela_y_no_permite_reemitir_operacion_revertida(self, red):
         def responder(url, json, headers, timeout):
             if json['operation'] == 'calcular_de':
                 return ok([{'DE': json['params']['DE']}])
@@ -312,8 +315,10 @@ class EmisionRealMockeadaTest(FacturacionTestBase):
         self.assertEqual(resp.data['estado'], 'RECHAZADA')
         self.assertIn('RUC del receptor', resp.data['detalle'])
         segunda = self.emitir(op)
-        self.assertEqual(segunda.status_code, 201)
-        self.assertEqual(segunda.data['numero'], '0000101')
+        self.assertEqual(segunda.status_code, 400)
+        op.refresh_from_db()
+        self.assertEqual(op.estado, Operacion.ESTADO_CANCELADA)
+        self.assertTrue(op.reversion_emision_aplicada)
 
     @override_settings(FACTURASEGURA=config(modo='real', emisor={'dRucEm': '2595733'}))
     def test_faltan_datos_del_emisor_no_llama_a_la_api(self, red):

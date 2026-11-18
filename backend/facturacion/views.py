@@ -21,6 +21,8 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.exceptions import PermissionDenied
+from django.core.exceptions import ValidationError
 
 from clientes.permisos import es_cajero
 from monedas.permisos import es_admin
@@ -36,12 +38,22 @@ from .serializers import (
 
 
 def _sub(usuario) -> str:
-    return getattr(usuario, 'id', '') or ''
+    return str(getattr(usuario, 'id', '') or '')
 
 
 def _nombre(usuario) -> str:
     return (getattr(usuario, 'nombre', '') or getattr(usuario, 'username', '')
             or str(usuario))
+
+
+def _rol_gestion(request):
+    rol = request.data.get('contexto_rol')
+    if not rol:
+        rol = 'administrador' if es_admin(request.user) else 'cajero'
+    if ((rol == 'administrador' and es_admin(request.user))
+            or (rol == 'cajero' and es_cajero(request.user))):
+        return rol
+    raise PermissionDenied('El contexto solicitado no corresponde a tus roles.')
 
 
 def _clientes_del_sub(sub: str):
@@ -188,7 +200,7 @@ class FacturaElectronicaViewSet(viewsets.ModelViewSet):
             evento = servicios.anular_factura(
                 factura, request.data.get('motivo', ''),
                 usuario_sub=_sub(request.user),
-                usuario_nombre=_nombre(request.user))
+                usuario_nombre=_nombre(request.user), rol=_rol_gestion(request))
         except servicios.GestionRechazada as exc:
             return Response({'detail': str(exc)},
                             status=status.HTTP_400_BAD_REQUEST)
@@ -264,9 +276,9 @@ class FacturaElectronicaViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN)
         try:
             nota = servicios.emitir_nota_credito(
-                factura, '5', factura.email_destino,
+                factura, request.data.get('motivo', '5'), request.data.get('email', factura.email_destino),
                 usuario_sub=_sub(request.user),
-                usuario_nombre=_nombre(request.user))
+                usuario_nombre=_nombre(request.user), rol=_rol_gestion(request))
         except servicios.GestionRechazada as exc:
             return Response({'detail': str(exc)},
                             status=status.HTTP_400_BAD_REQUEST)
@@ -277,6 +289,22 @@ class FacturaElectronicaViewSet(viewsets.ModelViewSet):
                  'nota': datos},
                 status=status.HTTP_400_BAD_REQUEST)
         return Response(datos, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'], url_path='reversion/reintentar')
+    def reintentar_reversion(self, request, pk=None):
+        from .reversion import aplicar_reversion, revertir_emision_rechazada
+        factura = self.get_object()
+        if not _puede_gestionar(request.user, factura):
+            raise PermissionDenied('No podés reintentar la reversión de esta factura.')
+        # El reintento conserva el rol y el cajero originales, nunca los del consultante.
+        try:
+            if factura.estado == 'RECHAZADA' and factura.operacion.motivo_cancelacion == Operacion.MOTIVO_SIFEN:
+                revertir_emision_rechazada(factura)
+            else:
+                aplicar_reversion(factura, reintento=True)
+        except ValidationError as exc:
+            return Response({'detail': ' '.join(exc.messages)}, status=400)
+        return Response(self.get_serializer(factura).data)
 
     def _descargar(self, operation: str, extension: str):
         factura = self.get_object()
@@ -322,6 +350,7 @@ class FacturaElectronicaViewSet(viewsets.ModelViewSet):
             op = Operacion.objects.select_related('cliente').filter(
                 pk=int(operacion)).first()
             if op is not None and _puede_facturar(request.user, op):
+                datos = servicios.uso(operacion_id=op.pk)
                 ultima = FacturaElectronica.objects.filter(
                     operacion=op, simulada=cliente_fs.modo_simulado()).first()
                 datos.update({

@@ -72,7 +72,7 @@ export interface Operacion {
 }
 
 export type EstadoOperacion = 'PENDIENTE' | 'PAGADA' | 'CANCELADA' | 'ANULADA'
-export type MotivoCancelacion = 'COTIZACION_CAMBIADA' | 'DESISTIO' | 'FONDOS_INSUFICIENTES' | 'PAGO_FALLIDO'
+export type MotivoCancelacion = 'COTIZACION_CAMBIADA' | 'DESISTIO' | 'FONDOS_INSUFICIENTES' | 'PAGO_FALLIDO' | 'RECHAZO_SIFEN'
 
 /** Resultado de `confirmarOperacion()`. */
 export type ResultadoConfirmacion =

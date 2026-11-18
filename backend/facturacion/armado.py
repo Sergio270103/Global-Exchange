@@ -17,6 +17,8 @@ Decisiones a confirmar con la profesora (PO) y validar con
 """
 
 import re
+from html import escape, unescape
+from functools import wraps
 from decimal import Decimal, ROUND_HALF_UP
 
 from django.utils import timezone
@@ -29,6 +31,58 @@ from .models import MOTIVOS_NC
 
 class DatosIncompletos(Exception):
     """Falta un dato obligatorio para armar la factura."""
+
+
+# Campos numéricos/códigos del DE resumido y calculado. Los identificadores
+# conservan ceros iniciales; un valor mal formado se rechaza, no se adivina.
+CAMPOS_NUMERICOS = set('''iTipEmi iTiDE dNumTim dEst dPunExp dNumDoc iTipTra
+iTImp dCondTiCam dTiCam dRucEm dDVEmi iTipCont dNumCas cDepEmi cDisEmi cCiuEmi
+cActEco iNatRec iTiOpe iTiContRec dRucRec dDVRec iTipIDRec iMotEmi iTipDocAso
+dCdCDERef dNTimDI dEstDocAso dPExpDocAso dNumDocAso iTipoDocAso dNumComRet
+dNumResCF iTipCons dNumCons dNumControl cUniMed dCantProSer dPUniProSer
+dDescItem dDescGloItem dAntPreUniIt dAntGloPreUniIt iAfecIVA dPropIVA dTasaIVA
+CDC dCodSeg dDVId dSisFact dTotBruOpeItem dTotOpeItem dTotOpeGs dBasGravIVA
+dLiqIVAItem dBasExe dPorcDesIt dSubExe dSubExo dSub5 dSub10 dTotOpe dTotDesc
+dTotDescGlotem dTotAntItem dTotAnt dPorcDescTotal dDescTotal dAnticipo dRedon
+dTotGralOpe dIVA5 dIVA10 dLiqTotIVA5 dLiqTotIVA10 dIVAComi dTotIVA dBaseGrav5
+dBaseGrav10 dTBasGraIVA dTotalGs iCondOpe iTiPago dMonTiPag dTiCamTiPag'''.split())
+CAMPOS_ENTEROS = {c for c in CAMPOS_NUMERICOS if c.startswith(('i', 'c'))} | set(
+    '''CDC dNumTim dEst dPunExp dNumDoc dCondTiCam dRucEm dDVEmi dNumCas dRucRec
+    dDVRec dCdCDERef dNTimDI dEstDocAso dPExpDocAso dNumDocAso dNumComRet
+    dNumResCF dNumCons dNumControl dCodSeg dDVId dSisFact'''.split())
+
+
+def sanitizar_de(valor, campo=''):
+    """Prepara strings seguros para el generador XML de Factura Segura.
+
+    Idempotente entre armado, calcular_de y generar_de: no duplica entidades.
+    Elimina controles ilegales XML 1.0 y normaliza saltos de línea/tabulación.
+    """
+    if isinstance(valor, dict):
+        return {k: sanitizar_de(v, k) for k, v in valor.items()}
+    if isinstance(valor, list):
+        return [sanitizar_de(v, campo) for v in valor]
+    texto = '' if valor is None else str(valor)
+    if campo in CAMPOS_NUMERICOS:
+        texto = texto.strip()
+        patron = r'[0-9]+' if campo in CAMPOS_ENTEROS else r'[0-9]+(?:\.[0-9]+)?'
+        if texto and not re.fullmatch(patron, texto):
+            raise DatosIncompletos(f'El campo {campo} debe ser un número/código válido sin comillas.')
+        return texto
+    # Solo entidades XML completas: no interpretar fragmentos HTML como &not.
+    texto = re.sub(r'&(?:amp|lt|gt|quot|apos|#(?:[0-9]+|x[0-9a-fA-F]+));',
+                   lambda m: unescape(m.group()), texto)
+    texto = ''.join(c for c in texto if c in '\t\r\n' or
+                    '\x20' <= c <= '\ud7ff' or '\ue000' <= c <= '\ufffd' or
+                    '\U00010000' <= c <= '\U0010ffff')
+    return escape(' '.join(texto.split()), quote=True)
+
+
+def de_seguro(func):
+    @wraps(func)
+    def armar(*args, **kwargs):
+        return sanitizar_de(func(*args, **kwargs))
+    return armar
 
 
 #: Campos del emisor que no pueden quedar vacíos en modo real.
@@ -140,6 +194,7 @@ def datos_receptor(op: Operacion, email: str) -> dict:
     }
 
 
+@de_seguro
 def armar_de_resumido(op: Operacion, numero: str, email: str) -> dict:
     """JSON resumido de la factura de una operación PAGADA."""
     total = monto_total_pyg(op)
@@ -245,6 +300,7 @@ def _item_nc(item: dict, total: str, posicion: int) -> dict:
     return limpio
 
 
+@de_seguro
 def armar_nc_resumido(
     factura, numero: str, email: str, motivo: str,
 ) -> dict:

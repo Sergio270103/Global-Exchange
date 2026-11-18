@@ -188,7 +188,7 @@ class GestionSimuladaTest(GestionBase):
         self.assertEqual(resp.data['motivo'], '5')
         self.assertEqual(Decimal(resp.data['total']), factura.total)
         self.assertEqual(len(resp.data['cdc']), 44)
-        self.assertEqual(resp.data['email_destino'], 'cliente@test.com')
+        self.assertEqual(resp.data['email_destino'], 'nc@test.com')
 
         nota = NotaCreditoElectronica.objects.get(pk=resp.data['id'])
         de = nota.de_enviado
@@ -201,7 +201,7 @@ class GestionSimuladaTest(GestionBase):
         resp = self.consultar_nc(nota.pk)
         self.assertEqual(resp.status_code, 200, resp.data)
         self.assertEqual(resp.data['estado'], 'APROBADA')
-        self.assertEqual(resp.data['envio_destinatario'], 'cliente@test.com')
+        self.assertEqual(resp.data['envio_destinatario'], 'nc@test.com')
 
         uso = self.ver_uso(factura.operacion).data
         self.assertEqual(uso['nc_usadas'], 1)
@@ -355,7 +355,7 @@ class GestionRealMockeadaTest(GestionBase):
             and c.kwargs['json']['params']['DE']['iTiDE'] == '5']
         self.assertEqual(len(generar), 1)
         de = generar[0].kwargs['json']['params']['DE']
-        self.assertEqual(de['iMotEmi'], '5')
+        self.assertEqual(de['iMotEmi'], '7')
         self.assertEqual(de['gCamDEAsoc'][0]['dCdCDERef'], factura.cdc)
         self.assertEqual(nota.numero, '0000013')
 
