@@ -90,7 +90,7 @@ def _redondear(valor: Decimal, codigo: str) -> Decimal:
 
 def _ultima_tasa(moneda: Moneda, lado: str) -> Decimal | None:
     """Última cotización vigente: lado compra o venta."""
-    cot = Cotizacion.objects.filter(moneda=moneda).order_by('-vigente_desde').first()
+    cot = Cotizacion.objects.filter(moneda=moneda).order_by('-vigente_desde', '-pk').first()
     if not cot:
         return None
     return Decimal(str(cot.compra if lado == 'compra' else cot.venta))

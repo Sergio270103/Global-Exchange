@@ -27,6 +27,12 @@ class UsuarioFake:
 
 
 class CotizacionTest(APITestCase):
+    def test_fecha_empatada_usa_ultimo_registro_en_vigentes_y_simulador(self):
+        from django.utils import timezone
+        Cotizacion.objects.filter(moneda=self.usd).update(vigente_desde=timezone.now())
+        self.test_vigentes_devuelve_ultima_por_moneda()
+        self.test_simulador_devuelve_solo_precio_final()
+
     def setUp(self):
         self.usd, _ = Moneda.objects.get_or_create(
             codigo='USD', defaults={'nombre': 'Dólar'})

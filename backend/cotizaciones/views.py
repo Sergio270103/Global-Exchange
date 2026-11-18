@@ -84,7 +84,7 @@ class CotizacionViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='vigentes')
     def vigentes(self, request):
         """Última cotización de cada moneda activa."""
-        ultima = Cotizacion.objects.filter(moneda=OuterRef('pk')).order_by('-vigente_desde')
+        ultima = Cotizacion.objects.filter(moneda=OuterRef('pk')).order_by('-vigente_desde', '-pk')
         monedas = Moneda.objects.filter(activo=True).annotate(
             ultima_id=Subquery(ultima.values('id')[:1]),
         )
@@ -180,7 +180,7 @@ def simular(request):
     tasa_final = (monto_final / monto).quantize(Decimal('0.000001'))
     ultima = Cotizacion.objects.filter(
         moneda__in=[calculo['moneda_origen'], calculo['moneda_destino']],
-    ).order_by('-vigente_desde').first()
+    ).order_by('-vigente_desde', '-pk').first()
 
     return Response({
         'moneda': codigo_div,

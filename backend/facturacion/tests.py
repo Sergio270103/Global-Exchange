@@ -107,7 +107,7 @@ class FacturacionTestBase(APITestCase):
 
     def operacion(self, pagar=True, tipo='COMPRA'):
         datos = {'cliente': self.cliente.pk, 'tipo_operacion': tipo,
-                 'moneda': 'USD', 'monto_divisa': '100', 'metodo_pago': ''}
+                 'moneda': 'USD', 'monto_divisa': '100', 'metodo_pago': 'transfer'}
         req = self.factory.post('/api/operaciones/', datos, format='json')
         force_authenticate(req, user=self.user)
         resp = OperacionViewSet.as_view({'post': 'create'})(req)
