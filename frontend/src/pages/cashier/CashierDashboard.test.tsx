@@ -589,7 +589,7 @@ describe('CashierDashboard PI-75 (operación unificada)', () => {
     await user.click(await screen.findByRole('button', { name: /Reimprimir/ }))
     expect((await screen.findAllByText('CPB-000001')).length).toBeGreaterThanOrEqual(2)
     expect(screen.getByRole('button', { name: '🖨️ Imprimir' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '📥 Descargar PDF' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Procesando SIFEN...' })).toBeDisabled()
   })
 })
 

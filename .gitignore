@@ -26,6 +26,8 @@ frontend/docs/PDO/variables/
 
 # Backend
 venv/
+.venv/
+.npm-cache/
 __pycache__/
 *.pyc
 *.sqlite3

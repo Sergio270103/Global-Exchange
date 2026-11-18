@@ -191,6 +191,20 @@ export default function Invoices({ auth }: { auth?: AuthUser | null }) {
     })()
   }, [cargar])
 
+  const hayGestionesPendientes = filas.some(({ factura: f }) => f && (
+    f.estado === 'PROCESANDO' || f.pdf_pendiente || f.estado_cancelacion === 'PENDIENTE'
+    || f.notas_credito?.some(n => ['EMITIDA', 'VERIFICAR'].includes(n.estado))))
+  useEffect(() => {
+    if (!hayGestionesPendientes) return
+    let consultando = false
+    const timer = window.setInterval(async () => {
+      if (consultando) return
+      consultando = true
+      try { await cargar() } finally { consultando = false }
+    }, 60_000)
+    return () => window.clearInterval(timer)
+  }, [hayGestionesPendientes, cargar])
+
   /** Refresca sin recargar la página ni vaciar la tabla (PI-28). */
   const refrescar = async () => {
     setRefrescando(true)
@@ -438,12 +452,12 @@ export default function Invoices({ auth }: { auth?: AuthUser | null }) {
                   <td className="px-5 py-4">
                     <div className="flex flex-col items-start gap-2">
                       <span className="text-[13px] text-slate-700">{inv.factura?.tipo_operacion_display ?? (inv.operacion.tipo_operacion === 'COMPRA' ? 'Compra' : 'Venta')}</span>
-                      {puedeGestionar && inv.factura?.estado === 'APROBADA' && <OperacionesFactura factura={inv.factura} onActualizada={async () => { await cargar() }} />}
+                      {puedeGestionar && inv.factura && <OperacionesFactura contextoRol={auth?.role === 'cashier' ? 'cajero' : 'administrador'} factura={inv.factura} onActualizada={async () => { await cargar() }} />}
                     </div>
                   </td>
                   <td className="px-5 py-4">
                     <div className="flex flex-wrap items-center gap-1">
-                    {inv.factura && ['APROBADA', 'RECHAZADA', 'ERROR'].includes(inv.factura.estado) && <button type="button" onClick={() => void abrirAccion(inv)} className="text-blue-700 text-[12px] font-semibold px-2 py-1">{inv.factura.estado === 'APROBADA' ? 'Reenviar por correo' : 'Reintentar emisión'}</button>}
+                    {inv.factura && (inv.factura.estado === 'APROBADA' || (inv.operacion.estado === 'PAGADA' && ['RECHAZADA', 'ERROR'].includes(inv.factura.estado))) && <button type="button" onClick={() => void abrirAccion(inv)} className="text-blue-700 text-[12px] font-semibold px-2 py-1">{inv.factura.estado === 'APROBADA' ? 'Reenviar por correo' : 'Reintentar emisión'}</button>}
                     <button
                       type="button"
                       onClick={() => void descargarPdf(inv)}

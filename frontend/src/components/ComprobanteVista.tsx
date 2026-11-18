@@ -10,9 +10,10 @@
  *
  * @module ComprobanteVista
  */
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { jsPDF } from 'jspdf'
+import DescargarKude from './DescargarKude'
+import type { FacturaElectronica } from '@/services/facturas'
 import type { Comprobante } from '@/services/comprobantes'
 import EmitirFactura from '@/components/EmitirFactura'
 
@@ -21,37 +22,8 @@ interface Props {
   onClose: () => void
 }
 
-function linea(doc: jsPDF, texto: string, y: number, negrita = false): number {
-  doc.setFont('courier', negrita ? 'bold' : 'normal')
-  doc.text(texto, 20, y)
-  return y + 7
-}
-
-function generarPdf(c: Comprobante): void {
-  const doc = new jsPDF()
-  let y = 25
-  doc.setFontSize(14)
-  y = linea(doc, 'GLOBAL EXCHANGE - COMPROBANTE DE OPERACION', y, true)
-  doc.setFontSize(11)
-  y = linea(doc, `Numero: ${c.numero}    Fecha: ${new Date(c.fecha_operacion).toLocaleString()}`, y + 3)
-  y = linea(doc, '--------------------------------------------------------', y)
-  y = linea(doc, `Cliente: ${c.cliente_nombre}`, y)
-  y = linea(doc, `Documento: ${c.cliente_documento || '-'}`, y)
-  y = linea(doc, `Operacion: ${c.tipo_operacion}`, y)
-  y = linea(doc, `Entrega: ${c.monto_enviado.toLocaleString()} ${c.moneda_origen_codigo}`, y)
-  y = linea(doc, `Recibe:  ${c.monto_recibido.toLocaleString()} ${c.moneda_destino_codigo}`, y)
-  if (c.tasa_origen != null || c.tasa_destino != null) {
-    y = linea(doc, `Tasas: ${c.tasa_origen ?? '-'} / ${c.tasa_destino ?? '-'}`, y)
-  }
-  if (c.monto_comision != null) {
-    y = linea(doc, `Comision: ${c.monto_comision.toLocaleString()}`, y)
-  }
-  y = linea(doc, `Metodo: ${c.metodo_pago || '-'}`, y)
-  y = linea(doc, `Atendido por: ${c.cajero_nombre || '-'}`, y)
-  doc.save(`${c.numero}.pdf`)
-}
-
 export default function ComprobanteVista({ comprobante: c, onClose }: Props) {
+  const [factura, setFactura] = useState<FacturaElectronica | null>(null)
   // Mientras está abierta, la página de fondo no scrollea (un solo scroll).
   useEffect(() => {
     const anterior = document.body.style.overflow
@@ -93,7 +65,7 @@ export default function ComprobanteVista({ comprobante: c, onClose }: Props) {
             </dl>
           </div>
           {/* Factura electrónica (PI-30, no se imprime) */}
-          {c.estado !== 'anulado' && <EmitirFactura operacionId={c.operacion} />}
+          {c.estado !== 'anulado' && <EmitirFactura key={c.operacion} operacionId={c.operacion} onFacturaActualizada={setFactura} mostrarDescarga={false} />}
         </div>
         {/* Acciones fijas (no se imprimen) */}
         <div className="shrink-0 flex gap-2 px-6 py-4 border-t border-slate-200 bg-slate-50 no-print">
@@ -103,12 +75,7 @@ export default function ComprobanteVista({ comprobante: c, onClose }: Props) {
           >
             🖨️ Imprimir
           </button>
-          <button
-            onClick={() => generarPdf(c)}
-            className="flex-1 py-2 bg-emerald-600 text-white rounded-lg font-semibold text-sm hover:bg-emerald-700"
-          >
-            📥 Descargar PDF
-          </button>
+          <DescargarKude factura={c.estado === 'anulado' ? null : factura} />
           <button
             onClick={onClose}
             className="flex-1 py-2 border rounded-lg text-slate-600 font-semibold text-sm"

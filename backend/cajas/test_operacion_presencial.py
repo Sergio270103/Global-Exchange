@@ -8,7 +8,7 @@ seleccionado, aplica la cotización vigente, mueve el saldo de la caja
 from decimal import Decimal
 
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIRequestFactory, force_authenticate
 
 from cajas.models import Caja, MovimientoCaja, SaldoCaja, TurnoCaja
@@ -43,6 +43,21 @@ class UsuarioComun(UsuarioCajero):
 
 
 class OperacionPresencialTest(TestCase):
+    def test_sin_cupo_fiscal_no_entrega_efectivo_ni_crea_operacion(self):
+        from facturacion.tests import config
+        self._abrir_turno()
+        self._saldo(self.usd, '500')
+        self._saldo(self.pyg, '1000000')
+        with override_settings(FACTURASEGURA=config(desde=100, hasta=99)):
+            respuesta = self._operar()
+        self.assertEqual(respuesta.status_code, 400, respuesta.data)
+        self.assertIn('no fue confirmada', str(respuesta.data))
+        self.assertFalse(Operacion.objects.exists())
+        self.assertFalse(MovimientoCaja.objects.exists())
+        self.assertFalse(Comprobante.objects.exists())
+        self.assertEqual(SaldoCaja.objects.get(caja=self.caja, moneda=self.usd).monto, 500)
+        self.assertEqual(SaldoCaja.objects.get(caja=self.caja, moneda=self.pyg).monto, 1000000)
+
     def setUp(self):
         self.factory = APIRequestFactory()
         self.pyg, _ = Moneda.objects.get_or_create(

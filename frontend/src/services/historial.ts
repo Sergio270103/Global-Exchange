@@ -53,6 +53,7 @@ export const ETIQUETA_TIPO: Record<TipoOperacion, string> = {
 }
 
 export const ETIQUETA_MOTIVO: Record<MotivoCancelacion, string> = {
+  RECHAZO_SIFEN: 'Factura rechazada por SIFEN',
   COTIZACION_CAMBIADA: 'No aceptó la nueva cotización',
   DESISTIO: 'Desistió',
   FONDOS_INSUFICIENTES: 'Fondos insuficientes',

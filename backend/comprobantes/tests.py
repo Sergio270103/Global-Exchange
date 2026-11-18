@@ -1,6 +1,8 @@
 """Pruebas de comprobantes internos y del flujo cajero/efectivo (PI-42)."""
 
 from decimal import Decimal
+from django.test import override_settings
+from facturacion.tests import config
 
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory, APITestCase, force_authenticate
@@ -36,6 +38,7 @@ def comprobante_view(acciones):
     return ComprobanteViewSet.as_view(acciones)
 
 
+@override_settings(FACTURASEGURA=config())
 class ComprobanteTest(APITestCase):
     def setUp(self):
         self.factory = APIRequestFactory()

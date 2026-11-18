@@ -299,6 +299,10 @@ class AcreditacionTests(TestCase):
         # Vence la ventana y cambia la tasa.
         op.fecha_cotizacion = timezone.now() - timedelta(seconds=120)
         op.save(update_fields=['fecha_cotizacion'])
+        # Separar las marcas temporales: en Windows dos altas rápidas pueden
+        # compartir vigente_desde y la consulta no tiene un desempate por id.
+        Cotizacion.objects.filter(moneda=self.usd).update(
+            vigente_desde=timezone.now() - timedelta(minutes=5))
         Cotizacion.objects.create(moneda=self.usd, compra=Decimal('7300'), venta=Decimal('7600'))
         res = self._confirmar(op)
         self.assertEqual(res.status_code, 200)

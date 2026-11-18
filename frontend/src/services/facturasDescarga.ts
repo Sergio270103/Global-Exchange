@@ -81,6 +81,12 @@ function normalizar(f: Record<string, unknown>): FacturaElectronicaCompleta {
   return {
     id: Number(f.id),
     operacion: Number(f.operacion),
+    gestion_rol: String(f.gestion_rol ?? ''),
+    reversion_aplicada: Boolean(f.reversion_aplicada),
+    reversion_pendiente: Boolean(f.reversion_pendiente),
+    reversion_error: String(f.reversion_error ?? ''),
+    reversion_emision_pendiente: Boolean(f.reversion_emision_pendiente),
+    reversion_emision_error: String(f.reversion_emision_error ?? ''),
     cliente_nombre: String(f.cliente_nombre ?? ''),
     simulada: Boolean(f.simulada),
     numero: f.numero == null ? null : String(f.numero),
@@ -124,6 +130,7 @@ export async function listarFacturasElectronicas(): Promise<FacturaElectronicaCo
 
 /** Prioridad de la factura que manda para una operación. */
 const PRIORIDAD: Record<EstadoFactura, number> = {
+  PROCESANDO: 5,
   ANULADA: 6, DEVUELTA: 6,
   APROBADA: 4,
   EMITIDA: 3,
@@ -176,7 +183,7 @@ export function motivoPdf(factura: FacturaElectronicaCompleta | null): string {
 // ----------------------------------------------------------------------
 
 /** Nombre del PDF: el número real de la factura electrónica. */
-export function nombreArchivoFactura(factura: FacturaElectronicaCompleta): string {
+export function nombreArchivoFactura(factura: FacturaElectronica): string {
   const base = (factura.numero_completo || factura.cdc || `factura-${factura.id}`)
     .replace(/[^\w.-]+/g, '-')
   return `${base || 'factura'}.pdf`
@@ -304,7 +311,7 @@ export function guardarArchivo(contenido: Blob, nombre: string): void {
  *   del backend (`ApiError`) si Factura Segura no devolvió el archivo.
  */
 export async function descargarDocumentoOficial(
-  factura: FacturaElectronicaCompleta,
+  factura: FacturaElectronica,
   documento: DocumentoOficial = 'kude',
 ): Promise<void> {
   if ((!['APROBADA', 'ANULADA', 'DEVUELTA'].includes(factura.estado) || factura.pdf_pendiente)) {

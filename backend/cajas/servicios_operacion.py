@@ -330,6 +330,8 @@ def registrar_operacion_presencial(
         fecha_confirmacion=timezone.now(),
     )
 
+    from facturacion.cupos import reservar
+    reservar(operacion)
     referencia = f'Operación presencial #{operacion.pk}'
     if cliente.nombre:
         referencia += f' · {cliente.nombre_completo}'

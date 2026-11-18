@@ -4,9 +4,12 @@
  * @module ComprobanteVista.test
  */
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { usoFacturas, type FacturaElectronica } from '@/services/facturas'
+import { descargarDocumentoOficial } from '@/services/facturasDescarga'
 import ComprobanteVista from '@/components/ComprobanteVista'
 import type { Comprobante } from '@/services/comprobantes'
+vi.mock('@/services/facturasDescarga', () => ({ descargarDocumentoOficial: vi.fn() }))
 
 // El bloque de factura electrónica (PI-30) consulta la API: se simula.
 vi.mock('@/services/facturas', async (original) => ({
@@ -32,6 +35,24 @@ const comprobante: Comprobante = {
 }
 
 describe('ComprobanteVista (recibo interno)', () => {
+  it('el botón del modal descarga el KuDE oficial de la factura aprobada', async () => {
+    const factura: FacturaElectronica = {
+      id: 12, operacion: 9, cliente_nombre: 'Ana', simulada: false,
+      numero: '0000103', numero_completo: '001-003-0000103', cdc: '1'.repeat(44),
+      estado: 'APROBADA', total: 7500, email_destino: 'ana@test.com', detalle: '',
+      envio_fecha: null, envio_destinatario: '', envio_resultado: '', creada: '', estado_consultado: null,
+    }
+    vi.mocked(usoFacturas).mockResolvedValueOnce({
+      modo: 'real', usadas: 1, limite: 12, disponibles: 11, siguiente_numero: '0000104',
+      operacion: 9, operacion_estado: 'PAGADA', email_cliente: 'ana@test.com', factura,
+    })
+    vi.mocked(descargarDocumentoOficial).mockResolvedValue()
+    render(<ComprobanteVista comprobante={comprobante} onClose={() => {}} />)
+    const boton = await screen.findByRole('button', { name: 'Descargar PDF' })
+    expect(boton).toBeEnabled()
+    fireEvent.click(boton)
+    await waitFor(() => expect(descargarDocumentoOficial).toHaveBeenCalledWith(factura, 'kude'))
+  })
   it('muestra número, cliente, montos y cajero', () => {
     render(<ComprobanteVista comprobante={comprobante} onClose={() => {}} />)
     expect(screen.getByText('CPB-000001')).toBeInTheDocument()
@@ -50,7 +71,7 @@ describe('ComprobanteVista (recibo interno)', () => {
     const onClose = vi.fn()
     render(<ComprobanteVista comprobante={comprobante} onClose={onClose} />)
     expect(screen.getByRole('button', { name: '🖨️ Imprimir' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '📥 Descargar PDF' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Procesando SIFEN...' })).toBeDisabled()
     await user.click(screen.getByRole('button', { name: 'Cerrar' }))
     expect(onClose).toHaveBeenCalledTimes(1)
   })

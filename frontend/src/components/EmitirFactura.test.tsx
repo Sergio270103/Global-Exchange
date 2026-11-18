@@ -5,8 +5,9 @@
  *
  * @module EmitirFactura.test
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { descargarDocumentoOficial } from '@/services/facturasDescarga'
 import userEvent from '@testing-library/user-event'
 import EmitirFactura from '@/components/EmitirFactura'
 import {
@@ -23,6 +24,7 @@ vi.mock('@/services/facturas', async (original) => ({
   emitirFactura: vi.fn(),
   consultarEstadoFactura: vi.fn(),
 }))
+vi.mock('@/services/facturasDescarga', () => ({ descargarDocumentoOficial: vi.fn() }))
 
 const uso = (extra: Partial<UsoFacturas> = {}): UsoFacturas => ({
   modo: 'simulado', usadas: 3, limite: 12, disponibles: 9,
@@ -41,6 +43,52 @@ const factura = (extra: Partial<FacturaElectronica> = {}): FacturaElectronica =>
 
 describe('EmitirFactura (PI-30)', () => {
   beforeEach(() => vi.clearAllMocks())
+  afterEach(() => vi.useRealTimers())
+
+  it.each(['EMITIDA', 'VERIFICAR', 'PROCESANDO'] as const)('bloquea la descarga mientras está %s', async estado => {
+    vi.mocked(usoFacturas).mockResolvedValue(uso({ factura: factura({ estado }) }))
+    render(<EmitirFactura operacionId={9} />)
+    expect(await screen.findByRole('button', { name: 'Procesando SIFEN...' })).toBeDisabled()
+    expect(descargarDocumentoOficial).not.toHaveBeenCalled()
+  })
+
+  it('polling habilita KuDE al aprobar, usa el servicio oficial y se detiene', async () => {
+    vi.useFakeTimers()
+    const aprobada = factura({ estado: 'APROBADA', simulada: false })
+    vi.mocked(usoFacturas).mockResolvedValue(uso({ factura: factura() }))
+    vi.mocked(consultarEstadoFactura).mockResolvedValue(aprobada)
+    vi.mocked(descargarDocumentoOficial).mockResolvedValue()
+    let vista: ReturnType<typeof render>
+    await act(async () => { vista = render(<EmitirFactura operacionId={9} />) })
+    expect(screen.getByRole('button', { name: 'Procesando SIFEN...' })).toBeDisabled()
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+    const boton = screen.getByRole('button', { name: 'Descargar PDF' })
+    expect(boton).toBeEnabled()
+    await act(async () => { fireEvent.click(boton) })
+    expect(descargarDocumentoOficial).toHaveBeenCalledExactlyOnceWith(aprobada, 'kude')
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(consultarEstadoFactura).toHaveBeenCalledTimes(1)
+    vista!.unmount()
+  })
+
+  it('limpia el polling al cerrar el comprobante', async () => {
+    vi.useFakeTimers()
+    vi.mocked(usoFacturas).mockResolvedValue(uso({ factura: factura() }))
+    let vista: ReturnType<typeof render>
+    await act(async () => { vista = render(<EmitirFactura operacionId={9} />) })
+    vista!.unmount()
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000) })
+    expect(consultarEstadoFactura).not.toHaveBeenCalled()
+  })
+
+  it('muestra el error de descarga y permite reintentar', async () => {
+    vi.mocked(usoFacturas).mockResolvedValue(uso({ factura: factura({ estado: 'APROBADA', simulada: false }) }))
+    vi.mocked(descargarDocumentoOficial).mockRejectedValue(new Error('KuDE no disponible'))
+    render(<EmitirFactura operacionId={9} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Descargar PDF' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('KuDE no disponible')
+    expect(screen.getByRole('button', { name: 'Descargar PDF' })).toBeEnabled()
+  })
 
   it('precarga el correo del cliente y muestra el contador', async () => {
     vi.mocked(usoFacturas).mockResolvedValue(uso())
