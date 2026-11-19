@@ -33,6 +33,7 @@ import CashCountView from './pages/cashier/CashCountView'
 import CashDeliveries from './pages/admin/CashDeliveries'
 import RatesManagement from './pages/analyst/RatesManagement'
 import Earnings from './pages/analyst/Earnings'
+import Reports from './pages/admin/Reports'
 
 import Clients from './pages/admin/Clients'
 import Users from './pages/admin/Users'
@@ -199,7 +200,7 @@ export default function App() {
         return <Currencies auth={auth} />
       case 'admin-reports':
         return auth.role === 'admin'
-          ? <ReportsPlaceholder />
+          ? <Reports />
           : <p role="alert">No tenés permiso para ver reportes.</p>
       case 'admin-config':
         return <Configuration />
@@ -221,47 +222,5 @@ export default function App() {
     >
       {renderPage()}
     </Layout>
-  )
-}
-
-
-function ReportsPlaceholder() {
-  const [verGanancias, setVerGanancias] = useState(false)
-  if (verGanancias) {
-    return (
-      <div className="space-y-4">
-        <button type="button" onClick={() => setVerGanancias(false)} className="text-sm font-semibold text-emerald-700">Volver a Reportes</button>
-        <Earnings reporte />
-      </div>
-    )
-  }
-  return (
-    <div className="space-y-4 animate-fadein">
-      <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
-        <h3 className="font-semibold text-slate-800 text-[15px] mb-5" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>Reportes del sistema</h3>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {[
-            { icon: '📊', title: 'Reporte de transacciones', desc: 'Histórico completo de operaciones del período' },
-            { icon: '💰', title: 'Reporte de ganancias', desc: 'Análisis de ingresos por divisa y período' },
-            { icon: '👥', title: 'Reporte de clientes', desc: 'Actividad y operaciones por cliente' },
-            { icon: '📈', title: 'Evolución de tasas', desc: 'Histórico completo de tasas de cambio' },
-            { icon: '📄', title: 'Reporte de facturas', desc: 'Estado y detalle de facturación electrónica' },
-            { icon: '🔐', title: 'Reporte de accesos', desc: 'Log de actividad y auditoría del sistema' },
-          ].map(r => (
-            <div key={r.title} className="rounded-xl border border-slate-100 p-5 hover:shadow-md hover:-translate-y-0.5 transition-all cursor-pointer">
-              <div className="text-3xl mb-3">{r.icon}</div>
-              <div className="font-semibold text-slate-900 text-[14px] mb-1" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>{r.title}</div>
-              <div className="text-[12px] text-slate-400 mb-4">{r.desc}</div>
-              {r.title === 'Reporte de ganancias' ? (
-                <button type="button" onClick={() => setVerGanancias(true)} className="rounded-lg border border-slate-200 px-3 py-1.5 text-[12px] font-semibold text-emerald-700">Abrir reporte</button>
-              ) : <div className="flex gap-2">
-                <button className="flex-1 py-1.5 rounded-lg border border-slate-200 text-[12px] font-semibold text-slate-600 hover:bg-slate-50">📥 PDF</button>
-                <button className="flex-1 py-1.5 rounded-lg border border-slate-200 text-[12px] font-semibold text-slate-600 hover:bg-slate-50">📊 Excel</button>
-              </div>}
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
   )
 }

@@ -245,6 +245,15 @@ class FacturaElectronica(DocumentoNumerado):
             ),
         ]
 
+    def save(self, *args, **kwargs):
+        from django.db import transaction
+        with transaction.atomic():
+            if self.pk:
+                type(self).objects.select_for_update().filter(pk=self.pk).first()
+            super().save(*args, **kwargs)
+            from .historial import registrar_estado
+            registrar_estado(self)
+
     def __str__(self) -> str:
         return self.numero_completo or f'sin número (op {self.operacion_id})'
 
@@ -434,3 +443,16 @@ class IntentoFactura(models.Model):
 
     class Meta:
         ordering = ['-fecha']
+
+
+class HistorialFactura(models.Model):
+    """Instantánea inmutable de cada resultado fiscal confirmado para reportes."""
+    factura = models.ForeignKey(FacturaElectronica, on_delete=models.PROTECT, related_name='historial_reporte')
+    estado = models.CharField(max_length=10)
+    fecha = models.DateTimeField(null=True, blank=True, db_index=True)
+    registrado_en = models.DateTimeField(auto_now_add=True)
+    datos = models.JSONField(default=dict)
+
+    class Meta:
+        ordering = ['fecha', 'pk']
+        constraints = [models.UniqueConstraint(fields=['factura', 'estado'], name='reporte_factura_estado_unico')]

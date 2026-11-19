@@ -19,8 +19,10 @@ Including another URLconf
 from django.urls import include, path
 
 from . import views
+from .reportes import reporte
 
 urlpatterns = [
+    path('api/reportes/<str:tipo>/', reporte, name='reporte'),
     path('api/health/', views.health_check, name='health-check'),
     path('api/', include('monedas.urls')),
     path('api/', include('clientes.urls')),

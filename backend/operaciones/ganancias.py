@@ -3,6 +3,7 @@
 from decimal import Decimal
 from collections import defaultdict
 
+from django.db.models import Q
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -28,13 +29,15 @@ def _fecha(params, nombre):
 
 def _fila():
     return dict(operaciones=0, volumen=Decimal(0), comision=Decimal(0),
-                equivalente_pyg=Decimal(0), volumen_pyg=Decimal(0))
+                equivalente_pyg=Decimal(0), volumen_pyg=Decimal(0),
+                comisiones_cobradas=Decimal(0), comisiones_revertidas=Decimal(0))
 
 
-def _acumular(fila, volumen, comision, tasa):
-    fila['operaciones'] += 1
+def _acumular(fila, volumen, comision, tasa, es_cobro):
+    fila['operaciones'] += int(es_cobro)
     fila['volumen'] += volumen
     fila['comision'] += comision
+    fila['comisiones_cobradas' if comision >= 0 else 'comisiones_revertidas'] += abs(comision)
     fila['equivalente_pyg'] += comision * tasa
     fila['volumen_pyg'] += volumen * tasa
 
@@ -47,13 +50,13 @@ def calcular_ganancias(params):
     if agrupacion not in ('dia', 'mes', 'moneda'):
         raise ValidationError('La agrupación debe ser día, mes o moneda.')
 
-    ops = Operacion.objects.filter(estado=Operacion.ESTADO_PAGADA).annotate(
+    ops = Operacion.objects.filter(
+        Q(estado=Operacion.ESTADO_PAGADA) |
+        Q(estado__in=[Operacion.ESTADO_CANCELADA, Operacion.ESTADO_ANULADA],
+          fecha_confirmacion__isnull=False, fecha_cancelacion__isnull=False),
+    ).annotate(
         fecha_ingreso=Coalesce('fecha_confirmacion', 'fecha_creacion'),
     ).select_related('moneda_destino').order_by()
-    if desde:
-        ops = ops.filter(fecha_ingreso__date__gte=desde)
-    if hasta:
-        ops = ops.filter(fecha_ingreso__date__lte=hasta)
     moneda = params.get('moneda')
     if moneda:
         ops = ops.filter(moneda_destino__codigo__iexact=moneda.strip())
@@ -66,9 +69,20 @@ def calcular_ganancias(params):
     operaciones = 0
     for op in ops.iterator():
         codigo = op.moneda_destino.codigo.strip().upper()
-        fecha = timezone.localdate(op.fecha_ingreso)
-        mes = fecha.strftime('%Y-%m')
-        periodo = {'dia': fecha.isoformat(), 'mes': mes, 'moneda': codigo}[agrupacion]
+        comision = op.monto_comision
+        volumen = op.monto_recibido + comision
+        # En compra, el monto recibido ya es el bruto en destino.
+        if op.tipo_operacion == Operacion.TIPO_COMPRA:
+            volumen = op.monto_recibido
+        movimientos = [(op.fecha_ingreso, comision, volumen, True)]
+        if op.estado in (Operacion.ESTADO_CANCELADA, Operacion.ESTADO_ANULADA):
+            movimientos.append((op.fecha_cancelacion, -comision, Decimal(0), False))
+        movimientos = [(timezone.localdate(instante), importe, bruto, es_cobro)
+                       for instante, importe, bruto, es_cobro in movimientos
+                       if (not desde or timezone.localdate(instante) >= desde)
+                       and (not hasta or timezone.localdate(instante) <= hasta)]
+        if not movimientos:
+            continue
         tasa = Decimal(1) if codigo == 'PYG' else op.tasa_destino
         if not tasa:
             tasa = Cotizacion.objects.filter(
@@ -79,16 +93,14 @@ def calcular_ganancias(params):
             sin_tasa += 1
             tasa = Decimal(0)
 
-        comision = op.monto_comision
-        volumen = op.monto_recibido + comision
-        # En compra, el monto recibido ya es el bruto en destino.
-        if op.tipo_operacion == Operacion.TIPO_COMPRA:
-            volumen = op.monto_recibido
-        _acumular(monedas[codigo], volumen, comision, tasa)
-        _acumular(grupos[periodo, codigo], volumen, comision, tasa)
-        meses[mes] += comision * tasa
-        total += comision * tasa
-        operaciones += 1
+        for fecha, importe, bruto, es_cobro in movimientos:
+            mes = fecha.strftime('%Y-%m')
+            periodo = {'dia': fecha.isoformat(), 'mes': mes, 'moneda': codigo}[agrupacion]
+            _acumular(monedas[codigo], bruto, importe, tasa, es_cobro)
+            _acumular(grupos[periodo, codigo], bruto, importe, tasa, es_cobro)
+            meses[mes] += importe * tasa
+            total += importe * tasa
+            operaciones += int(es_cobro)
 
     def filas():
         return [

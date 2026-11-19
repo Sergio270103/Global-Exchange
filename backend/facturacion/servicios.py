@@ -785,7 +785,10 @@ def _actualizar_estado_nc(nota: NotaCreditoElectronica) -> NotaCreditoElectronic
     if nota.estado == NotaCreditoElectronica.ESTADO_APROBADA:
         finalizar_gestion(nota.factura, 'DEVUELTA', nota.cdc)
     elif nota.estado == NotaCreditoElectronica.ESTADO_RECHAZADA:
-        FacturaElectronica.objects.filter(pk=nota.factura_id, estado='PROCESANDO').update(estado='APROBADA')
+        factura = FacturaElectronica.objects.select_for_update().filter(pk=nota.factura_id, estado='PROCESANDO').first()
+        if factura:
+            factura.estado = 'APROBADA'
+            factura.save(update_fields=['estado'])
     return nota
 
 
