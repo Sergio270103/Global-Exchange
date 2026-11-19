@@ -35,6 +35,26 @@ interface CotizacionApi {
   creado_por: string
 }
 
+export interface EvolucionCotizacion {
+  inicio: string
+  fin: string
+  anterior: Cotizacion | null
+  cambios: Cotizacion[]
+}
+
+/** Límites calculados en Paraguay y cotización previa para mantener continuidad. */
+export async function evolucionCotizaciones(
+  moneda: string, periodo: string, desde?: string, hasta?: string,
+): Promise<EvolucionCotizacion> {
+  const qs = new URLSearchParams({ moneda, periodo })
+  if (desde) qs.set('desde', desde)
+  if (hasta) qs.set('hasta', hasta)
+  const datos = await apiFetch<{
+    inicio: string; fin: string; anterior: CotizacionApi | null; cambios: CotizacionApi[]
+  }>(`/cotizaciones/evolucion/?${qs}`)
+  return { ...datos, anterior: datos.anterior ? mapear(datos.anterior) : null, cambios: datos.cambios.map(mapear) }
+}
+
 function mapear(c: CotizacionApi): Cotizacion {
   return {
     id: c.id,
