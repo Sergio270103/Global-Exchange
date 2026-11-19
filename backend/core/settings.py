@@ -242,3 +242,7 @@ FACTURASEGURA = {
     },
 }
 MEDIA_ROOT = os.getenv('DJANGO_MEDIA_ROOT', str(BASE_DIR / 'media'))
+
+# Cuenta de servicio opcional, solo lectura de usuarios para reportes.
+KEYCLOAK_REPORTES_CLIENT_ID = os.getenv('KEYCLOAK_REPORTES_CLIENT_ID', '')
+KEYCLOAK_REPORTES_CLIENT_SECRET = os.getenv('KEYCLOAK_REPORTES_CLIENT_SECRET', '')
