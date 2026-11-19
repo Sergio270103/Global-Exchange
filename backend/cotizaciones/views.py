@@ -11,6 +11,8 @@ Endpoints disponibles:
 """
 
 from decimal import Decimal
+from datetime import datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from django.db.models import OuterRef, Subquery
 from django.utils import timezone
@@ -19,6 +21,7 @@ from rest_framework import viewsets
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
+from rest_framework.exceptions import ValidationError
 
 from clientes.models import Cliente, ClienteUsuario, Comision
 from monedas.models import Moneda
@@ -70,6 +73,51 @@ class CotizacionViewSet(viewsets.ModelViewSet):
         # PI-38: una tasa nueva puede disparar alertas configuradas.
         from alertas.servicios import evaluar_alertas
         evaluar_alertas(serializer.instance)
+
+    @action(detail=False, methods=['get'], url_path='evolucion')
+    def evolucion(self, request):
+        """Cambios reales y tasa inicial, con límites horarios de Paraguay."""
+        moneda = (request.query_params.get('moneda') or '').strip().upper()
+        if not moneda:
+            raise ValidationError({'moneda': 'Indicá una moneda.'})
+        zona = ZoneInfo('America/Asuncion')
+        fin = timezone.now().astimezone(zona)
+        periodo = request.query_params.get('periodo', 'Mes')
+        qs = Cotizacion.objects.filter(moneda__codigo=moneda).select_related('moneda')
+        if periodo == 'Hoy':
+            inicio = datetime.combine(fin.date(), time.min, zona)
+        elif periodo in ('Semana', 'Mes', 'Año'):
+            inicio = fin - timedelta(days={'Semana': 7, 'Mes': 30, 'Año': 365}[periodo])
+        elif periodo == 'Personalizado':
+            fechas = {}
+            for campo in ('desde', 'hasta'):
+                valor = request.query_params.get(campo)
+                if valor:
+                    try:
+                        fechas[campo] = parse_date(valor)
+                    except ValueError:
+                        fechas[campo] = None
+                    if fechas[campo] is None:
+                        raise ValidationError({campo: 'Usá una fecha válida (AAAA-MM-DD).'})
+            if 'desde' in fechas and 'hasta' in fechas and fechas['desde'] > fechas['hasta']:
+                raise ValidationError({'hasta': 'Debe ser igual o posterior a Desde.'})
+            if 'hasta' in fechas:
+                fin = min(fin, datetime.combine(fechas['hasta'], time.max, zona))
+            primero = qs.filter(vigente_desde__lte=fin).order_by('vigente_desde', 'pk').first()
+            inicio = (datetime.combine(fechas['desde'], time.min, zona)
+                      if 'desde' in fechas else primero.vigente_desde if primero else fin)
+            if inicio > fin:
+                raise ValidationError({'desde': 'El inicio no puede ser posterior al momento actual.'})
+        else:
+            raise ValidationError({'periodo': 'Período inválido.'})
+        anterior = qs.filter(vigente_desde__lt=inicio).order_by('-vigente_desde', '-pk').first()
+        cambios = qs.filter(vigente_desde__gte=inicio, vigente_desde__lte=fin).order_by('vigente_desde', 'pk')
+        return Response({
+            'inicio': inicio.isoformat(),
+            'fin': fin.isoformat(),
+            'anterior': self.get_serializer(anterior).data if anterior else None,
+            'cambios': self.get_serializer(cambios, many=True).data,
+        })
 
     @action(detail=False, methods=['get'], url_path='publicas',
             permission_classes=[AllowAny], authentication_classes=[])
