@@ -189,6 +189,10 @@ class ComprobanteViewSet(viewsets.ModelViewSet):
                 if comp.estado != Comprobante.ESTADO_EMITIDO:
                     raise DjangoValidationError('El comprobante ya está anulado.')
                 op = Operacion.objects.select_for_update().get(pk=comp.operacion_id)
+                if op.facturas.filter(estado__in=('APROBADA', 'PROCESANDO', 'ANULADA', 'DEVUELTA')).exists():
+                    raise DjangoValidationError(
+                        'Esta operación tiene factura electrónica. Solicitá la anulación '
+                        'o nota de crédito desde Facturas y esperá la aprobación de SIFEN.')
                 if op.estado != Operacion.ESTADO_PAGADA:
                     raise DjangoValidationError(
                         'Solo se anula el comprobante de una operación pagada.')

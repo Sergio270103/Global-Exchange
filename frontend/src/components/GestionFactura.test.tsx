@@ -165,7 +165,7 @@ describe('GestionFactura', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirmar nota de crédito' }))
 
     await waitFor(() => {
-      expect(emitirNcMock).toHaveBeenCalledWith(10, '7', 'nc@test.com')
+      expect(emitirNcMock).toHaveBeenCalledWith(10, '7', 'nc@test.com', 'administrador')
     })
     expect(await screen.findByText(/Nota de crédito 001-003-0000013 emitida/))
       .toBeInTheDocument()
@@ -191,7 +191,7 @@ describe('GestionFactura', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirmar anulación' }))
 
     await waitFor(() => {
-      expect(cancelarMock).toHaveBeenCalledWith(10, 'El cliente desistió')
+      expect(cancelarMock).toHaveBeenCalledWith(10, 'El cliente desistió', 'administrador')
     })
     expect(await screen.findByText(/Solicitud de anulación enviada/)).toBeInTheDocument()
     expect(onActualizada).toHaveBeenCalled()

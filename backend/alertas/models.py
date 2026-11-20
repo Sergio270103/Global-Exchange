@@ -83,6 +83,8 @@ class DisparoAlerta(models.Model):
     )
     direccion = models.CharField('dirección', max_length=10)
     creado = models.DateTimeField('disparado el', auto_now_add=True)
+    leido = models.BooleanField(default=False)
+    eliminado = models.BooleanField(default=False)
 
     class Meta:
         ordering = ['-creado']

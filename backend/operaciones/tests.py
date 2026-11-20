@@ -1,10 +1,11 @@
 """Tests del módulo de operaciones (Hito Operaciones)."""
 
+from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import patch
 
 from django.test import TestCase
-from rest_framework.test import APIRequestFactory, force_authenticate
+from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
 from clientes.models import Cliente, ClienteUsuario, Comision
 from cotizaciones.models import Cotizacion
@@ -54,7 +55,7 @@ class OperacionTests(TestCase):
         vista = OperacionViewSet.as_view({'post': 'create'})
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'COMPRA',
-            'moneda': 'USD', 'monto_divisa': '100',
+            'moneda': 'USD', 'monto_divisa': '100', 'metodo_pago': 'transfer',
         }, format='json')
         res = _auth(vista, req)
         self.assertEqual(res.status_code, 201, res.data)
@@ -71,7 +72,7 @@ class OperacionTests(TestCase):
         vista = OperacionViewSet.as_view({'post': 'create'})
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'COMPRA',
-            'moneda': 'USD', 'monto_divisa': '100',
+            'moneda': 'USD', 'monto_divisa': '100', 'metodo_pago': 'transfer',
         }, format='json')
         res = _auth(vista, req)
         self.assertEqual(res.status_code, 201, res.data)
@@ -85,7 +86,7 @@ class OperacionTests(TestCase):
         vista = OperacionViewSet.as_view({'post': 'create'})
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'VENTA',
-            'moneda': 'USD', 'monto_divisa': '100',
+            'moneda': 'USD', 'monto_divisa': '100', 'metodo_pago': 'transfer',
         }, format='json')
         res = _auth(vista, req)
         self.assertEqual(res.status_code, 201, res.data)
@@ -101,7 +102,7 @@ class OperacionTests(TestCase):
         self.cliente.save(update_fields=['activo'])
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'VENTA',
-            'moneda': 'USD', 'monto_divisa': '10',
+            'moneda': 'USD', 'monto_divisa': '10', 'metodo_pago': 'transfer',
         }, format='json')
         res = _auth(vista, req)
         self.assertEqual(res.status_code, 400)
@@ -112,7 +113,7 @@ class OperacionTests(TestCase):
         vista = OperacionViewSet.as_view({'post': 'create'})
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'VENTA',
-            'moneda': 'USD', 'monto_divisa': '10',
+            'moneda': 'USD', 'monto_divisa': '10', 'metodo_pago': 'transfer',
         }, format='json')
         res = _auth(vista, req)
         self.assertEqual(res.status_code, 400)
@@ -150,7 +151,7 @@ class VinculacionTests(TestCase):
     def _crear(self, extra):
         vista = OperacionViewSet.as_view({'post': 'create'})
         base = {'cliente': self.cliente.id, 'tipo_operacion': 'COMPRA',
-                'moneda': 'USD', 'monto_divisa': '10'}
+                'moneda': 'USD', 'monto_divisa': '10', 'metodo_pago': 'transfer'}
         req = self.factory.post('/api/operaciones/', {**base, **extra}, format='json')
         return _auth(vista, req)
 
@@ -190,7 +191,7 @@ class VinculacionTests(TestCase):
         vista = OperacionViewSet.as_view({'post': 'create'})
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'VENTA',
-            'moneda': 'USD', 'monto_divisa': '10',
+            'moneda': 'USD', 'monto_divisa': '10', 'metodo_pago': 'transfer',
             'cuenta_origen': cuenta_usd.id,
         }, format='json')
         res = _auth(vista, req)
@@ -238,7 +239,7 @@ class AcreditacionTests(TestCase):
         vista = OperacionViewSet.as_view({'post': 'create'})
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'COMPRA',
-            'moneda': 'USD', 'monto_divisa': '100',
+            'moneda': 'USD', 'monto_divisa': '100', 'metodo_pago': 'transfer',
             'billetera_destino': self.billetera.id,
         }, format='json')
         res = _auth(vista, req)
@@ -279,7 +280,7 @@ class AcreditacionTests(TestCase):
         vista = OperacionViewSet.as_view({'post': 'create'})
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'COMPRA',
-            'moneda': 'USD', 'monto_divisa': '10',
+            'moneda': 'USD', 'monto_divisa': '10', 'metodo_pago': 'transfer',
         }, format='json')
         res = _auth(vista, req)
         self.assertEqual(res.status_code, 201, res.data)
@@ -298,6 +299,10 @@ class AcreditacionTests(TestCase):
         # Vence la ventana y cambia la tasa.
         op.fecha_cotizacion = timezone.now() - timedelta(seconds=120)
         op.save(update_fields=['fecha_cotizacion'])
+        # Separar las marcas temporales: en Windows dos altas rápidas pueden
+        # compartir vigente_desde y la consulta no tiene un desempate por id.
+        Cotizacion.objects.filter(moneda=self.usd).update(
+            vigente_desde=timezone.now() - timedelta(minutes=5))
         Cotizacion.objects.create(moneda=self.usd, compra=Decimal('7300'), venta=Decimal('7600'))
         res = self._confirmar(op)
         self.assertEqual(res.status_code, 200)
@@ -337,7 +342,7 @@ class DebitoTests(TestCase):
     def _crear_venta(self, extra):
         vista = OperacionViewSet.as_view({'post': 'create'})
         base = {'cliente': self.cliente.id, 'tipo_operacion': 'VENTA',
-                'moneda': 'USD', 'monto_divisa': '100'}
+                'moneda': 'USD', 'monto_divisa': '100', 'metodo_pago': 'transfer'}
         req = self.factory.post('/api/operaciones/', {**base, **extra}, format='json')
         return _auth(vista, req)
 
@@ -435,7 +440,7 @@ class DebitoTests(TestCase):
     def _crear_compra(self, extra):
         vista = OperacionViewSet.as_view({'post': 'create'})
         base = {'cliente': self.cliente.id, 'tipo_operacion': 'COMPRA',
-                'moneda': 'USD', 'monto_divisa': '100'}
+                'moneda': 'USD', 'monto_divisa': '100', 'metodo_pago': 'transfer'}
         req = self.factory.post('/api/operaciones/', {**base, **extra}, format='json')
         return _auth(vista, req)
 
@@ -485,3 +490,63 @@ class DebitoTests(TestCase):
         self.assertEqual(res.status_code, 400)
         op.refresh_from_db()
         self.assertEqual(op.estado, Operacion.ESTADO_PENDIENTE)
+
+
+class GananciasTests(TestCase):
+    def setUp(self):
+        self.pyg, _ = Moneda.objects.get_or_create(codigo='PYG', defaults={'nombre': 'Guaraní'})
+        self.usd, _ = Moneda.objects.get_or_create(codigo='USD', defaults={'nombre': 'Dólar'})
+        self.cliente = Cliente.objects.create(
+            nombre='Cliente de ganancias', documento='987', email='ganancias@example.com',
+            categoria=Cliente.CAT_MINORISTA,
+        )
+
+    def registrar(self, estado, fecha, moneda_destino, tasa, comision):
+        return Operacion.objects.create(
+            cliente=self.cliente, usuario_keycloak_id='sub-123', tipo_operacion='COMPRA',
+            moneda_origen=self.pyg if moneda_destino == self.usd else self.usd,
+            moneda_destino=moneda_destino, monto_enviado=100000, monto_recibido=10,
+            cotizacion_aplicada=1, tasa_destino=tasa, monto_comision=comision,
+            porcentaje_comision_aplicado=1, estado=estado, fecha_confirmacion=fecha,
+        )
+
+    def consultar(self, ruta, rol, params=None):
+        usuario = UsuarioFake()
+        usuario.roles = [rol]
+        cliente = APIClient()
+        cliente.force_authenticate(user=usuario)
+        return cliente.get(f'/api/operaciones/{ruta}/', params or {})
+
+    def test_ganancias_y_reporte_comparten_filtros_y_equivalentes_historicos(self):
+        noviembre = datetime(2026, 11, 20, 12, tzinfo=timezone.utc)
+        octubre = datetime(2026, 10, 20, 12, tzinfo=timezone.utc)
+        self.registrar('PAGADA', noviembre, self.usd, 7500, 2)
+        self.registrar('PAGADA', noviembre, self.pyg, None, 500)
+        self.registrar('PAGADA', octubre, self.usd, 7700, 3)
+        for estado in ('PENDIENTE', 'CANCELADA', 'ANULADA'):
+            self.registrar(estado, noviembre, self.usd, 7500, 8)
+        Cotizacion.objects.create(moneda=self.usd, compra=7900, venta=8000)
+
+        rango = {'desde': '2026-11-01', 'hasta': '2026-11-20'}
+        tablero = self.consultar('ganancias', 'analyst', rango)
+        self.assertEqual(tablero.status_code, 200, tablero.data)
+        self.assertEqual(tablero.data['total_pyg'], 15500)
+        self.assertEqual(tablero.data['por_mes'], [{'mes': '2026-11', 'total_pyg': Decimal(15500)}])
+        for agrupacion, periodos in (('dia', {'2026-11-20'}), ('mes', {'2026-11'}), ('moneda', {'PYG', 'USD'})):
+            with self.subTest(agrupacion=agrupacion):
+                reporte = self.consultar('reporte-ganancias', 'admin', {**rango, 'agrupar': agrupacion})
+                self.assertEqual(reporte.status_code, 200, reporte.data)
+                self.assertEqual(reporte.data['total_pyg'], 15500)
+                self.assertEqual(sum(f['operaciones'] for f in reporte.data['filas']), 2)
+                self.assertEqual({f['periodo'] for f in reporte.data['filas']}, periodos)
+
+        filtrado = self.consultar('ganancias', 'admin', {**rango, 'moneda': 'USD'})
+        self.assertEqual(filtrado.data['operaciones'], 1)
+        self.assertEqual(filtrado.data['total_pyg'], 15000)
+
+    def test_roles_y_rangos_invalidos(self):
+        for rol in ('user', 'cashier'):
+            self.assertEqual(self.consultar('ganancias', rol).status_code, 403)
+        self.assertEqual(self.consultar('reporte-ganancias', 'analyst').status_code, 403)
+        self.assertEqual(self.consultar('ganancias', 'admin', {'desde': '2026-11-31'}).status_code, 400)
+        self.assertEqual(self.consultar('ganancias', 'admin').data['operaciones'], 0)

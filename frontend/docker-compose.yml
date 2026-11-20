@@ -13,7 +13,8 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./realm-export.json:/opt/keycloak/data/import/realm-export.json
+      - ./realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+      - ./keycloak/themes/global-exchange:/opt/keycloak/themes/global-exchange:ro
       - keycloak_data:/opt/keycloak/data
 
 volumes:

@@ -206,6 +206,21 @@ describe('BuySell pago (directo, Stripe y QR bloqueado)', () => {
     expect(llamadas.some(l => l.includes('/iniciar-pago/'))).toBe(false)
   })
 
+  it('sin cupo fiscal muestra el error y conserva la confirmación pendiente', async () => {
+    const fetchAnterior = globalThis.fetch
+    const mensaje = 'No hay disponibilidad para emitir la factura. La compra/venta no fue confirmada y no se modificaron saldos.'
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) =>
+      String(url).includes('/confirmar/')
+        ? Promise.resolve(respuesta({ detail: mensaje }, 400))
+        : fetchAnterior(url, init)))
+    const user = userEvent.setup()
+    await llegarAConfirmar(user)
+    await user.click(screen.getByRole('button', { name: 'Confirmar compra' }))
+    expect(await screen.findByText(mensaje)).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Confirmar operación' })).toBeInTheDocument()
+    expect(screen.queryByText('Transacción Exitosa')).not.toBeInTheDocument()
+  })
+
   it('tarjeta redirige a la sesión de Checkout', async () => {
     const user = userEvent.setup()
     render(<BuySell auth={auth} currentClient={{ id: 1, nombre: 'Carlos Martínez' }} />)

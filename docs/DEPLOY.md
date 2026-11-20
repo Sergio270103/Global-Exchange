@@ -1,4 +1,4 @@
-# Guía de despliegue - Global Exchange (PI-88)
+# Guía de despliegue - Global Exchange (PI-88 / PI-92)
 
 Este documento explica cómo desplegar el proyecto Global Exchange en
 desarrollo y producción usando el script automático de despliegue.
@@ -8,7 +8,7 @@ desarrollo y producción usando el script automático de despliegue.
 1. [Resumen](#resumen)
 2. [Requisitos previos](#requisitos-previos)
 3. [Despliegue en desarrollo (localhost)](#despliegue-en-desarrollo-localhost)
-4. [Despliegue en producción (servidor)](#despliegue-en-produccion-servidor)
+4. [Despliegue en producción (Docker + ngrok)](#despliegue-en-producción-docker--ngrok)
 5. [Variables de entorno](#variables-de-entorno)
 6. [Facturación electrónica (PI-30) en modo simulado y real](#facturacion-electronica-pi-30)
 7. [Troubleshooting](#troubleshooting)
@@ -20,43 +20,48 @@ desarrollo y producción usando el script automático de despliegue.
 ## Resumen
 
 El proyecto se puede levantar con un solo comando gracias a
-`scripts/deploy.sh` (Linux/macOS/WSL) o
+`scripts/deploy.sh` (Linux/macOS/WSL/Git Bash) o
 `scripts/deploy.ps1` (Windows PowerShell).
 
 - **Desarrollo**: todo corre en tu computadora (`localhost`).
-- **Producción**: todo corre en contenedores Docker listos para un servidor
-  (VPS, Render, Railway, etc.).
+- **Producción**: todo corre en contenedores Docker y queda publicado en
+  internet, fuera de `localhost`, con una dirección fija de ngrok.
 
 Comandos disponibles:
 
 | Comando | Descripción |
 |---|---|
 | `./scripts/deploy.sh dev` / `.\scripts\deploy.ps1 dev` | Levanta todo en localhost |
-| `./scripts/deploy.sh prod` / `.\scripts\deploy.ps1 prod` | Levanta los contenedores de producción |
-| `./scripts/deploy.sh check` / `.\scripts\deploy.ps1 check` | Verifica herramientas y archivos |
+| `./scripts/deploy.sh prod` / `.\scripts\deploy.ps1 prod` | Levanta el ambiente de producción completo |
+| `./scripts/deploy.sh status` / `.\scripts\deploy.ps1 status` | Estado de los contenedores de producción |
+| `./scripts/deploy.sh logs [servicio]` / `.\scripts\deploy.ps1 logs [servicio]` | Logs de producción (`db`, `web`, `keycloak`, `gateway`, `ngrok`) |
+| `./scripts/deploy.sh check` / `.\scripts\deploy.ps1 check` | Verifica herramientas, archivos y `.env.prod` |
 | `./scripts/deploy.sh stop` / `.\scripts\deploy.ps1 stop` | Detiene procesos y contenedores |
 
-En PowerShell también podés usar `-DryRun` para ver qué haría sin ejecutar nada:
-`.\scripts\deploy.ps1 prod -DryRun`.
+Para ver qué haría sin ejecutar nada: `./scripts/deploy.sh --dry-run prod`
+o `.\scripts\deploy.ps1 prod -DryRun`.
 
-No se paga nada específico para desarrollo. Para producción puedes usar
-servicios gratuitos o de bajo costo (Render, Railway, etc.).
+No se paga nada: Docker, el plan gratuito de ngrok, Stripe en modo prueba
+y Factura Segura en el ambiente de TEST alcanzan para todo el despliegue.
 
 ---
 
 ## Requisitos previos
 
-### En tu computadora (desarrollo)
+### Desarrollo
 
 - [Docker](https://www.docker.com/) y Docker Compose
 - [Python 3.11+](https://www.python.org/)
 - [Node.js 20+](https://nodejs.org/) y npm
 
-### En el servidor (producción)
+### Producción
 
-- Un servidor Linux con Docker y Docker Compose instalados
-- Acceso por SSH al servidor
-- Opcional: un dominio y un proxy reverso (nginx, Caddy, traefik)
+- [Docker Desktop](https://www.docker.com/) abierto (no hace falta Python ni
+  Node: todo se construye dentro de los contenedores).
+- Una cuenta gratuita de [ngrok](https://dashboard.ngrok.com/) con su dominio
+  fijo (`algo.ngrok-free.dev`) y su authtoken.
+- Las claves de prueba de Stripe y, si se va a facturar de verdad, el token
+  de Factura Segura.
 
 ---
 
@@ -90,6 +95,28 @@ Esto hará lo siguiente:
 
 Ya puedes acceder a la aplicación.
 
+### Tema de acceso de Keycloak
+
+El tema Global Exchange se monta desde `frontend/keycloak/themes/global-exchange`
+al crear el contenedor. En una instalación nueva, el realm se importa con el
+tema activo y el español como idioma predeterminado. En producción, la tarea
+`keycloak-init` también actualiza el tema de un realm existente.
+
+En desarrollo, si Keycloak ya estaba instalado, recrea el contenedor desde la
+raíz del repositorio para que cargue el tema. Docker conserva el volumen
+`keycloak_data`.
+
+```powershell
+docker compose -f frontend/docker-compose.yml up -d --force-recreate keycloak
+```
+
+Abre la consola de Keycloak en `http://localhost:8080/admin/` y selecciona el
+realm `Global-Exchange`. En **Realm settings → Themes**, selecciona
+`global-exchange` en **Login theme**. En **Localization**, habilita
+**Internationalization** y configura `es` como idioma disponible y
+predeterminado. En **General**, establece **Display name** a `Global Exchange`.
+Guarda los cambios en cada pestaña.
+
 Los logs de los procesos en segundo plano quedan en `.run/`
 (`backend.out.log`, `frontend.out.log`, etc.).
 
@@ -107,101 +134,175 @@ En Windows:
 
 ---
 
-## Despliegue en producción (servidor)
+## Despliegue en producción (Docker + ngrok)
 
-### Paso 1: Conéctate al servidor
+El ambiente de producción es la computadora donde se ejecuta el script. El
+sistema completo queda detrás de **una sola dirección pública**:
 
-```bash
-ssh usuario@tu-servidor.com
+```
+Internet ──> ngrok ──> gateway (nginx) ──> /        frontend (React)
+          https://<NGROK_DOMAIN>          /api/    backend (Django + gunicorn) ──> PostgreSQL
+                                          /auth/   Keycloak ─────────────────────> PostgreSQL
 ```
 
-### Paso 2: Clona el repositorio
+Servicios de `docker-compose.prod.yml` (en la raíz del repositorio):
+
+| Servicio | Qué es |
+|---|---|
+| `db` | PostgreSQL 16 con dos bases: `global_exchange_bd` (sistema) y `keycloak` |
+| `web` | Backend Django con gunicorn; aplica las migraciones al arrancar |
+| `keycloak` | Keycloak en modo producción (`start`), con el realm de `frontend/realm-export.json` |
+| `gateway` | nginx: sirve el frontend y reparte `/api/` y `/auth/` |
+| `ngrok` | Túnel que publica el gateway en `https://<NGROK_DOMAIN>` |
+| `keycloak-init` | Tarea de una sola vez que configura Keycloak (`scripts/keycloak_prod_init.py`) |
+
+Producción usa una base de datos y un Keycloak **propios**: no comparte
+datos con el modo desarrollo y ambos pueden estar levantados a la vez.
+
+### Paso 1: generar `.env.prod`
 
 ```bash
-git clone https://github.com/Sergio270103/Global-Exchange.git
-cd Global-Exchange
-git checkout develop
+./scripts/deploy.sh prod        # Windows: .\scripts\deploy.ps1 prod
 ```
 
-### Paso 3: Configura el entorno de producción
+La primera vez el script copia `.env.prod.example` a `.env.prod`, genera las
+claves internas (Django, PostgreSQL y administrador de Keycloak) y se
+detiene indicando qué falta completar. `.env.prod` no se commitea.
 
-Copia la plantilla de variables de entorno:
+### Paso 2: completar `.env.prod`
+
+| Variable | Qué poner | Dónde se consigue |
+|---|---|---|
+| `NGROK_DOMAIN` | El dominio fijo, sin `https://` | <https://dashboard.ngrok.com/domains> |
+| `NGROK_AUTHTOKEN` | El authtoken de la cuenta | <https://dashboard.ngrok.com/get-started/your-authtoken> |
+| `KEYCLOAK_SMTP_PASSWORD` | Contraseña de aplicación de Gmail de la cuenta que envía los correos de verificación | La cuenta de Gmail del proyecto |
+| `USUARIOS_INICIALES` | Usuarios a crear con su rol: `usuario:correo:contraseña:rol;...` | Los define el equipo |
+| `STRIPE_SECRET_KEY` | Clave secreta de **prueba** (`sk_test_...`) | <https://dashboard.stripe.com/test/apikeys> |
+| `STRIPE_WEBHOOK_SECRET` | Secreto del webhook (`whsec_...`) | Ver paso 3 |
+| `FACTURASEGURA_*` | Modo, token y rango de números | Ver [Facturación electrónica](#facturación-electrónica-pi-30) |
+
+El resto de las variables ya viene con valores que funcionan.
+
+### Paso 3: registrar el webhook de Stripe (una sola vez)
+
+Como el dominio de ngrok es fijo, el webhook se registra una vez y queda:
+
+1. Entrar a <https://dashboard.stripe.com/test/webhooks> y agregar un destino
+   (endpoint) con la URL `https://<NGROK_DOMAIN>/api/payments/webhook/`.
+2. Elegir los eventos `checkout.session.completed`,
+   `checkout.session.expired`, `checkout.session.async_payment_succeeded` y
+   `checkout.session.async_payment_failed`.
+3. Copiar el *signing secret* (`whsec_...`) a `STRIPE_WEBHOOK_SECRET`.
+
+En producción no hace falta `stripe listen`: Stripe llama directo a la URL
+pública.
+
+### Paso 4: desplegar
 
 ```bash
-cp backend/.env.prod.example backend/.env
-cp frontend/.env.prod.example frontend/.env
+./scripts/deploy.sh prod        # Windows: .\scripts\deploy.ps1 prod
 ```
 
-Edita `backend/.env` y `frontend/.env` con tus valores reales
-(contraseñas, URLs de producción, etc.). En el frontend, `VITE_API_URL=/api`
-hace que nginx reenvíe las llamadas al backend dentro de la misma red Docker.
+El script:
 
-### Paso 4: Ejecuta el despliegue
+1. Revisa `.env.prod` y corta si falta algo o si la clave de Stripe es real.
+2. Construye las imágenes y levanta todos los contenedores.
+3. Espera al backend (las migraciones se aplican solas).
+4. Configura Keycloak: agrega la dirección pública al cliente del frontend,
+   carga la contraseña SMTP y crea los usuarios iniciales.
+5. Comprueba desde afuera que `https://<NGROK_DOMAIN>` responde.
+
+Al terminar muestra las direcciones:
+
+- Aplicación: `https://<NGROK_DOMAIN>`
+- Consola de Keycloak: `https://<NGROK_DOMAIN>/auth/admin/`
+  (usuario y contraseña: `KEYCLOAK_ADMIN_USER` / `KEYCLOAK_ADMIN_PASSWORD`)
+- Webhook de Stripe: `https://<NGROK_DOMAIN>/api/payments/webhook/`
+
+La primera vez tarda varios minutos (descarga y construye las imágenes). Las
+siguientes veces el mismo comando solo reconstruye lo que cambió.
+
+> **Aviso de ngrok.** En el plan gratuito, la primera vez que un navegador
+> entra a la dirección aparece una página de ngrok con el botón
+> **Visit Site**. Es normal: se acepta una vez por navegador y dura 7 días.
+
+### Operación diaria
+
+| Quiero... | Comando |
+|---|---|
+| Ver si está todo arriba | `./scripts/deploy.sh status` |
+| Ver los logs de un servicio | `./scripts/deploy.sh logs web` |
+| Apagar (los datos se conservan) | `./scripts/deploy.sh stop` |
+| Volver a encender | `./scripts/deploy.sh prod` |
+| Publicar una versión nueva del código | `git pull` y de nuevo `./scripts/deploy.sh prod` |
+
+Los contenedores tienen `restart: unless-stopped`: si se reinicia la
+computadora, vuelven a levantarse solos al abrir Docker Desktop.
+
+### Túnel manual (sin el contenedor de ngrok)
+
+Si `NGROK_AUTHTOKEN` queda vacío, el script levanta todo menos el túnel y
+muestra el comando para abrirlo con el ngrok instalado en la computadora:
 
 ```bash
+ngrok http --url=https://<NGROK_DOMAIN> 8081
+```
+
+### Empezar de cero
+
+Para borrar **todos los datos** de producción (base de datos, usuarios de
+Keycloak y archivos) y volver a desplegar desde cero:
+
+```bash
+docker compose -p global-exchange-prod down -v
 ./scripts/deploy.sh prod
 ```
 
-Esto hará lo siguiente:
-
-1. Construirá e iniciará los contenedores de producción: base de datos,
-   backend (gunicorn) y frontend (nginx).
-2. Aplicará las migraciones de Django.
-3. Verificará que el backend responde en `/api/health/`.
-
-Al terminar:
-
-- Frontend: `http://localhost:8081`
-- Backend: `http://localhost:8000`
-- PostgreSQL: `localhost:5433`
-
-Para detener los contenedores: `./scripts/deploy.sh stop`.
-
-### Paso 5: Configura el acceso público
-
-El script deja los contenedores corriendo. Para exponerlos desde Internet,
-configura un proxy reverso (nginx o Caddy) en tu servidor que redirija:
-
-- `http://tu-dominio.com` → frontend (nginx en el contenedor)
-- `http://tu-dominio.com/api/` → backend (Django en el contenedor)
-
-Si usas Render, Railway o similar, conecta el repositorio y usa los mismos
-comandos de build y start que aparecen en los Dockerfile.
+Hace falta, por ejemplo, si se cambia `POSTGRES_PASSWORD` o
+`KEYCLOAK_ADMIN_PASSWORD` después del primer despliegue (esas claves solo se
+aplican cuando se crean las bases).
 
 ---
 
 ## Variables de entorno
 
-### Backend (`backend/.env`)
+### Desarrollo: `backend/.env` y `frontend/.env`
 
 | Variable | Descripción | Ejemplo |
 |---|---|---|
 | `DJANGO_SECRET_KEY` | Clave secreta de Django | `cambiar-por-una-clave-larga` |
-| `DJANGO_DEBUG` | Modo depuración (False en producción) | `False` |
-| `DJANGO_ALLOWED_HOSTS` | Hosts permitidos | `tu-dominio.com` |
-| `POSTGRES_*` | Credenciales de la base de datos | ver `.env.prod.example` |
-| `KEYCLOAK_*` | Configuración de Keycloak | ver `.env.prod.example` |
-| `FACTURASEGURA_*` | Configuración de Factura Segura (PI-30) | ver `.env.prod.example` |
-
-### Frontend (`frontend/.env`)
-
-| Variable | Descripción | Ejemplo |
-|---|---|---|
-| `VITE_API_URL` | URL del backend (o `/api` en producción con nginx) | `https://tu-backend.onrender.com/api` |
+| `DJANGO_DEBUG` | Modo depuración | `True` |
+| `DJANGO_ALLOWED_HOSTS` | Hosts permitidos | `localhost,127.0.0.1` |
+| `POSTGRES_*` | Credenciales de la base de datos | ver `backend/.env.example` |
+| `KEYCLOAK_*` | Configuración de Keycloak | ver `backend/.env.example` |
+| `FACTURASEGURA_*` | Configuración de Factura Segura (PI-30) | ver `backend/.env.example` |
+| `VITE_API_URL` | URL del backend | `http://127.0.0.1:8000/api` |
 | `VITE_KEYCLOAK_URL` | URL de Keycloak | `http://localhost:8080` |
 | `VITE_KEYCLOAK_REALM` | Realm de Keycloak | `Global-Exchange` |
 | `VITE_KEYCLOAK_CLIENT_ID` | Client ID | `global-exchange-frontend` |
 
-En producción usá `frontend/.env.prod.example` como plantilla
-(`VITE_API_URL=/api`).
+### Producción: `.env.prod` (raíz del repositorio)
+
+Un solo archivo configura todos los contenedores; la plantilla comentada
+es `.env.prod.example`. A partir de `NGROK_DOMAIN`, `docker-compose.prod.yml`
+arma solo todo lo que depende de la dirección pública:
+
+| Se calcula | Valor |
+|---|---|
+| `KEYCLOAK_URL` (issuer de los tokens) | `https://<NGROK_DOMAIN>/auth` |
+| `KEYCLOAK_INTERNAL_URL` (descarga de claves JWKS) | `http://keycloak:8080/auth` |
+| `FRONTEND_URL`, `CORS_ALLOWED_ORIGINS` | `https://<NGROK_DOMAIN>` |
+| `DJANGO_ALLOWED_HOSTS` | `<NGROK_DOMAIN>,localhost,127.0.0.1` |
+| `VITE_API_URL` / `VITE_KEYCLOAK_URL` (build del frontend) | `/api` / `https://<NGROK_DOMAIN>/auth` |
+| `POSTGRES_HOST`, `DJANGO_DEBUG` | `db`, `False` |
 
 ---
 
 ## Facturación electrónica (PI-30)
 
-El proyecto incluye la integración con Factura Segura (PI-30). Por defecto
-funciona en **modo simulado** (`FACTURASEGURA_MODO=simulado`), lo que
-significa que:
+El proyecto incluye la integración con Factura Segura (PI-30). La plantilla
+de producción viene en **modo simulado** (`FACTURASEGURA_MODO=simulado`), lo
+que significa que:
 
 - No llama a la API externa.
 - No gasta números de factura asignados.
@@ -213,6 +314,15 @@ Para usar el modo real:
 2. Agrega tu token de Factura Segura en `FACTURASEGURA_TOKEN`.
 3. Completa los datos del emisor (`FACTURASEGURA_RUC`, `FACTURASEGURA_NOMBRE`, etc.).
 4. Confirma con la cátedra que los datos del emisor están correctos antes de emitir facturas reales.
+
+**Cuidado con los números en producción.** El despliegue nunca emite
+facturas: solo se emite cuando un usuario lo pide desde la pantalla de
+facturas. Pero la base de producción es nueva y no sabe qué números ya se
+usaron en desarrollo, así que el sistema empezaría de nuevo desde
+`FACTURASEGURA_NUMERO_DESDE`. Antes de pasar a modo `real`, poné en
+`FACTURASEGURA_NUMERO_DESDE` (y en `FACTURASEGURA_NC_NUMERO_DESDE`) el
+primer número que todavía **no** se usó; el script muestra el rango
+configurado cada vez que despliega en modo real.
 
 ### Anulación, inutilización y notas de crédito
 
@@ -251,13 +361,15 @@ automáticamente.
 
 ## Troubleshooting
 
+### Desarrollo
+
 | Problema | Posible causa | Solución |
 |---|---|---|
 | El backend no levanta | Puerto 8000 ocupado | El script lo omite si ya está en uso; revisá `.run/backend.out.log` |
 | El frontend no levanta | Puerto 5173 ocupado | El script lo omite si ya está en uso; revisá `.run/frontend.out.log` |
 | Migraciones fallan | Base de datos no accesible | Verifica que Postgres esté corriendo (`docker ps`) |
 | El frontend no carga la API | `VITE_API_URL` incorrecto | Revisa `frontend/.env` |
-| Health check falla | Backend no respondió | Revisa `.run/backend.out.log` o `docker logs global-exchange-backend-prod` |
+| Health check falla | Backend no respondió | Revisa `.run/backend.out.log` |
 | Docker no encontrado | Docker no instalado | Instala Docker y Docker Compose |
 | Quedó algo corriendo | Proceso o contenedor previo | Ejecutá `./scripts/deploy.sh stop` |
 
@@ -269,32 +381,45 @@ Get-Content .run\backend.out.log -Tail 50
 Get-Content .run\frontend.out.log -Tail 50
 ```
 
-Ver logs del backend en producción:
+### Producción
+
+| Problema | Posible causa | Solución |
+|---|---|---|
+| "Docker no está corriendo" | Docker Desktop cerrado | Abrilo y volvé a ejecutar |
+| El backend no queda arriba | Error en migraciones o en `.env.prod` | `./scripts/deploy.sh logs web` |
+| La dirección pública no responde | Authtoken o dominio mal copiados, u otro ngrok abierto con el mismo dominio | `./scripts/deploy.sh logs ngrok`; cerrá el otro ngrok |
+| "No se pudo iniciar sesión como admin en Keycloak" | Se cambió `KEYCLOAK_ADMIN_PASSWORD` después del primer despliegue | Volver a la clave original o [empezar de cero](#empezar-de-cero) |
+| El backend no conecta a la base | Se cambió `POSTGRES_PASSWORD` después del primer despliegue | Ídem |
+| No llega el correo de verificación | `KEYCLOAK_SMTP_PASSWORD` vacío o vencido | Cargar la contraseña de aplicación y volver a ejecutar `prod` |
+| El login vuelve con "Invalid redirect uri" | Se cambió `NGROK_DOMAIN` | Volver a ejecutar `prod` (reconstruye el frontend y actualiza Keycloak) |
+| El pago queda pendiente | Webhook de Stripe sin registrar o `STRIPE_WEBHOOK_SECRET` incorrecto | Ver el paso 3 del despliegue |
+| Puerto 8081 ocupado | Otro programa lo usa | Cambiar `GATEWAY_PORT` en `.env.prod` |
+
+Ver logs en producción:
 
 ```bash
-docker logs global-exchange-backend-prod
-```
-
-Ver logs de la base de datos:
-
-```bash
-docker logs global-exchange-db-prod
+./scripts/deploy.sh logs            # resumen de todos los servicios
+./scripts/deploy.sh logs web        # backend
+./scripts/deploy.sh logs keycloak
 ```
 
 ---
 
 ## Rollback
 
-Si el despliegue en producción falla:
+Si una versión nueva falla en producción:
 
-1. Detén los contenedores nuevos:
-   ```bash
-   docker compose -f backend/docker-compose.prod.yml down
-   ```
-2. Restaura la base de datos desde el backup generado antes del despliegue.
-3. Vuelve a la versión anterior del código si es necesario:
+1. Volvé a la versión anterior del código:
    ```bash
    git checkout <commit-anterior>
+   ```
+2. Ejecutá de nuevo `./scripts/deploy.sh prod`: reconstruye las imágenes con
+   ese código. Los datos (volúmenes) no se tocan.
+3. Si la versión fallida aplicó migraciones que hay que deshacer, restaurá
+   la base desde un backup previo. Para sacar un backup:
+   ```bash
+   docker compose -p global-exchange-prod exec -T db pg_dump -U postgres -f /tmp/backup.sql global_exchange_bd
+   docker compose -p global-exchange-prod cp db:/tmp/backup.sql ./backup.sql
    ```
 
 ---
@@ -312,14 +437,38 @@ cambios mínimos (no modifican la lógica de negocio):
    endpoint `GET /api/health/` para el health check de Docker.
 4. **`backend/Dockerfile`**: se usa `python:3.13-slim` (Django 6.1 requiere
    Python 3.12 o superior).
-5. **`backend/docker-compose.prod.yml`**: se agregó el servicio `frontend`
-   (nginx) a la misma red que el backend, en el puerto `8081`.
-6. **`frontend/nginx.conf`**: el proxy `/api/` apunta al servicio `web`
+5. **`frontend/nginx.conf`**: el proxy `/api/` apunta al servicio `web`
    del compose de producción.
-7. **`frontend/.env.prod.example`** y archivos `.dockerignore`: plantilla de
-   entorno de producción y contexto de build más liviano.
-8. Archivos nuevos de despliegue (Dockerfiles, docker-compose, scripts,
+6. Archivos `.dockerignore`: contexto de build más liviano.
+7. Archivos nuevos de despliegue (Dockerfiles, docker-compose, scripts,
    documentación). No afectan el funcionamiento diario de la aplicación.
+
+### Ambiente de producción con ngrok (PI-96)
+
+1. **`docker-compose.prod.yml`** (raíz): base de datos, backend, Keycloak,
+   gateway y ngrok; no publica los puertos de la base, el backend ni Keycloak.
+2. **`.env.prod.example`** (raíz): una sola plantilla para todo el ambiente.
+3. **`frontend/nginx.conf`**: además de `/api/`, publica Keycloak en
+   `/auth/` y respeta el `X-Forwarded-Proto` de ngrok.
+4. **`frontend/Dockerfile`** y **`frontend/.dockerignore`**: las variables
+   `VITE_*` entran como argumentos de build y el `.env` local queda fuera
+   de la imagen.
+5. **`backend/core/settings.py`** y **`backend/monedas/autenticacion.py`**:
+   variable opcional `KEYCLOAK_INTERNAL_URL` para descargar las claves de
+   Keycloak por la red interna. Sin ella todo funciona como antes.
+6. **`scripts/keycloak_prod_init.py`** y **`deploy/postgres-init/`**:
+   configuración de Keycloak posterior al arranque y creación de su base.
+
+### Script de despliegue de producción (PI-92)
+
+1. **`scripts/deploy.sh`** y **`scripts/deploy.ps1`**: el modo `prod`
+   levanta el ambiente de PI-96 con un solo comando (crea `.env.prod`,
+   valida la configuración, configura Keycloak y comprueba la dirección
+   pública). Se agregaron `status` y `logs`. El modo `dev` no cambió.
+2. Se quitaron `backend/docker-compose.prod.yml`, `backend/.env.prod.example`
+   y `frontend/.env.prod.example`, reemplazados por `docker-compose.prod.yml`
+   y `.env.prod.example` de la raíz.
+3. **`.gitattributes`**: los `.sh` siempre con fin de línea LF.
 
 ---
 

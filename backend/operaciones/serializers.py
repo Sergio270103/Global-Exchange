@@ -45,6 +45,7 @@ class OperacionSerializer(serializers.ModelSerializer):
             'estado', 'fecha_cotizacion', 'fecha_confirmacion',
             'fecha_cancelacion', 'cancelada_por', 'cancelada_por_nombre',
             'motivo_cancelacion',
+            'reversion_emision_aplicada', 'reversion_emision_pendiente', 'reversion_emision_error',
             'tolerancia_segundos', 'segundos_restantes',
         ]
         read_only_fields = fields

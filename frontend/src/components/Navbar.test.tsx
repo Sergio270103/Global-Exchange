@@ -1,9 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import Navbar from '@/components/Navbar'
+import Notifications from '@/pages/Notifications'
 import { historialDisparos } from '@/services/alertas'
+import { apiFetch } from '@/services/api'
 import { type AuthUser } from '@/types'
+
+vi.mock('@/services/api', async importOriginal => ({
+  ...await importOriginal<typeof import('@/services/api')>(),
+  apiFetch: vi.fn(),
+}))
 
 vi.mock('@/services/alertas', async importOriginal => {
   const real = await importOriginal<typeof import('@/services/alertas')>()
@@ -43,6 +50,7 @@ type NavbarPage = 'dashboard' | 'admin-clients'
 describe('Navbar (barra superior)', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  vi.mocked(apiFetch).mockResolvedValue(null)
     localStorage.clear()
     vi.mocked(historialDisparos).mockResolvedValue([])
   })
@@ -65,9 +73,26 @@ describe('Navbar (barra superior)', () => {
     expect(await screen.findByText('1')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: /Notificaciones/ }))
     expect(await screen.findByText('Alerta ejecutada: USD/PYG')).toBeInTheDocument()
-    expect(screen.getByText('Marcar todas como leídas')).toBeInTheDocument()
-    await user.click(screen.getByText('Marcar todas como leídas'))
-    expect(screen.queryByText('1')).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('1')).not.toBeInTheDocument())
+    expect(apiFetch).toHaveBeenCalledWith('/alertas/historial/leer/', {
+      method: 'PATCH', body: JSON.stringify({ ids: [4] }),
+    })
+  })
+
+  it('actualiza la campanita al leer o eliminar desde Notificaciones', async () => {
+    vi.mocked(historialDisparos).mockResolvedValue([
+      { id: 4, alerta: 1, moneda_codigo: 'USD', tasa_alcanzada: 7550, umbral: 7500, direccion: 'supera', creado: '2026-10-10T11:00:00Z', leido: false, eliminado: false },
+      { id: 5, alerta: 2, moneda_codigo: 'EUR', tasa_alcanzada: 7950, umbral: 8000, direccion: 'baja', creado: '2026-10-10T12:00:00Z', leido: false, eliminado: false },
+    ])
+    const user = userEvent.setup()
+    renderNavbar()
+    render(<Notifications />)
+    const campana = screen.getByRole('button', { name: 'Notificaciones' })
+    await waitFor(() => expect(campana).toHaveTextContent('2'))
+    await user.click((await screen.findAllByRole('button', { name: 'Marcar como leída' }))[0])
+    await waitFor(() => expect(campana).toHaveTextContent('1'))
+    await user.click((await screen.findAllByRole('button', { name: 'Eliminar' }))[1])
+    await waitFor(() => expect(campana).toHaveTextContent(/^$/))
   })
 
   it('muestra "Sin notificaciones" cuando no hay disparos', async () => {

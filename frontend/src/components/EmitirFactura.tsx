@@ -11,7 +11,8 @@
  *
  * @module EmitirFactura
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import DescargarKude from './DescargarKude'
 import {
   consultarEstadoFactura,
   emitirFactura,
@@ -24,9 +25,12 @@ import {
 
 interface Props {
   operacionId: number
+  onFacturaActualizada?: (factura: FacturaElectronica | null) => void
+  mostrarDescarga?: boolean
 }
 
 const ESTILO_ESTADO: Record<EstadoFactura, string> = {
+  PROCESANDO: 'bg-amber-50 text-amber-700',
   ANULADA: 'bg-slate-100 text-slate-600', DEVUELTA: 'bg-blue-100 text-blue-600',
   ERROR: 'bg-rose-50 text-rose-700 border-rose-200',
   VERIFICAR: 'bg-amber-50 text-amber-700 border-amber-200',
@@ -36,15 +40,33 @@ const ESTILO_ESTADO: Record<EstadoFactura, string> = {
 }
 
 /** Estados con los que ya no se puede volver a emitir. */
-const ACTIVOS: EstadoFactura[] = ['VERIFICAR', 'EMITIDA', 'APROBADA']
+const ACTIVOS: EstadoFactura[] = ['VERIFICAR', 'EMITIDA', 'APROBADA', 'PROCESANDO', 'ANULADA', 'DEVUELTA']
 
-export default function EmitirFactura({ operacionId }: Props) {
+export default function EmitirFactura({ operacionId, onFacturaActualizada, mostrarDescarga = true }: Props) {
   const [uso, setUso] = useState<UsoFacturas | null>(null)
   const [factura, setFactura] = useState<FacturaElectronica | null>(null)
   const [email, setEmail] = useState('')
   const [cargando, setCargando] = useState(true)
   const [enviando, setEnviando] = useState(false)
   const [error, setError] = useState('')
+  const consultando = useRef(false)
+  useEffect(() => { onFacturaActualizada?.(factura) }, [factura, onFacturaActualizada])
+
+  useEffect(() => {
+    if (!factura?.cdc || !['EMITIDA', 'VERIFICAR', 'PROCESANDO'].includes(factura.estado)) return
+    let vigente = true
+    const timer = window.setInterval(async () => {
+      if (consultando.current) return
+      consultando.current = true
+      try {
+        const actualizada = await consultarEstadoFactura(factura.id)
+        if (vigente) { setFactura(actualizada); setError('') }
+      } catch (err) {
+        if (vigente) setError(err instanceof Error ? err.message : 'No se pudo consultar SIFEN.')
+      } finally { consultando.current = false }
+    }, 10_000)
+    return () => { vigente = false; window.clearInterval(timer) }
+  }, [factura?.id, factura?.estado, factura?.cdc])
 
   const cargar = useCallback(async () => {
     try {
@@ -92,7 +114,8 @@ export default function EmitirFactura({ operacionId }: Props) {
   }
 
   const handleEstado = async () => {
-    if (!factura) return
+    if (!factura || consultando.current) return
+    consultando.current = true
     setEnviando(true)
     setError('')
     try {
@@ -100,6 +123,7 @@ export default function EmitirFactura({ operacionId }: Props) {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'No se pudo consultar el estado.')
     } finally {
+      consultando.current = false
       setEnviando(false)
     }
   }
@@ -109,7 +133,7 @@ export default function EmitirFactura({ operacionId }: Props) {
   }
 
   const activa = factura != null && ACTIVOS.includes(factura.estado)
-  const pagada = uso?.operacion_estado === 'PAGADA'
+  const pagada = uso?.operacion_estado === 'PAGADA' && factura?.estado !== 'RECHAZADA'
   const sinCupo = (uso?.disponibles ?? 0) <= 0
 
   return (
@@ -131,6 +155,10 @@ export default function EmitirFactura({ operacionId }: Props) {
           {error}
         </p>
       )}
+      {factura?.reversion_emision_pendiente && <p role="alert" className="text-rose-600 text-xs">
+        Reversión de billeteras pendiente: {factura.reversion_emision_error}
+      </p>}
+      {mostrarDescarga && <DescargarKude factura={factura} />}
 
       {factura && (
         <div className="space-y-1 text-xs">

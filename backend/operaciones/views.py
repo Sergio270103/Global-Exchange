@@ -39,10 +39,13 @@ from billeteras.models import Billetera, Movimiento
 from clientes.models import Cliente, ClienteUsuario, Comision
 from clientes.permisos import es_cajero
 from cotizaciones.models import Cotizacion
+from cotizaciones.permisos import es_editor_tasas
 from monedas.models import Moneda
 from monedas.permisos import es_admin
-from pagos.models import CuentaBancaria
+from pagos.models import CuentaBancaria, MetodoPago
+from rest_framework.exceptions import ValidationError
 
+from .ganancias import calcular_ganancias
 from .models import Operacion
 from .serializers import (
     CancelarOperacionSerializer,
@@ -66,6 +69,14 @@ METODO_BILLETERA = 'wallet'
 METODO_EFECTIVO = 'efectivo'
 
 
+def validar_metodo_pago(codigo, usuario):
+    """El efectivo de ventanilla conserva su autorización especial."""
+    if codigo == METODO_EFECTIVO and es_cajero(usuario):
+        return
+    if not MetodoPago.objects.filter(codigo=codigo, activo=True).exists():
+        raise ValidationError({'detail': 'El método de pago no existe o está deshabilitado. Seleccioná otro método habilitado.'})
+
+
 class ErrorCotizacion(Exception):
     """Error de negocio al cotizar; el mensaje va tal cual en ``detail``."""
 
@@ -79,7 +90,7 @@ def _redondear(valor: Decimal, codigo: str) -> Decimal:
 
 def _ultima_tasa(moneda: Moneda, lado: str) -> Decimal | None:
     """Última cotización vigente: lado compra o venta."""
-    cot = Cotizacion.objects.filter(moneda=moneda).order_by('-vigente_desde').first()
+    cot = Cotizacion.objects.filter(moneda=moneda).order_by('-vigente_desde', '-pk').first()
     if not cot:
         return None
     return Decimal(str(cot.compra if lado == 'compra' else cot.venta))
@@ -341,6 +352,9 @@ class OperacionViewSet(viewsets.ModelViewSet):
             codigo = moneda.strip().upper()
             qs = qs.filter(Q(moneda_origen__codigo=codigo) | Q(moneda_destino__codigo=codigo))
         estado = params.get('estado')
+        metodo = params.get('metodo')
+        if metodo:
+            qs = qs.filter(metodo_pago=metodo.strip().lower())
         if estado:
             qs = qs.filter(estado=estado.strip().upper())
         buscar = params.get('buscar')
@@ -374,6 +388,21 @@ class OperacionViewSet(viewsets.ModelViewSet):
                 'fecha': op.fecha_creacion.isoformat(),
             })
         return Response(puntos)
+
+    @action(detail=False, methods=['get'], url_path='ganancias')
+    def ganancias(self, request):
+        if not es_editor_tasas(request.user):
+            return Response({'detail': 'No tenés permiso para ver ganancias.'}, status=403)
+        datos = calcular_ganancias(request.query_params)
+        if not es_admin(request.user):
+            datos.pop('filas')
+        return Response(datos)
+
+    @action(detail=False, methods=['get'], url_path='reporte-ganancias')
+    def reporte_ganancias(self, request):
+        if not es_admin(request.user):
+            return Response({'detail': 'Solo un administrador puede ver el reporte.'}, status=403)
+        return Response(calcular_ganancias(request.query_params))
 
     @action(detail=False, methods=['get'], url_path='resumen')
     def resumen(self, request):
@@ -486,6 +515,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
             return Response({'detail': ERROR_CLIENTE}, status=status.HTTP_400_BAD_REQUEST)
 
         es_efectivo = metodo_pago == METODO_EFECTIVO
+        validar_metodo_pago(metodo_pago, request.user)
         if es_efectivo and not es_cajero(request.user):
             return Response(
                 {'detail': 'El pago en efectivo es solo en ventanilla.'},
@@ -640,6 +670,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
                     {'detail': f'La operación ya está {op.get_estado_display().lower()}.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            validar_metodo_pago(op.metodo_pago, request.user)
             if op.metodo_pago in settings.STRIPE_METODOS:
                 return Response(
                     {'detail': 'Esta operación se paga por pasarela (Stripe).'},
@@ -685,6 +716,10 @@ class OperacionViewSet(viewsets.ModelViewSet):
         FONDOS_INSUFICIENTES y no se registra ningún movimiento. Corre dentro
         del ``transaction.atomic()`` de ``confirmar``.
         """
+        # Mantener el orden operación -> serie fiscal -> billeteras para evitar
+        # interbloqueos entre compras y ventas de los mismos clientes.
+        from facturacion.cupos import reservar
+        reservar(op)
         origen = None
         if op.billetera_origen_id:
             origen = Billetera.objects.select_for_update().get(
@@ -737,6 +772,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
     # Iniciar el cobro por pasarela (Stripe Checkout, redirect externo)
     # ------------------------------------------------------------------
     @action(detail=True, methods=['post'], url_path='iniciar-pago')
+    @transaction.atomic
     def iniciar_pago(self, request, pk=None):
         """Crea la Checkout Session y devuelve su URL de pago.
 
@@ -751,7 +787,7 @@ class OperacionViewSet(viewsets.ModelViewSet):
 
         try:
             op = (
-                Operacion.objects.select_related('cliente', 'moneda_origen', 'moneda_destino')
+                Operacion.objects.select_for_update().select_related('cliente', 'moneda_origen', 'moneda_destino')
                 .get(pk=pk)
             )
         except Operacion.DoesNotExist:
@@ -764,17 +800,21 @@ class OperacionViewSet(viewsets.ModelViewSet):
                 {'detail': 'Solo se puede pagar una operación pendiente.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        validar_metodo_pago(op.metodo_pago, request.user)
         if op.metodo_pago not in settings.STRIPE_METODOS:
             return Response(
                 {'detail': 'Esta operación usa confirmación directa.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        from facturacion.cupos import reservar
+        reservar(op)
         url = sesion_abierta(op.stripe_session_id)
         if url:
             return Response({'url': url, 'session_id': op.stripe_session_id})
         try:
             sesion = crear_sesion_checkout(op)
         except ErrorPasarela as err:
+            transaction.set_rollback(True)
             return Response({'detail': str(err)}, status=status.HTTP_400_BAD_REQUEST)
 
         op.stripe_session_id = sesion['id']

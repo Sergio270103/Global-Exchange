@@ -70,6 +70,9 @@ class IntentoFacturaSerializer(serializers.ModelSerializer):
 
 
 class FacturaElectronicaSerializer(serializers.ModelSerializer):
+    reversion_emision_aplicada = serializers.BooleanField(source='operacion.reversion_emision_aplicada', read_only=True)
+    reversion_emision_pendiente = serializers.BooleanField(source='operacion.reversion_emision_pendiente', read_only=True)
+    reversion_emision_error = serializers.CharField(source='operacion.reversion_emision_error', read_only=True)
     intentos = IntentoFacturaSerializer(many=True, read_only=True)
     cliente_nombre = serializers.SerializerMethodField()
     tipo_operacion = serializers.CharField(source='operacion.tipo_operacion', read_only=True)
@@ -96,6 +99,9 @@ class FacturaElectronicaSerializer(serializers.ModelSerializer):
             'cancelada_por_nombre', 'inutilizada_por_nombre',
             'puede_cancelar', 'puede_inutilizar', 'puede_nota_credito',
             'eventos', 'notas_credito', 'pdf_pendiente', 'puede_gestionar',
+            'gestion_rol', 'gestion_usuario_sub', 'gestion_usuario_nombre',
+            'gestion_tipo', 'reversion_aplicada', 'reversion_pendiente', 'reversion_error',
+            'reversion_emision_aplicada', 'reversion_emision_pendiente', 'reversion_emision_error',
         ]
         read_only_fields = fields
 
@@ -116,6 +122,7 @@ class FacturaElectronicaSerializer(serializers.ModelSerializer):
             obj.estado == FacturaElectronica.ESTADO_APROBADA
             and obj.estado_cancelacion not in (EVENTO_PENDIENTE, EVENTO_APROBADA)
             and obj.estado_inutilizacion != EVENTO_APROBADA
+            and not obj.notas_credito.filter(estado__in=NotaCreditoElectronica.ESTADOS_ACTIVOS).exists()
         )
 
     def get_puede_inutilizar(self, obj) -> bool:
@@ -126,7 +133,7 @@ class FacturaElectronicaSerializer(serializers.ModelSerializer):
                 FacturaElectronica.ESTADO_VERIFICAR,
             )
             and obj.numero
-            and obj.estado_cancelacion != EVENTO_APROBADA
+            and obj.estado_cancelacion not in (EVENTO_PENDIENTE, EVENTO_APROBADA)
             and obj.estado_inutilizacion not in (EVENTO_PENDIENTE, EVENTO_APROBADA)
         )
 
@@ -135,6 +142,6 @@ class FacturaElectronicaSerializer(serializers.ModelSerializer):
             estado__in=NotaCreditoElectronica.ESTADOS_ACTIVOS)
         return bool(
             obj.estado == FacturaElectronica.ESTADO_APROBADA
-            and obj.estado_cancelacion != EVENTO_APROBADA
+            and obj.estado_cancelacion not in (EVENTO_PENDIENTE, EVENTO_APROBADA)
             and not activas.exists()
         )

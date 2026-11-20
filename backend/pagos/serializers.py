@@ -1,8 +1,10 @@
 """Serializers del módulo de pagos."""
 
 from rest_framework import serializers
+from rest_framework.exceptions import PermissionDenied
 
 from .models import CuentaBancaria, MetodoPago
+from .permisos import clientes_asociados
 
 
 class MetodoPagoSerializer(serializers.ModelSerializer):
@@ -25,6 +27,12 @@ class CuentaBancariaSerializer(serializers.ModelSerializer):
     cliente_nombre = serializers.CharField(source='cliente.nombre', read_only=True)
     moneda_codigo = serializers.CharField(source='moneda.codigo', read_only=True)
     numero_enmascarado = serializers.SerializerMethodField()
+
+    def validate_cliente(self, cliente):
+        request = self.context.get('request')
+        if not clientes_asociados(getattr(request, 'user', None)).filter(pk=cliente.pk).exists():
+            raise PermissionDenied('No estás asociado a este cliente.')
+        return cliente
 
     class Meta:
         model = CuentaBancaria

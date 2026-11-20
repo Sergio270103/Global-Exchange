@@ -4,10 +4,16 @@
  * @module Notifications.test
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import Notifications from '@/pages/Notifications'
 import { historialDisparos } from '@/services/alertas'
+import { apiFetch } from '@/services/api'
+
+vi.mock('@/services/api', async importOriginal => ({
+  ...await importOriginal<typeof import('@/services/api')>(),
+  apiFetch: vi.fn(),
+}))
 
 vi.mock('@/services/alertas', async importOriginal => {
   const real = await importOriginal<typeof import('@/services/alertas')>()
@@ -31,6 +37,7 @@ const disparos = [
 
 beforeEach(() => {
   vi.clearAllMocks()
+  vi.mocked(apiFetch).mockResolvedValue(null)
   localStorage.clear()
   vi.mocked(historialDisparos).mockResolvedValue(disparos as never)
 })
@@ -56,19 +63,17 @@ describe('Notifications (disparos reales)', () => {
     render(<Notifications />)
     await screen.findByText('Alerta ejecutada: USD/PYG')
     await user.click(screen.getByRole('button', { name: '✓ Marcar todas como leídas' }))
-    expect(screen.queryAllByText('Marcar como leída')).toHaveLength(0)
+    await waitFor(() => expect(screen.queryAllByText('Marcar como leída')).toHaveLength(0))
   })
 
-  it('las leídas persisten al recargar', async () => {
-    const user = userEvent.setup()
-    const { unmount } = render(<Notifications />)
-    await screen.findByText('Alerta ejecutada: USD/PYG')
-    await user.click(screen.getByRole('button', { name: '✓ Marcar todas como leídas' }))
-    expect(screen.queryAllByText('Marcar como leída')).toHaveLength(0)
-    unmount()
+  it('respeta el estado persistido en el servidor al recargar', async () => {
+    vi.mocked(historialDisparos).mockResolvedValue(disparos.map(d => ({
+      ...d, leido: true, eliminado: d.id === 5,
+    })) as never)
     render(<Notifications />)
     await screen.findByText('Alerta ejecutada: USD/PYG')
-    expect(screen.queryAllByText('Marcar como leída')).toHaveLength(0)
+    expect(screen.queryByText('Alerta ejecutada: EUR/PYG')).not.toBeInTheDocument()
+    expect(screen.queryByText('Marcar como leída')).not.toBeInTheDocument()
   })
 
   it('abre la pestaña de configuración de alertas', async () => {

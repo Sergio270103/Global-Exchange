@@ -60,7 +60,12 @@ class Operacion(models.Model):
     MOTIVO_FONDOS = 'FONDOS_INSUFICIENTES'
     MOTIVO_PAGO_FALLIDO = 'PAGO_FALLIDO'
     MOTIVO_ANULADA = 'ANULADA'
+    MOTIVO_SIFEN = 'RECHAZO_SIFEN'
+    reversion_emision_aplicada = models.BooleanField(default=False)
+    reversion_emision_pendiente = models.BooleanField(default=False)
+    reversion_emision_error = models.CharField(max_length=500, blank=True, default='')
     MOTIVOS_CANCELACION = (
+        (MOTIVO_SIFEN, 'Factura rechazada por SIFEN'),
         (MOTIVO_COTIZACION, 'No aceptó la nueva cotización'),
         (MOTIVO_DESISTIO, 'El cliente desistió'),
         (MOTIVO_FONDOS, 'Fondos insuficientes'),

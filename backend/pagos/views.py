@@ -1,8 +1,8 @@
 """Vistas del módulo de pagos.
 
 - ``/api/metodos-pago/`` catálogo global; escritura solo admin (RF42).
-- ``/api/cuentas-bancarias/`` cuentas del cliente; cualquier usuario
-  autenticado opera (filtros ``?cliente=`` ``?activa=`` ``?buscar=``);
+- ``/api/cuentas-bancarias/`` cuentas de clientes asociados al usuario
+  autenticado (filtros ``?cliente=`` ``?activa=`` ``?buscar=``);
   la baja es lógica. El Nº de cuenta nunca se expone en claro.
 - ``/api/payments/webhook/`` eventos de Stripe (sin autenticación: la
   firma del webhook es la credencial). Marca PAGADA al acreditarse el
@@ -17,16 +17,19 @@ from django.conf import settings
 from django.db import transaction
 from django.db.models import Q
 from django.http import HttpResponse, JsonResponse
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from rest_framework import status, viewsets
+from rest_framework.exceptions import NotFound
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from clientes.permisos import SoloAdminEscribe
 
 from .models import CuentaBancaria, MetodoPago
+from .permisos import clientes_asociados
 from .serializers import CuentaBancariaSerializer, MetodoPagoSerializer
 
 logger = logging.getLogger(__name__)
@@ -72,17 +75,17 @@ class MetodoPagoViewSet(viewsets.ModelViewSet):
 class CuentaBancariaViewSet(viewsets.ModelViewSet):
     """Catálogo de cuentas bancarias del cliente.
 
-    Cualquier usuario autenticado puede listar y operar sobre sus propias
-    cuentas. Los filtros disponibles son ``?cliente=``, ``?activa=`` y
+    El usuario solo puede operar sobre cuentas de sus clientes asociados,
+    independientemente del rol. Los filtros son ``?cliente=``, ``?activa=`` y
     ``?buscar=``. La baja es lógica (marca la cuenta como inactiva).
 
     Rutas:
     * ``GET    /api/cuentas-bancarias/``       lista de cuentas
-    * ``POST   /api/cuentas-bancarias/``       nueva cuenta (propia o admin)
+    * ``POST   /api/cuentas-bancarias/``       nueva cuenta de cliente asociado
     * ``GET    /api/cuentas-bancarias/{id}/`` detalle
     * ``PUT    /api/cuentas-bancarias/{id}/`` reemplazo completo
     * ``PATCH  /api/cuentas-bancarias/{id}/`` edición parcial
-    * ``POST   /api/cuentas-bancarias/{id}/`` desactivar (lógica)
+    * ``DELETE /api/cuentas-bancarias/{id}/`` desactivar (lógica)
     """
 
     queryset = CuentaBancaria.objects.select_related('cliente', 'moneda').all()
@@ -90,10 +93,16 @@ class CuentaBancariaViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        permitidos = clientes_asociados(self.request.user)
+        qs = super().get_queryset().filter(cliente__in=permitidos)
         cliente = self.request.query_params.get('cliente')
-        if cliente:
-            qs = qs.filter(cliente_id=cliente)
+        if cliente is not None:
+            try:
+                cliente_id = int(cliente)
+            except (TypeError, ValueError):
+                raise NotFound('Cliente no disponible.')
+            cliente = get_object_or_404(permitidos, pk=cliente_id)
+            qs = qs.filter(cliente=cliente)
         activa = self.request.query_params.get('activa')
         if activa is not None:
             qs = qs.filter(activa=activa.lower() in ('1', 'true', 'si', 'sí'))

@@ -26,7 +26,9 @@ def _cliente_jwks() -> PyJWKClient:
     global _jwks_client
     if _jwks_client is None:
         conf = settings.KEYCLOAK
-        url = f"{conf['SERVER_URL']}/realms/{conf['REALM']}/protocol/openid-connect/certs"
+        # En producción las claves se piden por la red interna de Docker.
+        base = (conf.get('INTERNAL_URL') or conf['SERVER_URL']).rstrip('/')
+        url = f"{base}/realms/{conf['REALM']}/protocol/openid-connect/certs"
         _jwks_client = PyJWKClient(url, cache_keys=True)
     return _jwks_client
 

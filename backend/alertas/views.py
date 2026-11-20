@@ -8,7 +8,7 @@
 - ``GET /api/alertas/historial/`` disparos del usuario (alertas enviadas).
 """
 
-from rest_framework import viewsets
+from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -46,6 +46,22 @@ class AlertaTasaViewSet(viewsets.ModelViewSet):
             raise ValidationError(
                 'El estado solo puede ser activa o pausada.')
         serializer.save()
+
+    @action(detail=False, methods=['patch'], url_path='historial/leer')
+    def leer_historial(self, request):
+        ids = serializers.ListField(child=serializers.IntegerField(min_value=1))
+        ids = ids.run_validation(request.data.get('ids'))
+        DisparoAlerta.objects.filter(
+            alerta__usuario_sub=self._sub(), eliminado=False, id__in=ids,
+        ).update(leido=True)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @action(detail=False, methods=['delete'], url_path=r'historial/(?P<disparo_id>[0-9]+)')
+    def eliminar_disparo(self, request, disparo_id):
+        DisparoAlerta.objects.filter(
+            alerta__usuario_sub=self._sub(), pk=disparo_id,
+        ).update(eliminado=True)
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
     @action(detail=False, methods=['get'], url_path='historial')
     def historial(self, request):

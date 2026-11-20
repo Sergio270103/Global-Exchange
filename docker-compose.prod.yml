@@ -1,0 +1,154 @@
+# docker-compose.prod.yml - Ambiente de producción completo (PI-96)
+#
+# Levanta TODO el sistema detrás de una sola dirección pública de ngrok:
+#
+#   Internet -> ngrok -> gateway (nginx) -> /        frontend (React)
+#                                           /api/    backend (Django + gunicorn)
+#                                           /auth/   Keycloak
+#
+# Lo levanta scripts/deploy.sh prod (o deploy.ps1 prod, PI-92) con un solo
+# comando. A mano, desde la raíz del repositorio:
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
+#   docker compose --env-file .env.prod -f docker-compose.prod.yml run --rm -T keycloak-init
+# La configuración vive en .env.prod (plantilla: .env.prod.example).
+# Pasos completos en docs/DEPLOY.md.
+#
+# Solo el gateway publica un puerto, y solo en 127.0.0.1: la base de datos,
+# el backend y Keycloak no quedan expuestos y no chocan con los puertos del
+# modo desarrollo (5433, 8000, 8080).
+
+name: global-exchange-prod
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: global_exchange_bd
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Crea la base "keycloak" la primera vez que se inicializa el volumen.
+      - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # Por TCP: así no da "listo" mientras PostgreSQL todavía se inicializa.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d global_exchange_bd"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  web:
+    build: ./backend
+    image: global-exchange-backend:prod
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    # Stripe, Factura Segura, correo, etc. se leen tal cual de .env.prod.
+    env_file:
+      - .env.prod
+    # Lo que depende de la arquitectura se fija acá y pisa a .env.prod.
+    environment:
+      DJANGO_DEBUG: "False"
+      DJANGO_ALLOWED_HOSTS: ${NGROK_DOMAIN},localhost,127.0.0.1
+      POSTGRES_DB: global_exchange_bd
+      POSTGRES_USER: postgres
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      # URL pública: es el "issuer" de los tokens que valida el backend.
+      KEYCLOAK_URL: https://${NGROK_DOMAIN}/auth
+      # URL interna: de acá se bajan las claves (JWKS) sin salir a internet.
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080/auth
+      CORS_ALLOWED_ORIGINS: https://${NGROK_DOMAIN}
+      FRONTEND_URL: https://${NGROK_DOMAIN}
+      PAYMENT_GATEWAY: stripe
+    # Las migraciones se aplican solas antes de arrancar gunicorn.
+    command:
+      - sh
+      - -c
+      - python manage.py migrate --noinput && exec gunicorn --bind 0.0.0.0:8000 --workers 3 --timeout 60 core.wsgi:application
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - media:/app/media
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.2
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    command: start --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USER:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      # Dirección pública fija: los enlaces de los correos y los tokens
+      # salen siempre con el dominio de ngrok.
+      KC_HOSTNAME: https://${NGROK_DOMAIN}/auth
+      KC_HTTP_RELATIVE_PATH: /auth
+      # El HTTPS lo termina ngrok; adentro de la red Docker se habla HTTP.
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_CACHE: local
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://db:5432/keycloak
+      KC_DB_USERNAME: postgres
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      # Mismo realm que en desarrollo; solo se importa si todavía no existe.
+      - ./frontend/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+      - ./frontend/keycloak/themes/global-exchange:/opt/keycloak/themes/global-exchange:ro
+      - keycloak_data:/opt/keycloak/data
+
+  # Tarea de una sola vez (no queda corriendo): configura Keycloak después
+  # del arranque. Se ejecuta con "docker compose ... run --rm -T keycloak-init".
+  keycloak-init:
+    image: global-exchange-backend:prod
+    pull_policy: never
+    profiles: ["tools"]
+    restart: "no"
+    depends_on:
+      - keycloak
+    env_file:
+      - .env.prod
+    environment:
+      PUBLIC_URL: https://${NGROK_DOMAIN}
+      KEYCLOAK_INTERNAL_URL: http://keycloak:8080/auth
+    volumes:
+      - ./scripts/keycloak_prod_init.py:/deploy/keycloak_prod_init.py:ro
+    command: ["python", "/deploy/keycloak_prod_init.py"]
+
+  gateway:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: /api
+        VITE_KEYCLOAK_URL: https://${NGROK_DOMAIN}/auth
+        VITE_KEYCLOAK_REALM: ${KEYCLOAK_REALM:-Global-Exchange}
+        VITE_KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-global-exchange-frontend}
+    restart: unless-stopped
+    depends_on:
+      - web
+      - keycloak
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8081}:80"
+
+  # Túnel público. Sin NGROK_AUTHTOKEN se puede omitir con --scale ngrok=0
+  # y usar el ngrok instalado en la compu.
+  ngrok:
+    image: ngrok/ngrok:latest
+    restart: unless-stopped
+    depends_on:
+      - gateway
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
+    command: ["http", "--url=https://${NGROK_DOMAIN}", "--log=stdout", "http://gateway:80"]
+
+volumes:
+  pgdata:
+  keycloak_data:
+  media:

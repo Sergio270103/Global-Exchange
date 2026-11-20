@@ -71,10 +71,11 @@ class ClienteViewSet(viewsets.ModelViewSet):
             qs = qs.filter(tipo=tipo.strip().upper())
         buscar = self.request.query_params.get('buscar')
         if buscar:
-            qs = qs.filter(
-                Q(nombre__icontains=buscar) | Q(documento__icontains=buscar)
-                | Q(email__icontains=buscar)
-            )
+            for termino in buscar.split():
+                qs = qs.filter(
+                    Q(nombre__icontains=termino) | Q(apellido__icontains=termino)
+                    | Q(documento__icontains=termino) | Q(email__icontains=termino)
+                )
         documento = self.request.query_params.get('documento')
         if documento:
             qs = qs.filter(documento__iexact=documento.strip())

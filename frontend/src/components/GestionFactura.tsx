@@ -5,14 +5,16 @@
  * estado de los eventos, permite solicitar la cancelación de una factura
  * aprobada, inutilizar un número rechazado y emitir una nota de crédito
  * total. Las operaciones son explícitas: el operador confirma cada paso y
- * después consulta el estado en SIFEN. No toca caja ni billeteras.
+ * después consulta el estado en SIFEN. Los saldos se revierten solo después de la aprobación fiscal.
  *
  * @module GestionFactura
  */
 import { useEffect, useState } from 'react'
+import ReversionFactura from './ReversionFactura'
 import { createPortal } from 'react-dom'
 import {
   cancelarFactura,
+  type ContextoGestion,
   consultarCancelacion,
   consultarEstadoNotaCredito,
   consultarInutilizacion,
@@ -32,6 +34,7 @@ import {
 
 interface Props {
   factura: FacturaElectronicaCompleta
+  contextoRol?: ContextoGestion
   onActualizada: () => void | Promise<void>
 }
 
@@ -107,7 +110,7 @@ function BotonDescargaNc({
   )
 }
 
-export default function GestionFactura({ factura, onActualizada }: Props) {
+export default function GestionFactura({ factura, onActualizada, contextoRol = 'administrador' }: Props) {
   const [abierto, setAbierto] = useState(false)
   const [accion, setAccion] = useState<Accion>(null)
   const [motivo, setMotivo] = useState('')
@@ -157,7 +160,7 @@ export default function GestionFactura({ factura, onActualizada }: Props) {
     setError('')
     setAviso('')
     try {
-      const r = await cancelarFactura(factura.id, motivo.trim())
+      const r = await cancelarFactura(factura.id, motivo.trim(), contextoRol)
       setResultado(r)
       setAccion(null)
       setAviso('Solicitud de anulación enviada. Consultá el estado en SIFEN en ~1 minuto.')
@@ -191,7 +194,7 @@ export default function GestionFactura({ factura, onActualizada }: Props) {
     setError('')
     setAviso('')
     try {
-      const nota = await emitirNotaCredito(factura.id, motivoNc, email.trim())
+      const nota = await emitirNotaCredito(factura.id, motivoNc, email.trim(), contextoRol)
       setNcRecien(nota)
       setAccion(null)
       setAviso(`Nota de crédito ${nota.numero_completo} emitida (${nota.estado}).`)
@@ -292,6 +295,7 @@ export default function GestionFactura({ factura, onActualizada }: Props) {
             </div>
 
             <div className="flex-1 min-h-0 overflow-y-auto px-6 py-4 space-y-4">
+              <ReversionFactura factura={factura} onActualizada={onActualizada} />
               {error && (
                 <p role="alert" className="text-rose-600 bg-rose-50 border border-rose-200 rounded-lg p-2">
                   {error}

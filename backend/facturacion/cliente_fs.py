@@ -170,11 +170,12 @@ def calcular_de(de_resumido: dict) -> dict:
 
     Devuelve el DE completo (``results[0]['DE']``) listo para generar.
     """
+    de_resumido = _de_seguro(de_resumido)
     if modo_simulado():
         return dict(de_resumido)
     datos = _llamar('calcular_de', {'DE': de_resumido})
     try:
-        return datos['results'][0]['DE']
+        return _de_seguro(datos['results'][0]['DE'])
     except (KeyError, IndexError, TypeError) as exc:
         raise ErrorFacturaSegura(
             'calcular_de respondió sin el DE calculado.', respuesta=datos
@@ -186,6 +187,7 @@ def generar_de(de: dict) -> tuple[str, dict]:
 
     Devuelve ``(cdc, respuesta)``. CONSUME el número ``dNumDoc``.
     """
+    de = _de_seguro(de)
     if modo_simulado():
         cdc = _cdc_simulado(de)
         return cdc, _respuesta_simulada([{'CDC': cdc}])
@@ -196,6 +198,14 @@ def generar_de(de: dict) -> tuple[str, dict]:
         # Respondió OK pero sin CDC: no sabemos si quedó generado.
         raise SinRespuesta('generar_de respondió OK pero sin CDC.') from exc
     return cdc, datos
+
+
+def _de_seguro(de):
+    from .armado import DatosIncompletos, sanitizar_de
+    try:
+        return sanitizar_de(de)
+    except DatosIncompletos as exc:
+        raise ErrorFacturaSegura(str(exc)) from exc
 
 
 def solicitar_cancelacion(cdc: str, ruc_emisor: str) -> dict:

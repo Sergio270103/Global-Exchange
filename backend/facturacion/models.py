@@ -56,11 +56,68 @@ MOTIVOS_NC = (
 MOTIVOS_NC_CODIGOS = tuple(codigo for codigo, _ in MOTIVOS_NC)
 
 
-class FacturaElectronica(models.Model):
+class ReservaEmision(models.Model):
+    """Cupo local retenido antes del pago; no modifica documentos históricos."""
+    operacion = models.OneToOneField('operaciones.Operacion', on_delete=models.PROTECT,
+                                    related_name='reserva_emision')
+    simulada = models.BooleanField()
+    establecimiento = models.CharField(max_length=3)
+    punto_expedicion = models.CharField(max_length=3)
+    timbrado = models.CharField(max_length=16)
+    consumida = models.BooleanField(default=False)
+    creada_en = models.DateTimeField(auto_now_add=True)
+
+
+class DocumentoNumerado(models.Model):
+    establecimiento = models.CharField(max_length=3, blank=True, default='')
+    punto_expedicion = models.CharField(max_length=3, blank=True, default='')
+    timbrado = models.CharField(max_length=16, blank=True, default='')
+    intentos_numeracion = models.JSONField(default=list, blank=True)
+
+    class Meta:
+        abstract = True
+
+    def save(self, *args, **kwargs):
+        if self._state.adding:
+            from .cliente_fs import config
+            origen = self.de_enviado or config().get('EMISOR', {})
+            for campo, clave in (('establecimiento', 'dEst'),
+                                 ('punto_expedicion', 'dPunExp'), ('timbrado', 'dNumTim')):
+                if not getattr(self, campo):
+                    setattr(self, campo, str(origen.get(clave, '')))
+        return super().save(*args, **kwargs)
+
+
+class CorrelativoDocumento(models.Model):
+    tipo = models.CharField(max_length=1, choices=(('1', 'Factura'), ('5', 'Nota de crédito')))
+    simulada = models.BooleanField(default=False)
+    establecimiento = models.CharField(max_length=3)
+    punto_expedicion = models.CharField(max_length=3)
+    timbrado = models.CharField(max_length=16)
+    ultimo = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=['tipo', 'simulada', 'establecimiento', 'punto_expedicion', 'timbrado'],
+            name='correlativo_por_serie_tipo')]
+
+
+class FacturaElectronica(DocumentoNumerado):
     """Factura electrónica emitida (o intentada) para una operación."""
 
     ESTADO_ANULADA = 'ANULADA'
     ESTADO_DEVUELTA = 'DEVUELTA'
+    ESTADO_PROCESANDO = 'PROCESANDO'
+    gestion_rol = models.CharField(max_length=16, blank=True, default='')
+    gestion_usuario_sub = models.CharField(max_length=160, blank=True, default='')
+    gestion_usuario_nombre = models.CharField(max_length=160, blank=True, default='')
+    gestion_tipo = models.CharField(max_length=12, blank=True, default='')
+    reversion_aplicada = models.BooleanField(default=False)
+    reversion_pendiente = models.BooleanField(default=False)
+    reversion_error = models.CharField(max_length=500, blank=True, default='')
+    reversion_turno = models.ForeignKey(
+        'cajas.TurnoCaja', on_delete=models.PROTECT, null=True, blank=True,
+        related_name='reversiones_facturas')
     pdf_pendiente = models.BooleanField(default=False)
     pdf_cdc = models.CharField(max_length=64, blank=True)
     ESTADO_ERROR = 'ERROR'
@@ -69,6 +126,7 @@ class FacturaElectronica(models.Model):
     ESTADO_APROBADA = 'APROBADA'
     ESTADO_RECHAZADA = 'RECHAZADA'
     ESTADOS = (
+        (ESTADO_PROCESANDO, 'Pendiente de SIFEN'),
         (ESTADO_ANULADA, 'Anulada'),
         (ESTADO_DEVUELTA, 'Devuelta'),
         (ESTADO_ERROR, 'Error (no generada)'),
@@ -78,10 +136,10 @@ class FacturaElectronica(models.Model):
         (ESTADO_RECHAZADA, 'Rechazada'),
     )
     #: Estados que impiden emitir otra factura para la misma operación.
-    ESTADOS_ACTIVOS = (ESTADO_VERIFICAR, ESTADO_EMITIDA, ESTADO_APROBADA, ESTADO_ANULADA, ESTADO_DEVUELTA)
+    ESTADOS_ACTIVOS = (ESTADO_VERIFICAR, ESTADO_EMITIDA, ESTADO_APROBADA, ESTADO_ANULADA, ESTADO_DEVUELTA, ESTADO_PROCESANDO)
     #: Estados que consumen un número del rango asignado.
     ESTADOS_CON_NUMERO = (
-        ESTADO_VERIFICAR, ESTADO_EMITIDA, ESTADO_APROBADA, ESTADO_RECHAZADA, ESTADO_ANULADA, ESTADO_DEVUELTA)
+        ESTADO_VERIFICAR, ESTADO_EMITIDA, ESTADO_APROBADA, ESTADO_RECHAZADA, ESTADO_ANULADA, ESTADO_DEVUELTA, ESTADO_PROCESANDO)
 
     consume_emision = models.BooleanField(default=False)
 
@@ -176,16 +234,25 @@ class FacturaElectronica(models.Model):
             # aprobadas) en el mismo modo.
             models.UniqueConstraint(
                 fields=['operacion', 'simulada'],
-                condition=Q(estado__in=('VERIFICAR', 'EMITIDA', 'APROBADA')),
+                condition=Q(estado__in=('VERIFICAR', 'EMITIDA', 'APROBADA', 'PROCESANDO')),
                 name='una_factura_activa_por_operacion',
             ),
             # Un número del rango se usa una sola vez por modo.
             models.UniqueConstraint(
-                fields=['numero', 'simulada'],
+                fields=['numero', 'simulada', 'establecimiento', 'punto_expedicion', 'timbrado'],
                 condition=Q(numero__isnull=False),
                 name='numero_factura_unico',
             ),
         ]
+
+    def save(self, *args, **kwargs):
+        from django.db import transaction
+        with transaction.atomic():
+            if self.pk:
+                type(self).objects.select_for_update().filter(pk=self.pk).first()
+            super().save(*args, **kwargs)
+            from .historial import registrar_estado
+            registrar_estado(self)
 
     def __str__(self) -> str:
         return self.numero_completo or f'sin número (op {self.operacion_id})'
@@ -266,7 +333,7 @@ class EventoSIFEN(models.Model):
         return f'{self.get_tipo_display()} {self.factura_id}: {self.estado}'
 
 
-class NotaCreditoElectronica(models.Model):
+class NotaCreditoElectronica(DocumentoNumerado):
     """Nota de crédito electrónica (iTiDE=5) asociada a una factura.
 
     En el MVP es siempre una nota total: replica los ítems, la tasa de IVA y
@@ -355,7 +422,7 @@ class NotaCreditoElectronica(models.Model):
             ),
             # Un número del rango de NC se usa una sola vez por modo.
             models.UniqueConstraint(
-                fields=['numero', 'simulada'],
+                fields=['numero', 'simulada', 'establecimiento', 'punto_expedicion', 'timbrado'],
                 condition=Q(numero__isnull=False),
                 name='numero_nc_unico',
             ),
@@ -376,3 +443,16 @@ class IntentoFactura(models.Model):
 
     class Meta:
         ordering = ['-fecha']
+
+
+class HistorialFactura(models.Model):
+    """Instantánea inmutable de cada resultado fiscal confirmado para reportes."""
+    factura = models.ForeignKey(FacturaElectronica, on_delete=models.PROTECT, related_name='historial_reporte')
+    estado = models.CharField(max_length=10)
+    fecha = models.DateTimeField(null=True, blank=True, db_index=True)
+    registrado_en = models.DateTimeField(auto_now_add=True)
+    datos = models.JSONField(default=dict)
+
+    class Meta:
+        ordering = ['fecha', 'pk']
+        constraints = [models.UniqueConstraint(fields=['factura', 'estado'], name='reporte_factura_estado_unico')]

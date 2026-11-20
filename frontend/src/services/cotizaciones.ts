@@ -8,7 +8,7 @@
  *
  * @module services/cotizaciones
  */
-import { apiFetch } from '@/services/api'
+import { API_BASE, apiFetch } from '@/services/api'
 import { banderaDesdeCodigo } from '@/services/monedas'
 
 /** Cotización tal como la devuelve el backend. */
@@ -33,6 +33,26 @@ interface CotizacionApi {
   venta: string
   vigente_desde: string
   creado_por: string
+}
+
+export interface EvolucionCotizacion {
+  inicio: string
+  fin: string
+  anterior: Cotizacion | null
+  cambios: Cotizacion[]
+}
+
+/** Límites calculados en Paraguay y cotización previa para mantener continuidad. */
+export async function evolucionCotizaciones(
+  moneda: string, periodo: string, desde?: string, hasta?: string,
+): Promise<EvolucionCotizacion> {
+  const qs = new URLSearchParams({ moneda, periodo })
+  if (desde) qs.set('desde', desde)
+  if (hasta) qs.set('hasta', hasta)
+  const datos = await apiFetch<{
+    inicio: string; fin: string; anterior: CotizacionApi | null; cambios: CotizacionApi[]
+  }>(`/cotizaciones/evolucion/?${qs}`)
+  return { ...datos, anterior: datos.anterior ? mapear(datos.anterior) : null, cambios: datos.cambios.map(mapear) }
 }
 
 function mapear(c: CotizacionApi): Cotizacion {
@@ -91,4 +111,12 @@ export async function crearCotizacion(
     body: JSON.stringify({ moneda: monedaId, compra, venta }),
   })
   return mapear(creada)
+}
+
+/** Cotizaciones públicas sin datos del personal ni autenticación. */
+export async function cotizacionesPublicas(signal?: AbortSignal): Promise<Cotizacion[]> {
+  const respuesta = await fetch(`${API_BASE}/cotizaciones/publicas/`, { signal })
+  if (!respuesta.ok) throw new Error('No se pudieron cargar las cotizaciones vigentes.')
+  const datos: CotizacionApi[] = await respuesta.json()
+  return datos.map(c => mapear({ ...c, creado_por: '' }))
 }

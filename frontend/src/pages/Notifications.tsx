@@ -7,63 +7,35 @@
  *
  * @module Notifications
  */
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import AlertasTasas from '@/components/AlertasTasas'
-import { historialDisparos, leidasIds, marcarLeidas, eliminadasIds, marcarEliminada, type DisparoAlerta } from '@/services/alertas'
+import { eliminarNotificacion, marcarNotificacionesLeidas } from '@/services/notificaciones'
+import { useNotificaciones } from '@/services/useNotificaciones'
 
-interface Notificacion {
-  id: number
-  title: string
-  message: string
-  time: string
-  read: boolean
-}
-
-function aNotificacion(d: DisparoAlerta, leidas: number[]): Notificacion {
-  return {
-    id: d.id,
-    title: `Alerta ejecutada: ${d.moneda_codigo}/PYG`,
-    message: `La tasa ${d.direccion === 'supera' ? 'alcanzó o superó' : 'bajó hasta'} ${d.tasa_alcanzada} (umbral ${d.umbral}).`,
-    time: new Date(d.creado).toLocaleString(),
-    read: leidas.includes(d.id),
-  }
-}
-
-export default function Notifications() {
-  const [notifications, setNotifications] = useState<Notificacion[]>([])
-  const [cargando, setCargando] = useState(true)
+export default function Notifications({ usuario }: { usuario?: string }) {
+  const { notifications, cargando, error } = useNotificaciones(usuario)
+  const [errorOperacion, setErrorOperacion] = useState('')
   const [filter, setFilter] = useState('Todas')
-
-  useEffect(() => {
-    historialDisparos()
-      .then(disparos => {
-        const fuera = new Set(eliminadasIds())
-        setNotifications(disparos.filter(d => !fuera.has(d.id)).map(d => aNotificacion(d, leidasIds())))
-      })
-      .catch(() => {})
-      .finally(() => {
-        setCargando(false)
-      })
-  }, [])
 
   const unread = notifications.filter(n => !n.read).length
   const filtered = filter === 'Todas' ? notifications : filter === 'No leídas' ? notifications.filter(n => !n.read) : notifications
 
-  const markRead = (id: number) => {
-    marcarLeidas([id])
-    setNotifications(n => n.map(x => x.id === id ? { ...x, read: true } : x))
+  async function actualizar(operacion: () => Promise<void>) {
+    setErrorOperacion('')
+    try {
+      await operacion()
+    } catch {
+      setErrorOperacion('No se pudo actualizar la notificación.')
+    }
   }
-  const markAllRead = () => {
-    marcarLeidas(notifications.map(n => n.id))
-    setNotifications(n => n.map(x => ({ ...x, read: true })))
-  }
-  const deleteNotif = (id: number) => {
-    marcarEliminada(id)
-    setNotifications(n => n.filter(x => x.id !== id))
-  }
+
+  const markRead = (id: number) => actualizar(() => marcarNotificacionesLeidas([id]))
+  const markAllRead = () => actualizar(() => marcarNotificacionesLeidas(notifications.filter(n => !n.read).map(n => n.id)))
+  const deleteNotif = (id: number) => actualizar(() => eliminarNotificacion(id))
 
   return (
     <div className="max-w-2xl mx-auto space-y-5 animate-fadein">
+      {(error || errorOperacion) && <p role="alert" className="text-sm text-red-600">{error || errorOperacion}</p>}
       {/* Header stats */}
       <div className="grid grid-cols-3 gap-4">
         {[
@@ -107,7 +79,7 @@ export default function Notifications() {
           <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-16 text-center">
             <p className="text-slate-400 font-semibold">Cargando notificaciones…</p>
           </div>
-        ) : filtered.length === 0 ? (
+        ) : error ? null : filtered.length === 0 ? (
           <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-16 text-center">
             <div className="text-5xl mb-4">🔔</div>
             <p className="text-slate-500 font-semibold">Sin notificaciones</p>

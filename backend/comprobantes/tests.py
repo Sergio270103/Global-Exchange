@@ -1,6 +1,8 @@
 """Pruebas de comprobantes internos y del flujo cajero/efectivo (PI-42)."""
 
 from decimal import Decimal
+from django.test import override_settings
+from facturacion.tests import config
 
 from django.utils import timezone
 from rest_framework.test import APIRequestFactory, APITestCase, force_authenticate
@@ -36,6 +38,7 @@ def comprobante_view(acciones):
     return ComprobanteViewSet.as_view(acciones)
 
 
+@override_settings(FACTURASEGURA=config())
 class ComprobanteTest(APITestCase):
     def setUp(self):
         self.factory = APIRequestFactory()
@@ -57,7 +60,7 @@ class ComprobanteTest(APITestCase):
         ClienteUsuario.objects.create(
             cliente=self.cliente, keycloak_id='sub-123', username='tester')
 
-    def _operacion_pagada(self, user, cliente_id, tipo='COMPRA', metodo=''):
+    def _operacion_pagada(self, user, cliente_id, tipo='COMPRA', metodo='transfer'):
         datos = {
             'cliente': cliente_id, 'tipo_operacion': tipo,
             'moneda': 'USD', 'monto_divisa': '100', 'metodo_pago': metodo,
@@ -92,7 +95,7 @@ class ComprobanteTest(APITestCase):
     def test_solo_operacion_pagada(self):
         req = self.factory.post('/api/operaciones/', {
             'cliente': self.cliente.id, 'tipo_operacion': 'COMPRA',
-            'moneda': 'USD', 'monto_divisa': '100'}, format='json')
+            'moneda': 'USD', 'monto_divisa': '100', 'metodo_pago': 'transfer'}, format='json')
         force_authenticate(req, user=self.user)
         resp = OperacionViewSet.as_view({'post': 'create'})(req)
         op = Operacion.objects.get(pk=resp.data['id'])

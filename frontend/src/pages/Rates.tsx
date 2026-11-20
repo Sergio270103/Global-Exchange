@@ -14,23 +14,16 @@ import { useEffect, useMemo, useState } from 'react'
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import { Plus, X } from 'lucide-react'
 import { type AuthUser } from '@/types'
-import { vigentes, historial, crearCotizacion, type Cotizacion } from '@/services/cotizaciones'
+import { vigentes, evolucionCotizaciones, crearCotizacion, type Cotizacion, type EvolucionCotizacion } from '@/services/cotizaciones'
 import { listarMonedas } from '@/services/monedas'
 import { formatearTasa, normalizarTasa, redondearTasa } from '@/utils/tasas'
 
 const periods = ['Hoy', 'Semana', 'Mes', 'Año', 'Personalizado']
 const chartTypes = ['Líneas', 'Barras']
 
-/** Días hacia atrás que cubre cada período (excepto Personalizado). */
-const diasPorPeriodo: Record<string, number> = { Hoy: 1, Semana: 7, Mes: 30, Año: 365 }
-
-interface RatesProps {
-  authUser?: AuthUser | null
-}
-
-function fechaISO(d: Date): string {
-  return d.toISOString().slice(0, 10)
-}
+const zonaParaguay = 'America/Asuncion'
+const fechaHora = (fecha: string | number) => new Date(fecha).toLocaleString('es-PY', { timeZone: zonaParaguay })
+interface RatesProps { authUser?: AuthUser | null }
 
 export default function Rates({ authUser }: RatesProps) {
   // 🔒 Solo admin o analista pueden registrar tasas.
@@ -45,7 +38,9 @@ export default function Rates({ authUser }: RatesProps) {
   const [period, setPeriod] = useState('Mes')
   const [chartType, setChartType] = useState('Líneas')
   const [filterCurrency, setFilterCurrency] = useState('Todos')
-  const [puntos, setPuntos] = useState<Cotizacion[]>([])
+  const [evolucion, setEvolucion] = useState<EvolucionCotizacion | null>(null)
+  const [errorHist, setErrorHist] = useState('')
+  const [revision, setRevision] = useState(0)
   const [cargandoHist, setCargandoHist] = useState(false)
   const [desde, setDesde] = useState('')
   const [hasta, setHasta] = useState('')
@@ -60,48 +55,76 @@ export default function Rates({ authUser }: RatesProps) {
   const [guardando, setGuardando] = useState(false)
 
   useEffect(() => {
-    vigentes()
-      .then(data => {
+    let activo = true
+    let pendiente = false
+    const cargar = async () => {
+      if (pendiente) return
+      pendiente = true
+      try {
+        const data = await vigentes()
+        if (!activo) return
         setRates(data)
-        if (data.length > 0 && !data.some(r => r.moneda === selectedCurrency)) {
-          setSelectedCurrency(data[0].moneda)
-        }
-      })
-      .catch(() => setError('No se pudieron cargar las tasas. Verificá que el backend esté corriendo.'))
-      .finally(() => setCargando(false))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+        setError('')
+        setSelectedCurrency(actual => data.some(r => r.moneda === actual) ? actual : data[0]?.moneda ?? '')
+      } catch {
+        if (activo) setError('No se pudieron cargar las tasas. Intentá nuevamente.')
+      } finally {
+        pendiente = false
+        if (activo) setCargando(false)
+      }
+    }
+    void cargar()
+    const timer = window.setInterval(cargar, 60_000)
+    return () => { activo = false; window.clearInterval(timer) }
+  }, [revision])
 
   useEffect(() => {
     if (!selectedCurrency) return
+    let activo = true
+    let pendiente = false
+    setEvolucion(null)
+    setErrorHist('')
     setCargandoHist(true)
-    let d: string | undefined
-    let h: string | undefined
-    if (period === 'Personalizado') {
-      d = desde || undefined
-      h = hasta || undefined
-    } else {
-      const dias = diasPorPeriodo[period] ?? 30
-      const fin = new Date()
-      const inicio = new Date()
-      inicio.setDate(fin.getDate() - dias)
-      d = fechaISO(inicio)
-      h = fechaISO(fin)
+    const cargar = async () => {
+      if (pendiente) return
+      pendiente = true
+      try {
+        const data = await evolucionCotizaciones(selectedCurrency, period,
+          period === 'Personalizado' ? desde : undefined,
+          period === 'Personalizado' ? hasta : undefined)
+        if (activo) { setEvolucion(data); setErrorHist('') }
+      } catch {
+        if (activo) {
+          setEvolucion(null)
+          setErrorHist('No se pudo cargar el historial. Revisá las fechas y la conexión e intentá nuevamente.')
+        }
+      } finally {
+        pendiente = false
+        if (activo) setCargandoHist(false)
+      }
     }
-    historial(selectedCurrency, d, h)
-      .then(setPuntos)
-      .catch(() => setPuntos([]))
-      .finally(() => setCargandoHist(false))
-  }, [selectedCurrency, period, desde, hasta])
+    void cargar()
+    const timer = window.setInterval(cargar, 60_000)
+    return () => { activo = false; window.clearInterval(timer) }
+  }, [selectedCurrency, period, desde, hasta, revision])
 
-  const displayData = useMemo(
-    () => puntos.map(p => ({
-      date: new Date(p.vigente_desde).toLocaleDateString('es', { day: '2-digit', month: '2-digit' }),
-      buy: p.compra,
-      sell: p.venta,
-    })),
-    [puntos],
-  )
+  const puntos = useMemo(() => evolucion
+    ? [...(evolucion.anterior ? [evolucion.anterior] : []), ...evolucion.cambios]
+    : [], [evolucion])
+  const displayData = useMemo(() => {
+    if (!evolucion) return []
+    const punto = (p: Cotizacion, fecha = p.vigente_desde, continuidad = false) => ({
+      timestamp: new Date(fecha).getTime(), date: fechaHora(fecha),
+      vigente: fechaHora(p.vigente_desde), continuidad, buy: p.compra, sell: p.venta,
+    })
+    const datos = evolucion.cambios.map(p => punto(p))
+    if (evolucion.anterior) datos.unshift(punto(evolucion.anterior, evolucion.inicio, true))
+    const ultima = puntos[puntos.length - 1]
+    if (ultima && datos[datos.length - 1].timestamp < new Date(evolucion.fin).getTime()) {
+      datos.push(punto(ultima, evolucion.fin, true))
+    }
+    return datos
+  }, [evolucion, puntos])
 
   // Variación % entre el primer y el último punto del período.
   const variacion = (moneda: string): number => {
@@ -156,6 +179,7 @@ export default function Rates({ authUser }: RatesProps) {
         return [...resto, nueva]
       })
       setSelectedCurrency(nueva.moneda)
+      setRevision(r => r + 1)
       setShowModal(false)
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'No se pudo registrar la tasa.')
@@ -190,7 +214,7 @@ export default function Rates({ authUser }: RatesProps) {
               </button>
             )}
 
-            <select value={filterCurrency} onChange={e => setFilterCurrency(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-medium text-slate-700 bg-white focus:outline-none">
+            <select aria-label="Filtrar tarjetas por moneda" value={filterCurrency} onChange={e => setFilterCurrency(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 text-[13px] font-medium text-slate-700 bg-white focus:outline-none">
               <option value="Todos">Todas las monedas</option>
               {rates.map(r => <option key={r.moneda} value={r.moneda}>{r.moneda}</option>)}
             </select>
@@ -279,7 +303,7 @@ export default function Rates({ authUser }: RatesProps) {
               <h3 className="font-semibold text-slate-800 text-[15px]" style={{ fontFamily: 'Plus Jakarta Sans, sans-serif' }}>
                 Evolución histórica — {selectedCurrency}
               </h3>
-              <p className="text-[12px] text-slate-400 mt-0.5">Compra y venta en guaraníes</p>
+              <p className="text-[12px] text-slate-400 mt-0.5">Compra y venta en guaraníes · Horario de Paraguay · Actualización cada 60 s</p>
             </div>
             <div className="flex gap-3 flex-wrap">
               <div className="flex rounded-lg border border-slate-200 overflow-hidden">
@@ -287,6 +311,7 @@ export default function Rates({ authUser }: RatesProps) {
                   <button
                     key={p}
                     onClick={() => setPeriod(p)}
+                    aria-pressed={period === p}
                     className={`px-3 py-1.5 text-[12px] font-semibold transition-colors ${period === p ? 'bg-[#0f3460] text-white' : 'text-slate-500 hover:bg-slate-50'}`}
                   >
                     {p}
@@ -298,12 +323,18 @@ export default function Rates({ authUser }: RatesProps) {
                   <button
                     key={ct}
                     onClick={() => setChartType(ct)}
+                    aria-pressed={chartType === ct}
                     className={`px-3 py-1.5 text-[12px] font-semibold transition-colors ${chartType === ct ? 'bg-slate-700 text-white' : 'text-slate-500 hover:bg-slate-50'}`}
                   >
                     {ct}
                   </button>
                 ))}
               </div>
+              <select aria-label="Moneda del gráfico" value={selectedCurrency}
+                onChange={e => setSelectedCurrency(e.target.value)}
+                className="border border-slate-200 rounded-lg px-3 py-1.5 text-[12px] font-semibold text-slate-700 bg-white">
+                {rates.map(r => <option key={r.moneda} value={r.moneda}>{r.nombre} ({r.moneda})</option>)}
+              </select>
             </div>
           </div>
 
@@ -322,6 +353,11 @@ export default function Rates({ authUser }: RatesProps) {
 
           {cargandoHist ? (
             <div className="text-center text-slate-400 text-[13px] py-16">Cargando historial…</div>
+          ) : errorHist ? (
+            <div role="alert" className="text-center text-red-500 text-[13px] py-16">
+              {errorHist}
+              <button onClick={() => setRevision(r => r + 1)} className="ml-2 underline">Reintentar</button>
+            </div>
           ) : displayData.length === 0 ? (
             <div className="text-center text-slate-400 text-[13px] py-16">Sin datos en este período.</div>
           ) : (
@@ -329,22 +365,30 @@ export default function Rates({ authUser }: RatesProps) {
               {chartType === 'Líneas' ? (
                 <LineChart data={displayData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-                  <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} interval={Math.floor((displayData.length || 1) / 8)} />
+                  <XAxis type="number" scale="time" domain={['dataMin', 'dataMax']} dataKey="timestamp" tickFormatter={v => new Date(v).toLocaleString('es-PY', { timeZone: zonaParaguay, ...(period === 'Hoy' ? { hour: '2-digit', minute: '2-digit' } : { day: '2-digit', month: '2-digit' }) })} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} interval={Math.floor((displayData.length || 1) / 8)} />
                   <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={v => `₲${v.toLocaleString()}`} width={80} />
                   <Tooltip
+                    labelFormatter={(_label, payload) => {
+                      const p = payload?.[0]?.payload
+                      return p ? `${p.date}${p.continuidad ? ' — Tasa vigente desde ' + p.vigente : ''}` : ''
+                    }}
                     contentStyle={{ borderRadius: 10, border: '1px solid #e2e8f0', boxShadow: '0 4px 20px rgba(0,0,0,0.08)', fontSize: 12 }}
                     formatter={(v: unknown, name: unknown) => [`₲ ${(v as number).toLocaleString()}`, name === 'buy' ? 'Compra' : 'Venta']}
                   />
                   <Legend iconType="circle" iconSize={8} formatter={(v) => v === 'buy' ? 'Compra' : 'Venta'} />
-                  <Line type="monotone" dataKey="buy" stroke="#0f3460" strokeWidth={2} dot={false} name="buy" />
-                  <Line type="monotone" dataKey="sell" stroke="#10b981" strokeWidth={2} dot={false} name="sell" />
+                  <Line type="stepAfter" dataKey="buy" stroke="#0f3460" strokeWidth={2} dot={{ r: 2 }} name="buy" />
+                  <Line type="stepAfter" dataKey="sell" stroke="#10b981" strokeWidth={2} dot={{ r: 2 }} name="sell" />
                 </LineChart>
               ) : (
-                <BarChart data={displayData.slice(-14)}>
+                <BarChart data={displayData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" vertical={false} />
-                  <XAxis dataKey="date" tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
+                  <XAxis dataKey="timestamp" tickFormatter={v => new Date(v).toLocaleString('es-PY', { timeZone: zonaParaguay, ...(period === 'Hoy' ? { hour: '2-digit', minute: '2-digit' } : { day: '2-digit', month: '2-digit' }) })} tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} />
                   <YAxis tick={{ fontSize: 11, fill: '#94a3b8' }} axisLine={false} tickLine={false} tickFormatter={v => `₲${v.toLocaleString()}`} width={80} />
                   <Tooltip
+                    labelFormatter={(_label, payload) => {
+                      const p = payload?.[0]?.payload
+                      return p ? `${p.date}${p.continuidad ? ' — Tasa vigente desde ' + p.vigente : ''}` : ''
+                    }}
                     contentStyle={{ borderRadius: 10, border: '1px solid #e2e8f0', boxShadow: '0 4px 20px rgba(0,0,0,0.08)', fontSize: 12 }}
                     formatter={(v: unknown, name: unknown) => [`₲ ${(v as number).toLocaleString()}`, name === 'buy' ? 'Compra' : 'Venta']}
                   />
@@ -356,6 +400,9 @@ export default function Rates({ authUser }: RatesProps) {
             </ResponsiveContainer>
           )}
 
+          {evolucion?.anterior && evolucion.cambios.length === 0 && (
+            <p className="text-[12px] text-slate-500 mt-3">Sin cambios en este período. Se mantiene la tasa vigente desde {fechaHora(evolucion.anterior.vigente_desde)}.</p>
+          )}
           <div className="grid grid-cols-4 gap-4 mt-6 pt-5 border-t border-slate-100">
             {[
               { label: 'Compra actual', value: `₲ ${formatearTasa(seleccionada.compra || 0)}` },
